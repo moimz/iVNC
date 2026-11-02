@@ -117,7 +117,14 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
 
     /// 보낸 것과 지금 확정된 것을 비교해 다른 부분만 지우고 다시 보낸다 (자동 고침 등으로 앞 글자가 바뀌어도 맞춰진다)
     private func sync(final: Bool) {
-        let c = Array(committed(final: final)), s = Array(sent)
+        let c = Array(committed(final: final)), s = Array(sent), t = Array(text ?? "")
+        // 지우기 때 아이폰 키보드는 조합 기록으로 이미 보낸 마지막 글자를 다시 조합 중으로 끌어온다 ("도레" 에서 지우면 "돌").
+        // 맥은 바로 고치지 않는다: 보낸 것을 기억해 두고, 조합이 끝날 때 비교해서 필요한 만큼만 고친다.
+        // "돌" 에 ㅏ 를 치면 "도라" 가 되어 확정된 "도" 는 이미 보냈으니 안 보내고, 다시 지워 "도" 가 되면 아래에서 조합을 끝낸다
+        if !final, !s.isEmpty, t.count == s.count, c.count == s.count - 1, Array(s.prefix(c.count)) == c {
+            onPending(String(t[c.count...]))
+            return
+        }
         var p = 0
         while p < min(c.count, s.count) && c[p] == s[p] { p += 1 }
         if s.count > p { onBackspace(s.count - p) }
