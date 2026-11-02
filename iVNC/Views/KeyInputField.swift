@@ -125,17 +125,9 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
         // 맥으로 보낸 글자는 입력창에서 바로 뺀다 (조합 중인 마지막 글자만 남긴다).
         // 남겨 두면 지우기 때 키보드가 보낸 글자와 다시 조합한다: "도레밍" 에서 밍→미→ㅁ 이 되면 "레"+ㅁ 을 "렘" 으로 만든다.
         // 조합 중 글자가 없으면 입력창이 비고, 다음 지우기는 바로 맥으로 간다
-        // 키보드가 글자를 넣는 도중에 바꾸면 키보드가 모르고 지나가 자기 조합 기록으로 되살린다 ("파" 를 지우면 "밒").
-        // 그래서 키보드 처리가 끝난 뒤에 바꾸고, 바뀌었다고 알려 키보드가 조합 기록을 버리게 한다
         if !final && markedTextRange == nil && all.count > pending.count {
-            let snapshot = text
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.text == snapshot, self.markedTextRange == nil else { return }
-                self.inputDelegate?.textWillChange(self)
-                self.text = pending
-                self.sent = ""
-                self.inputDelegate?.textDidChange(self)
-            }
+            text = pending
+            sent = ""
         }
     }
 
