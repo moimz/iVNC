@@ -170,7 +170,7 @@ struct SessionView: View {
                 }
                 // 떠 있는 버튼: 이 버튼의 터치는 맥에 안 보낸다
                 FloatingMenuButton(open: menuVisible) { setMenu(!menuVisible) }
-                    .ignoresSafeArea()
+                    .ignoresSafeArea(.container) // 키보드가 뜨면 그 위로 올라가게 (키보드 영역은 피한다)
             }
         }
         .overlay(alignment: .top) { if menuVisible || model.phase != .viewing { topBar } }
@@ -191,6 +191,8 @@ struct SessionView: View {
         #endif
         .statusBarHidden(model.phase == .viewing && !menuVisible)
         .preferredColorScheme(.dark)
+        // 시스템이 키보드를 내리면 키보드 버튼 상태도 맞춘다 (안 그러면 다음에 누를 때 거꾸로 동작한다)
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidHideNotification)) { _ in model.typing = false }
         .onAppear { model.connect(store: store) }
         .onDisappear { model.close() }
     }
@@ -350,7 +352,9 @@ final class FloatingButtonHost: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        if dragStart == nil { button.center = restingCenter() }
+        if dragStart == nil {
+            UIView.animate(withDuration: 0.25) { self.button.center = self.restingCenter() }
+        }
     }
 
     @objc private func tapped() { action() }
