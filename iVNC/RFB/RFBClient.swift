@@ -829,6 +829,60 @@ final class RFBClient {
         DebugLog.write("뗌 \(x),\(y)")
     }
 
+    // MARK: - 스크롤 (애플 GestureEvent 0x17, noVNC-ARD 를 따름)
+
+    /// 스크롤 단계 (트랙패드처럼). 0 = 없음 (마우스 휠 한 번)
+    enum ScrollPhase: UInt32 { case none = 0, began = 1, changed = 2, ended = 4 }
+    /// 손 뗀 뒤 관성 단계
+    enum MomentumPhase: UInt32 { case none = 0, begin = 1, `continue` = 2, end = 3 }
+
+    /// 연속 스크롤에서 아직 보내지 않은 줄 단위 나머지
+    private var lineCarry: (x: Double, y: Double) = (0, 0)
+
+    /// 1줄이 몇 포인트인지 (noVNC-ARD 가 애플 화면 공유에 맞춘 값)
+    private static let pointsPerLine: Float = 45
+
+    /// 지금 커서 자리에서 스크롤한다. dx, dy 는 맥 포인트, 양수 dy = 아래로 (내용이 위로 감)
+    func scroll(dx: Double, dy: Double, phase: ScrollPhase = .none, momentum: MomentumPhase = .none) {
+        stateLock.lock(); let pos = cursor ?? (framebuffer.width / 2, framebuffer.height / 2); stateLock.unlock()
+        let x = UInt16(clamping: pos.0), y = UInt16(clamping: pos.1)
+        let sx = Float(dx) / Self.pointsPerLine, sy = Float(dy) / Self.pointsPerLine
+        // 줄 단위: 휠 한 번(단계 없음)은 최소 1줄. 끌기·관성처럼 작게 자주 보낼 때는 쌓아 두었다가 1줄이 차면 보낸다
+        // (매번 1줄로 올리면 서버가 줄 단위를 쓸 때 스크롤이 과해진다)
+        let continuous = phase != .none || momentum != .none
+        if phase == .began { lineCarry = (0, 0) }
+        func line(_ v: Double, _ carry: inout Double) -> Int16 {
+            guard v != 0 else { return 0 }
+            if continuous {
+                carry += v / Double(Self.pointsPerLine)
+                let n = carry.rounded(.towardZero)
+                carry -= n
+                return Int16(clamping: Int(n))
+            }
+            let n = Int16(clamping: Int((v / Double(Self.pointsPerLine)).rounded()))
+            return v > 0 ? max(1, n) : min(-1, n)
+        }
+        func f32(_ v: Float) -> [UInt8] { [UInt8].be32(v.bitPattern) }
+        func i32(_ v: Int) -> [UInt8] { [UInt8].be32(UInt32(bitPattern: Int32(clamping: v))) }
+        func i16(_ v: Int16) -> [UInt8] { [UInt8].be16(Int(UInt16(bitPattern: v))) }
+        // sub-type 8 CompactScroll: [f32 x][f32 y][f32 z][u32 1][u32 단계][u32 관성][u16 x][u16 y]
+        var m: [UInt8] = [0x17, 0] + [UInt8].be16(32) + [UInt8].be16(2) + [UInt8].be16(8)
+        m += f32(sx) + f32(sy) + f32(0) + [UInt8].be32(1) + [UInt8].be32(phase.rawValue) + [UInt8].be32(momentum.rawValue)
+        m += [UInt8].be16(Int(x)) + [UInt8].be16(Int(y))
+        // sub-type 11 ScrollWheel: [i16 줄 x y z][i32 16.16 x y z][i32 포인트 x y z][u32 단계][u32 관성][u32 0][u16 0][u16 flags][u16 x][u16 y]
+        m += [0x17, 0] + [UInt8].be16(54) + [UInt8].be16(1) + [UInt8].be16(11)
+        m += i16(line(dx, &lineCarry.x)) + i16(line(dy, &lineCarry.y)) + i16(0)
+        m += i32(Int((Double(sx) * 65536).rounded())) + i32(Int((Double(sy) * 65536).rounded())) + i32(0)
+        m += i32(Int(dx.rounded())) + i32(Int(dy.rounded())) + i32(0)
+        m += [UInt8].be32(phase.rawValue) + [UInt8].be32(momentum.rawValue) + [UInt8].be32(0) + [UInt8].be16(0) + [UInt8].be16(0)
+        m += [UInt8].be16(Int(x)) + [UInt8].be16(Int(y))
+        socket?.send(m)
+        markLocalInput()
+        if phase != .changed && momentum != .continue {
+            DebugLog.write("스크롤 \(String(format: "%.1f", dx)),\(String(format: "%.1f", dy)) 단계 \(phase) 관성 \(momentum) @\(x),\(y)")
+        }
+    }
+
     /// 서버가 알려 준 커서 위치 (트랙패드 모드 포인터의 시작점)
     var cursorPosition: CGPoint? {
         stateLock.lock(); defer { stateLock.unlock() }

@@ -18,6 +18,8 @@ protocol MouseInput: AnyObject {
     func mouseUp(_ p: CGPoint)
     /// 서버가 알려 준 커서 위치 (트랙패드 포인터 시작점)
     var serverCursor: CGPoint? { get }
+    /// 지금 커서 자리에서 스크롤. dx, dy 는 프레임버퍼 픽셀, 양수 dy = 아래로 (내용이 위로)
+    func mouseScroll(_ dx: CGFloat, _ dy: CGFloat, phase: RFBClient.ScrollPhase, momentum: RFBClient.MomentumPhase)
 }
 
 /// 원격 화면. 처음엔 화면 안에 다 들어오게(contain), 확대는 원본 픽셀(1:1)까지, 축소는 contain 까지.
@@ -25,6 +27,8 @@ protocol MouseInput: AnyObject {
 struct ScreenView: UIViewRepresentable {
     let renderer: ScreenRenderer
     let mode: MouseMode
+    /// 스크롤 모드: 한 손가락 끌기는 스크롤만 (포인터 이동·클릭 없음)
+    var scrollMode = false
     weak var input: MouseInput?
 
     func makeUIView(context: Context) -> ZoomingImageView {
@@ -32,18 +36,21 @@ struct ScreenView: UIViewRepresentable {
         v.attach(renderer)
         v.input = input
         v.mode = mode
+        v.scrollMode = scrollMode
         return v
     }
 
     func updateUIView(_ v: ZoomingImageView, context: Context) {
         v.input = input
         if v.mode != mode { v.mode = mode }
+        if v.scrollMode != scrollMode { v.scrollMode = scrollMode }
     }
 }
 
 final class ZoomingImageView: UIScrollView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
     weak var input: MouseInput?
     var mode: MouseMode = .touch { didSet { applyMode() } }
+    var scrollMode = false { didSet { applyMode() } }
 
     private let content = LayerHostView()
     private var pixelSize = CGSize.zero
@@ -58,6 +65,13 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     private let twoFingerTap = UITapGestureRecognizer()
     private let longPress = UILongPressGestureRecognizer()
     private let trackPan = UIPanGestureRecognizer()
+    private let scrollPan = UIPanGestureRecognizer()
+    // 스크롤: 이번 손동작의 방향(가로면 true), 직전 이동량, 관성
+    private var scrollHorizontal = false
+    private var lastScrollTranslation = CGPoint.zero
+    private var momentumLink: CADisplayLink?
+    private var momentumVelocity: CGFloat = 0
+    private var momentumStarted = false
     private let haptic = UIImpactFeedbackGenerator(style: .medium)
 
     // 더블 클릭: 직전 탭 (시각, 화면 위치, 보낸 픽셀 좌표)
@@ -102,6 +116,9 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         trackPan.maximumNumberOfTouches = 1
         trackPan.addTarget(self, action: #selector(trackPanned(_:)))
         addGestureRecognizer(trackPan)
+        scrollPan.maximumNumberOfTouches = 1
+        scrollPan.addTarget(self, action: #selector(scrollPanned(_:)))
+        addGestureRecognizer(scrollPan)
         tap.require(toFail: twoFingerTap)
         // 길게 누르기가 실패(10pt 넘게 움직임)해야 화면 이동·포인터 이동이 시작된다
         panGestureRecognizer.require(toFail: longPress)
@@ -147,9 +164,14 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate, UIGestureRecog
 
     private func applyMode() {
         // 터치 모드: 한 손가락 끌기 = 화면 이동. 트랙패드 모드: 한 손가락 = 포인터, 두 손가락 끌기 = 화면 이동
-        panGestureRecognizer.minimumNumberOfTouches = mode == .touch ? 1 : 2
-        trackPan.isEnabled = mode == .trackpad
-        twoFingerTap.isEnabled = mode == .trackpad
+        // 스크롤 모드: 한 손가락 = 스크롤, 두 손가락 끌기 = 화면 이동. 클릭·포인터 이동은 모두 끈다
+        panGestureRecognizer.minimumNumberOfTouches = mode == .touch && !scrollMode ? 1 : 2
+        trackPan.isEnabled = mode == .trackpad && !scrollMode
+        twoFingerTap.isEnabled = mode == .trackpad && !scrollMode
+        tap.isEnabled = !scrollMode
+        longPress.isEnabled = !scrollMode
+        scrollPan.isEnabled = scrollMode
+        if !scrollMode { stopMomentum() }
         lastTap = nil
         if mode == .trackpad {
             if pointer == nil { pointer = input?.serverCursor ?? CGPoint(x: pixelSize.width / 2, y: pixelSize.height / 2) }
@@ -273,6 +295,63 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         guard force || now.timeIntervalSince(lastMoveSent) >= 1.0 / 30 else { return }
         lastMoveSent = now
         input?.mouseMove(p)
+    }
+
+    // MARK: 스크롤 모드: 한 손가락 끌기로 스크롤 (손가락 방향대로 내용이 움직임, 처음 방향으로 고정, 손 떼면 관성)
+
+    @objc private func scrollPanned(_ g: UIPanGestureRecognizer) {
+        let t = g.translation(in: self)
+        switch g.state {
+        case .began:
+            stopMomentum()
+            scrollHorizontal = abs(t.x) > abs(t.y)
+            lastScrollTranslation = .zero
+            sendScroll(t, phase: .began)
+        case .changed:
+            sendScroll(t, phase: .changed)
+        case .ended, .cancelled:
+            input?.mouseScroll(0, 0, phase: .ended, momentum: .none)
+            let v = g.velocity(in: self)
+            momentumVelocity = scrollHorizontal ? v.x : v.y
+            if g.state == .ended && abs(momentumVelocity) > 150 { startMomentum() }
+        default: break
+        }
+    }
+
+    /// 손가락 이동(pt) → 맥에 보낼 양(픽셀). 손가락이 위로 가면 내용도 위로 = 아래로 스크롤 (양수)
+    private func sendScroll(_ t: CGPoint, phase: RFBClient.ScrollPhase) {
+        let d = scrollHorizontal ? t.x - lastScrollTranslation.x : t.y - lastScrollTranslation.y
+        lastScrollTranslation = t
+        let px = -d * pixelsPerPoint
+        if scrollHorizontal { input?.mouseScroll(px, 0, phase: phase, momentum: .none) }
+        else { input?.mouseScroll(0, px, phase: phase, momentum: .none) }
+    }
+
+    private func startMomentum() {
+        momentumStarted = false
+        let link = CADisplayLink(target: self, selector: #selector(momentumStep(_:)))
+        link.add(to: .main, forMode: .common)
+        momentumLink = link
+    }
+
+    /// 손 뗀 속도에서 아이폰처럼 감속한다 (아이폰 기본 감속률 0.998/ms = 1초에 약 13.5% 남음)
+    @objc private func momentumStep(_ link: CADisplayLink) {
+        let dt = CGFloat(link.targetTimestamp - link.timestamp)
+        momentumVelocity *= pow(0.135, dt)
+        if abs(momentumVelocity) < 30 { stopMomentum(); return }
+        let px = -momentumVelocity * dt * pixelsPerPoint
+        let phase: RFBClient.MomentumPhase = momentumStarted ? .continue : .begin
+        momentumStarted = true
+        if scrollHorizontal { input?.mouseScroll(px, 0, phase: .none, momentum: phase) }
+        else { input?.mouseScroll(0, px, phase: .none, momentum: phase) }
+    }
+
+    private func stopMomentum() {
+        guard let link = momentumLink else { return }
+        link.invalidate()
+        momentumLink = nil
+        if momentumStarted { input?.mouseScroll(0, 0, phase: .none, momentum: .end) }
+        momentumStarted = false
     }
 
     func gestureRecognizer(_ g: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {

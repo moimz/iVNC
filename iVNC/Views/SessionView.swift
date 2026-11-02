@@ -118,6 +118,12 @@ final class SessionModel: ObservableObject {
         phase = .picking
     }
 
+    /// 스크롤 모드 (메뉴에서 켜고 끈다)
+    @Published var scrollMode = false
+
+    /// 위·아래 버튼: 50 포인트씩 (양수 = 아래로)
+    func scrollStep(_ dy: Double) { client?.scroll(dx: 0, dy: dy) }
+
     /// 마우스 조작 방식 (컴퓨터별로 기억)
     @Published private(set) var mouseMode: MouseMode = .touch
 
@@ -178,7 +184,18 @@ struct SessionView: View {
                     .ignoresSafeArea()
                 }
                 // 떠 있는 버튼: 이 버튼의 터치는 맥에 안 보낸다
-                FloatingMenuButton(open: menuVisible) { setMenu(!menuVisible) }
+                // 스크롤 모드: 오른쪽에 위·아래 버튼 (한 번에 50포인트)
+                if model.scrollMode && !menuVisible {
+                    VStack(spacing: 12) {
+                        Button { model.scrollStep(-50) } label: { Image(systemName: "chevron.up").frame(width: 44, height: 44) }
+                        Button { model.scrollStep(50) } label: { Image(systemName: "chevron.down").frame(width: 44, height: 44) }
+                    }
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.circle)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                    .padding(.trailing, 8)
+                }
+                FloatingMenuButton(open: menuVisible, scroll: model.scrollMode) { setMenu(!menuVisible) }
                     .ignoresSafeArea(.container) // 키보드가 뜨면 그 위로 올라가게 (키보드 영역은 피한다)
             }
         }
@@ -216,7 +233,7 @@ struct SessionView: View {
                 .padding(.top, 56)
         case .viewing:
             ZStack {
-                ScreenView(renderer: model.renderer, mode: model.mouseMode, input: model)
+                ScreenView(renderer: model.renderer, mode: model.mouseMode, scrollMode: model.scrollMode, input: model)
                     .ignoresSafeArea()
                 KeyInputField(active: $model.typing, onText: model.sendText, onBackspace: model.sendBackspace, onReturn: model.sendReturn,
                               onPending: { model.composing = $0 })
@@ -246,9 +263,13 @@ struct SessionView: View {
             }
             .buttonStyle(.glass)
             .buttonBorderShape(.circle)
-            Text(title).font(.headline).lineLimit(1)
-                .padding(.horizontal, 14).frame(height: 36)
-                .glassEffect()
+            // 버튼이 많아 자리가 모자라면 이름은 숨긴다 (빈 칸으로 찌그러지지 않게)
+            ViewThatFits(in: .horizontal) {
+                Text(title).font(.headline).lineLimit(1).fixedSize()
+                    .padding(.horizontal, 14).frame(height: 36)
+                    .glassEffect()
+                Color.clear.frame(width: 0, height: 36)
+            }
             if model.isHighPerformance {
                 Label("고성능", systemImage: "bolt.fill")
                     .font(.caption.weight(.semibold))
@@ -264,6 +285,13 @@ struct SessionView: View {
                 .buttonStyle(.glass)
                 .buttonBorderShape(.circle)
                 .accessibilityLabel(model.mouseMode == .touch ? "터치 모드" : "트랙패드 모드")
+                Button { model.scrollMode.toggle(); setMenu(false) } label: {
+                    Image(systemName: "arrow.up.and.down").frame(width: 36, height: 36)
+                }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .tint(model.scrollMode ? .yellow : nil)
+                .accessibilityLabel(model.scrollMode ? "스크롤 모드 끄기" : "스크롤 모드")
                 Button { model.typing.toggle(); setMenu(false) } label: {
                     Image(systemName: model.typing ? "keyboard.chevron.compact.down" : "keyboard").frame(width: 36, height: 36)
                 }
@@ -292,6 +320,7 @@ struct SessionView: View {
 /// UIKit 으로 만든다: SwiftUI 버튼에 끌기 손동작을 붙이면 탭이 먹지 않았다. 버튼 밖 터치는 아래(화면)로 그대로 보낸다
 struct FloatingMenuButton: UIViewRepresentable {
     let open: Bool
+    var scroll = false
     let action: () -> Void
 
     func makeUIView(context: Context) -> FloatingButtonHost {
@@ -302,7 +331,7 @@ struct FloatingMenuButton: UIViewRepresentable {
 
     func updateUIView(_ v: FloatingButtonHost, context: Context) {
         v.action = action
-        v.setOpen(open)
+        v.setOpen(open, scroll: scroll)
     }
 }
 
@@ -340,9 +369,12 @@ final class FloatingButtonHost: UIView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func setOpen(_ open: Bool) {
+    /// 열림이면 X, 스크롤 모드면 위아래 화살표(노란색), 아니면 기본 아이콘
+    func setOpen(_ open: Bool, scroll: Bool = false) {
         let cfg = UIImage.SymbolConfiguration(pointSize: 20, weight: .semibold)
-        button.setImage(UIImage(systemName: open ? "xmark" : "circle.grid.2x2.fill", withConfiguration: cfg), for: .normal)
+        let name = open ? "xmark" : (scroll ? "arrow.up.and.down" : "circle.grid.2x2.fill")
+        button.setImage(UIImage(systemName: name, withConfiguration: cfg), for: .normal)
+        button.tintColor = scroll && !open ? .systemYellow : .white
         button.alpha = open ? 1 : 0.75
     }
 
@@ -398,4 +430,9 @@ extension SessionModel: MouseInput {
     func mouseMove(_ p: CGPoint) { client?.mouseMove(x: Int(p.x), y: Int(p.y)) }
     func mouseUp(_ p: CGPoint) { client?.mouseUp(x: Int(p.x), y: Int(p.y)) }
     var serverCursor: CGPoint? { client?.cursorPosition }
+    /// 프레임버퍼 픽셀 → 맥 포인트 (레티나 모니터는 2픽셀 = 1포인트)
+    func mouseScroll(_ dx: CGFloat, _ dy: CGFloat, phase: RFBClient.ScrollPhase, momentum: RFBClient.MomentumPhase) {
+        let scale = max(selected?.scale ?? 1, 1)
+        client?.scroll(dx: Double(dx / scale), dy: Double(dy / scale), phase: phase, momentum: momentum)
+    }
 }
