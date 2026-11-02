@@ -229,7 +229,8 @@ enum HP {
     }
 }
 
-/// 고성능 영상·소리 UDP 수신. SRTP 를 검증·해독해 개수를 세고, 1초마다 SRTCP 수신 보고를 보낸다 (시험용).
+/// 고성능 영상·소리 UDP 수신. SRTP 를 검증·해독해 영상은 조립기로 넘기고, 1초마다 SRTCP 수신 보고,
+/// 그림마다 받음 확인, 0.05초마다 속도 조절 보고를 보낸다 (noVNC-ARD feedback.js). 소리는 아직 버린다.
 /// 0 = 소리, 1 = 영상. RTP 와 RTCP 가 같은 포트로 온다.
 final class HPUDPReceiver {
     struct Stream {
@@ -248,6 +249,18 @@ final class HPUDPReceiver {
 
     private var streams: [Stream] = []
     private var server = sockaddr_in6()
+    /// 영상 조립 (잠금 안에서만 만진다)
+    private var assembler: HPVideoAssembler?
+    private var readyPictures: [HPVideoAssembler.Picture] = []
+    private var assemblerStalled = false
+    private var pictures = 0
+    private var lastVideoAt: TimeInterval?
+    private var lastRateControl: TimeInterval = 0
+    private(set) var lastPictureAt: TimeInterval?
+    /// 조립된 그림 (수신 스레드에서 부른다)
+    var onPicture: ((HPVideoAssembler.Picture) -> Void)?
+    /// 조립이 막혀 키 그림부터 다시 받아야 할 때 (다시 제안)
+    var onStall: (() -> Void)?
     private var stopped = false
     private let lock = NSLock()
 
@@ -290,6 +303,21 @@ final class HPUDPReceiver {
         streams[index].serverSSRC = serverSSRC
         streams[index].remotePort = remotePort
         self.server = server
+    }
+
+    /// 새 답의 영상 SSRC·줄무늬 수로 조립기를 새로 만든다 (다시 제안한 뒤에도)
+    func startVideo(baseSSRC: UInt32, stripes: Int) {
+        lock.lock(); defer { lock.unlock() }
+        let a = HPVideoAssembler(baseSSRC: baseSSRC, stripes: stripes)
+        a.onPicture = { [unowned self] in self.readyPictures.append($0) }
+        a.onStall = { [unowned self] in self.assemblerStalled = true }
+        assembler = a
+        lastPictureAt = ProcessInfo.processInfo.systemUptime
+    }
+
+    var videoDiag: String {
+        lock.lock(); defer { lock.unlock() }
+        return "그림 \(pictures), 조립 \(assembler?.diag ?? "없음")"
     }
 
     private static func send(_ fd: Int32, _ pkt: [UInt8], to server: sockaddr_in6, port: UInt16) {
@@ -348,13 +376,52 @@ final class HPUDPReceiver {
         for s in streams { Darwin.close(s.fd) }
     }
 
+    /// 패킷을 처리한 뒤 (또는 0.05초마다): 조립된 그림을 넘기고 받음 확인, 막힘 알림, 속도 조절 보고
+    private func afterPackets() {
+        let now = ProcessInfo.processInfo.systemUptime
+        lock.lock()
+        assembler?.tick(now: now)
+        let pics = readyPictures
+        readyPictures.removeAll()
+        let stall = assemblerStalled
+        assemblerStalled = false
+        pictures += pics.count
+        if !pics.isEmpty { lastPictureAt = now }
+        var packets: [[UInt8]] = []
+        var port: UInt16 = 0, fd: Int32 = -1
+        if streams.count > 1, let out = streams[1].outbound {
+            port = streams[1].remotePort; fd = streams[1].fd
+            let me = streams[1].mySSRC
+            // 그림 받음 확인: APP(204), 이름 5, DON
+            for p in pics {
+                packets.append(out.protectRTCP([0x80, 0xCC, 0x00, 0x03] + [UInt8].be32(me) + [UInt8].be32(5) + [UInt8].be32(UInt32(p.don & 0xFFFF))))
+            }
+            // 속도 조절 "RCTL": 그림 수, 마지막 영상 뒤 ms, 영상 패킷 수, 60000kbit
+            if now - lastRateControl >= 0.05 {
+                lastRateControl = now
+                let since = lastVideoAt.map { min(Int((now - $0) * 1000), 0xFFFF) } ?? 0
+                var r = [UInt8].be32(0x80CC_0007) + [UInt8].be32(me) + [UInt8].be32(0x5243_544C) + [UInt8].be32(0x8500_0004)
+                r += [UInt8].be16(pictures & 0xFFFF) + [UInt8].be32(0) + [UInt8].be16(since) + [0xFF, 0xFF]
+                r += [UInt8].be32(UInt32(truncatingIfNeeded: streams[1].ok)) + [UInt8].be16(60000)
+                packets.append(out.protectRTCP(r))
+            }
+        }
+        let to = server
+        lock.unlock()
+        for p in pics { onPicture?(p) }
+        if fd >= 0 { for p in packets { Self.send(fd, p, to: to, port: port) } }
+        if stall { onStall?() }
+    }
+
     private func loop() {
         var buf = [UInt8](repeating: 0, count: 65536)
         while true {
             lock.lock(); let s = stopped; let fds = streams.map(\.fd); lock.unlock()
             if s { return }
             var pfds = fds.map { pollfd(fd: $0, events: Int16(POLLIN), revents: 0) }
-            if poll(&pfds, nfds_t(pfds.count), 500) <= 0 { continue }
+            let ready = poll(&pfds, nfds_t(pfds.count), 50)
+            afterPackets()
+            if ready <= 0 { continue }
             for (i, p) in pfds.enumerated() where p.revents & Int16(POLLIN) != 0 {
                 var from = sockaddr_in6(), len = socklen_t(MemoryLayout<sockaddr_in6>.size)
                 let n = withUnsafeMutablePointer(to: &from) { f in
@@ -375,6 +442,11 @@ final class HPUDPReceiver {
                         streams[i].ssrcs.insert(rtp.ssrc)
                         // HEVC RTP 페이로드 머리 2바이트의 NAL 종류 (48 = 묶음, 49 = 조각)
                         if i == 1, rtp.payload.count >= 2 { streams[i].naluTypes[Int(rtp.payload[0] >> 1) & 0x3F, default: 0] += 1 }
+                        if i == 1, rtp.payloadType == 100 {
+                            let now = ProcessInfo.processInfo.systemUptime
+                            lastVideoAt = now
+                            assembler?.push(rtp, now: now)
+                        }
                     } else {
                         streams[i].bad += 1
                     }

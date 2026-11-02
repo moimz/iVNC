@@ -76,6 +76,8 @@ final class SRTPContext {
         let timestamp: UInt32
         let marker: Bool
         let payloadType: UInt8
+        /// 헤더 확장 (확장 머리 4바이트 포함). 고성능 영상은 8바이트: [4..6) 그림의 패킷 수, [6..8) 프레임 번호
+        let extensionBytes: [UInt8]
         let payload: [UInt8]
     }
 
@@ -102,7 +104,8 @@ final class SRTPContext {
         var payload = body
         for i in 0..<payload.count { payload[i] ^= ks[i] }
         return RTPPacket(ssrc: ssrc, seq: seq, timestamp: UInt32(p[4]) << 24 | UInt32(p[5]) << 16 | UInt32(p[6]) << 8 | UInt32(p[7]),
-                         marker: p[1] & 0x80 != 0, payloadType: p[1] & 0x7F, payload: payload)
+                         marker: p[1] & 0x80 != 0, payloadType: p[1] & 0x7F,
+                         extensionBytes: Array(p[headerLen..<payloadOffset]), payload: payload)
     }
 
     /// SRTCP 패킷 하나를 검증하고 푼다 (복합 RTCP 원문). 태그가 안 맞으면 nil.

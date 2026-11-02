@@ -31,11 +31,14 @@ final class SessionModel: ObservableObject {
 
     /// 고성능 없이 다시 접속할 때 true
     private var standardOnly = false
+    /// 접속 단계에서 실패해 자동으로 다시 시도한 횟수 (3번까지)
+    private var retries = 0
+    private static let maxRetries = 3
 
-    func connect(store: ComputerStore) {
+    func connect(store: ComputerStore, keepStatus: Bool = false) {
         self.store = store
         client?.stop()
-        phase = .connecting("접속하는 중…")
+        if !keepStatus { phase = .connecting("접속하는 중…"); retries = 0 }
         guard let pw = Keychain.password(for: computer.id) else {
             phase = .failed("저장된 암호가 없습니다. 컴퓨터를 길게 눌러 편집에서 암호를 입력하세요.")
             return
@@ -52,7 +55,7 @@ final class SessionModel: ObservableObject {
     private func handle(_ e: RFBClient.Event) {
         switch e {
         case .status(let s):
-            if case .connecting = phase { phase = .connecting(s) }
+            if case .connecting = phase { phase = .connecting(retries > 0 ? "\(s) (다시 시도 \(retries)/\(Self.maxRetries))" : s) }
         case .displays(let list):
             displays = list
             // 모니터가 하나여도 바로 고르지 않는다: 맥이 깨어날 때는 모니터가 하나씩 붙어서 처음 목록이 전부가 아닐 수 있다
@@ -76,7 +79,21 @@ final class SessionModel: ObservableObject {
             image = client?.framebuffer.makeImage()
             client?.frameConsumed()
         case .failed(let msg):
-            phase = .failed(msg)
+            // 화면을 보기 전(접속·인증 단계) 실패는 자동으로 3번까지 다시 시도한다.
+            // 서버는 접속 직후 다시 붙으면 끊거나 멈출 때가 있다
+            if case .connecting = phase, retries < Self.maxRetries, let store {
+                retries += 1
+                client?.stop()
+                client = nil
+                let n = retries
+                phase = .connecting("다시 시도하는 중 (\(n)/\(Self.maxRetries))…")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                    guard let self, case .connecting = self.phase, self.retries == n else { return }
+                    self.connect(store: store, keepStatus: true)
+                }
+            } else {
+                phase = .failed(msg)
+            }
         }
     }
 

@@ -1,4 +1,5 @@
 import CommonCrypto
+import CoreVideo
 import Foundation
 
 /// macOS 화면 공유(RFB 003.889 + 애플 확장) 클라이언트.
@@ -141,6 +142,7 @@ final class RFBClient {
         DebugLog.write("HP 실패: \(reason) → 고성능 없이 다시 접속")
         hpTimer?.cancel(); hpTimer = nil
         hpReceiver?.stop(); hpReceiver = nil
+        hpDecoder?.stop(); hpDecoder = nil
         emit(.reconnectStandard)
     }
 
@@ -150,24 +152,20 @@ final class RFBClient {
     private var hpReceiver: HPUDPReceiver?
     private var hpServerPorts: (audio: UInt16, video: UInt16)?
     private var hpTimer: DispatchSourceTimer?
+    private var hpDecoder: HPVideoDecoder?
+    /// 영상이 막혀 다시 제안한 시각들 (30초에 3번까지)
+    private var hpRecoveries: [Date] = []
+    private var hpReoffering = false
 
     private func hpRect(_ enc: Int32, _ body: [UInt8]) {
         DebugLog.write("HP 사각형 \(enc) \(body.count)바이트: \(body.prefix(24).map { String(format: "%02x", $0) }.joined())")
         if enc == 1110 {
             DebugLog.write("HP Message1 문자열 \(HP.message1Strings(body))")
-            let secrets = HP.Secrets()
-            hpSecrets = secrets
             if let r = hpReceiver, let ports = hpServerPorts, let peer = socket?.peerAddress6 {
                 r.punch(server: peer, ports: [ports.audio, ports.video])
                 DebugLog.write("HP 먼저 보내기 (제안 직전)")
             }
-            do {
-                let offer = try HP.offerMessage(secrets)
-                socket?.send(offer)
-                DebugLog.write("HP 제안(0x1c) 보냄 \(offer.count)바이트, 내 SSRC 오디오 \(String(secrets.audioSSRC, radix: 16)) 비디오 \(String(secrets.videoSSRC, radix: 16))")
-            } catch {
-                DebugLog.write("HP 제안 만들기 실패 \(error)")
-            }
+            hpSendOffer()
         } else if enc == 1010 {
             if let ports = HP.streamPorts(body) {
                 hpServerPorts = ports
@@ -193,9 +191,15 @@ final class RFBClient {
                 do {
                     let a = try HP.answer(body)
                     DebugLog.write("HP 답: 서버 SSRC 오디오 \(String(a.audioSSRC, radix: 16)) 비디오 \(String(a.videoSSRC, radix: 16)), \(a.width)x\(a.height), 줄무늬 \(a.stripes)")
-                    hpAnswered = true
-                    hpStartStreaming(a)
-                    hpWaitForVideo(deadline: Date().addingTimeInterval(2.5))
+                    if hpState == .on {
+                        // 다시 제안한 것의 답: 새 키·SSRC 로 바꾼다
+                        hpReoffering = false
+                        hpConfigure(a)
+                    } else {
+                        hpAnswered = true
+                        hpStartStreaming(a)
+                        hpWaitForVideo(deadline: Date().addingTimeInterval(2.5))
+                    }
                 } catch {
                     DebugLog.write("HP 답 해석 실패 \(error)")
                     hpFail("답 해석 실패")
@@ -204,21 +208,90 @@ final class RFBClient {
         }
     }
 
-    /// 답을 받은 뒤: 키를 넣고, 1초마다 SRTCP 수신 보고를 보내고, 2초마다 받은 양을 적는다
+    /// 제안(0x1c)을 새 키로 보낸다. 처음과, 영상이 막혀 다시 시작할 때
+    private func hpSendOffer() {
+        let secrets = HP.Secrets()
+        hpSecrets = secrets
+        do {
+            let offer = try HP.offerMessage(secrets)
+            socket?.send(offer)
+            DebugLog.write("HP 제안(0x1c) 보냄 \(offer.count)바이트, 내 SSRC 오디오 \(String(secrets.audioSSRC, radix: 16)) 비디오 \(String(secrets.videoSSRC, radix: 16))")
+        } catch {
+            DebugLog.write("HP 제안 만들기 실패 \(error)")
+        }
+    }
+
+    /// 답의 키·SSRC 를 수신기에 넣고 영상 조립을 새로 시작한다
+    private func hpConfigure(_ a: HP.Answer) {
+        guard let r = hpReceiver, let ports = hpServerPorts, let s = hpSecrets, let peer = socket?.peerAddress6 else { return }
+        r.configure(index: 0, keys: s.audioKeys, mySSRC: s.audioSSRC, serverSSRC: a.audioSSRC, server: peer, remotePort: ports.audio)
+        r.configure(index: 1, keys: s.videoKeys, mySSRC: s.videoSSRC, serverSSRC: a.videoSSRC, server: peer, remotePort: ports.video)
+        r.startVideo(baseSSRC: a.videoSSRC, stripes: a.stripes)
+        if a.width > 0 && a.height > 0 { framebuffer.resize(width: a.width, height: a.height) }
+    }
+
+    /// 영상이 막혔다 (빠진 그림 뒤에 키 그림이 없거나, 3초 동안 그림이 없음): 다시 제안해 새로 받는다. 30초에 3번까지
+    private func hpRecover(_ why: String) {
+        guard hpState == .on, !hpReoffering else { return }
+        hpRecoveries = hpRecoveries.filter { Date().timeIntervalSince($0) < 30 }
+        DebugLog.write("HP 영상 막힘: \(why), \(hpReceiver?.videoDiag ?? "") / \(hpDecoder?.stats ?? "")")
+        guard hpRecoveries.count < 3 else {
+            DebugLog.write("HP 30초에 3번 다시 시작해도 막힘 → 포기")
+            return
+        }
+        hpRecoveries.append(Date())
+        hpReoffering = true
+        hpSendOffer()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5) { [weak self] in self?.hpReoffering = false } // 답이 안 오면 다음 막힘 때 다시
+    }
+
+    /// 디코딩된 줄무늬를 화면 버퍼의 제자리에 복사하고 화면에 알린다
+    private func hpDraw(_ image: CVPixelBuffer, stripe: Int) {
+        CVPixelBufferLockBaseAddress(image, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(image, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(image) else { return }
+        let w = CVPixelBufferGetWidth(image), h = CVPixelBufferGetHeight(image), bpr = CVPixelBufferGetBytesPerRow(image)
+        framebuffer.withPixels { p, fw, fh in
+            let y0 = stripe * h
+            let cw = min(w, fw)
+            for row in 0..<h where y0 + row < fh {
+                (p + (y0 + row) * fw).withMemoryRebound(to: UInt8.self, capacity: cw * 4) { dst in
+                    dst.update(from: (base + row * bpr).assumingMemoryBound(to: UInt8.self), count: cw * 4)
+                }
+            }
+        }
+        hpStripes += 1
+        stateLock.lock()
+        let notify = !framePending
+        if notify { framePending = true }
+        stateLock.unlock()
+        if notify { emit(.frame) }
+    }
+
+    private var hpStripes = 0
+
+    /// 답을 받은 뒤: 키를 넣고 디코더를 준비하고, 1초마다 SRTCP 수신 보고를 보내고, 2초마다 받은 양을 적는다
     private func hpStartStreaming(_ a: HP.Answer) {
-        guard hpTimer == nil, let r = hpReceiver, let ports = hpServerPorts, let s = hpSecrets, let peer = socket?.peerAddress6 else {
+        guard hpTimer == nil, let r = hpReceiver, hpServerPorts != nil, hpSecrets != nil, socket?.peerAddress6 != nil else {
             DebugLog.write("HP 받기 시작 못 함 (수신기 \(hpReceiver != nil), 포트 \(hpServerPorts != nil), 키 \(hpSecrets != nil), 서버 주소 \(socket?.peerAddress6 != nil))")
             return
         }
-        r.configure(index: 0, keys: s.audioKeys, mySSRC: s.audioSSRC, serverSSRC: a.audioSSRC, server: peer, remotePort: ports.audio)
-        r.configure(index: 1, keys: s.videoKeys, mySSRC: s.videoSSRC, serverSSRC: a.videoSSRC, server: peer, remotePort: ports.video)
+        let d = HPVideoDecoder()
+        d.onStripe = { [weak self] in self?.hpDraw($0, stripe: $1) }
+        hpDecoder = d
+        r.onPicture = { [weak d] in d?.push($0) }
+        r.onStall = { [weak self] in self?.hpRecover("조립 막힘") }
+        hpConfigure(a)
         var n = 0
         let t = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
         t.schedule(deadline: .now(), repeating: 1)
-        t.setEventHandler {
+        t.setEventHandler { [weak self] in
             n += 1
             r.sendReports()
-            if n % 2 == 0 { DebugLog.write("HP UDP: \(r.summary())") }
+            if n % 2 == 0 { DebugLog.write("HP UDP: \(r.summary()) / \(r.videoDiag) / \(d.stats)") }
+            if let self, self.hpState == .on, let last = r.lastPictureAt, ProcessInfo.processInfo.systemUptime - last > 3 {
+                self.hpRecover("3초 동안 그림 없음")
+            }
         }
         hpTimer = t
         t.resume()
@@ -256,6 +329,7 @@ final class RFBClient {
         watchdog?.cancel()
         hpTimer?.cancel()
         hpReceiver?.stop()
+        hpDecoder?.stop()
         socket?.close()
     }
 
@@ -315,8 +389,21 @@ final class RFBClient {
 
     /// 화면 쪽이 그림을 가져간 뒤 부른다.
     func frameConsumed() {
-        stateLock.lock(); framePending = false; stateLock.unlock()
+        stateLock.lock()
+        framePending = false
+        shownFrames += 1
+        let now = Date()
+        if now.timeIntervalSince(shownSince) >= 2 {
+            let fps = Double(shownFrames) / now.timeIntervalSince(shownSince)
+            DebugLog.write("화면 갱신 \(String(format: "%.1f", fps))회/초 (\(hpState == .on ? "고성능, 줄무늬 \(hpStripes)개 그림" : "일반"))")
+            shownFrames = 0; shownSince = now
+        }
+        stateLock.unlock()
     }
+
+    /// 화면에 실제로 보여 준 횟수 (속도 비교용)
+    private var shownFrames = 0
+    private var shownSince = Date()
 
     // MARK: - 수신 스레드
 
@@ -331,7 +418,10 @@ final class RFBClient {
             DebugLog.write("접속 \(host):\(port)")
             let s = try RFBSocket(host: host, port: port)
             socket = s
+            // 접속 직후 다시 붙으면 서버가 ServerInit 전에 멈춰 있을 때가 있다. 고성능 정리 뒤 첫 응답이 8초쯤 걸리니 넉넉히 15초
+            s.setReadTimeout(15)
             try handshake(s)
+            s.setReadTimeout(0)
             startKeepAwake()
             startWatchdog()
             while true {

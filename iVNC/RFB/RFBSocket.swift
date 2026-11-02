@@ -5,6 +5,7 @@ enum RFBError: LocalizedError {
     case closed
     case protocolError(String)
     case authFailed(String)
+    case timeout
 
     var errorDescription: String? {
         switch self {
@@ -12,6 +13,7 @@ enum RFBError: LocalizedError {
         case .closed: return "서버가 연결을 끊었습니다."
         case .protocolError(let m): return "통신 오류: \(m)"
         case .authFailed(let m): return "인증에 실패했습니다. 계정 이름과 암호를 확인하세요. \(m)"
+        case .timeout: return "서버가 응답하지 않습니다."
         }
     }
 }
@@ -41,13 +43,28 @@ final class RFBSocket {
                 setsockopt(s, IPPROTO_TCP, TCP_NODELAY, &on, socklen_t(MemoryLayout<Int32>.size))
                 var rcv: Int32 = 1 << 20 // 크게 잡으면 앱이 못 따라갈 때 화면이 수 초~수십 초 밀려 쌓인다
                 setsockopt(s, SOL_SOCKET, SO_RCVBUF, &rcv, socklen_t(MemoryLayout<Int32>.size))
-                if Darwin.connect(s, a.pointee.ai_addr, a.pointee.ai_addrlen) == 0 { fd = s; return }
+                if Self.connect(s, a.pointee.ai_addr, a.pointee.ai_addrlen, timeout: 10) { fd = s; return }
                 lastErr = errno
                 Darwin.close(s)
             }
             ai = a.pointee.ai_next
         }
         throw RFBError.connect(String(cString: strerror(lastErr)))
+    }
+
+    /// 제한 시간 있는 connect (닿지 않는 주소는 막히는 connect 로 1분 넘게 걸린다). 실패하면 errno 를 남긴다
+    private static func connect(_ s: Int32, _ addr: UnsafePointer<sockaddr>, _ len: socklen_t, timeout: Int32) -> Bool {
+        let flags = fcntl(s, F_GETFL)
+        _ = fcntl(s, F_SETFL, flags | O_NONBLOCK)
+        defer { _ = fcntl(s, F_SETFL, flags) }
+        if Darwin.connect(s, addr, len) == 0 { return true }
+        guard errno == EINPROGRESS else { return false }
+        var p = pollfd(fd: s, events: Int16(POLLOUT), revents: 0)
+        guard poll(&p, 1, timeout * 1000) > 0 else { errno = ETIMEDOUT; return false }
+        var err: Int32 = 0, l = socklen_t(MemoryLayout<Int32>.size)
+        getsockopt(s, SOL_SOCKET, SO_ERROR, &err, &l)
+        if err != 0 { errno = err; return false }
+        return true
     }
 
     /// TCP 상대 주소를 IPv6 형태로 (IPv4 면 ::ffff:a.b.c.d). 고성능 UDP 를 보낼 곳.
@@ -75,6 +92,16 @@ final class RFBSocket {
         var buf = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
         inet_ntop(AF_INET6, &a.sin6_addr, &buf, socklen_t(buf.count))
         return String(cString: buf)
+    }
+
+    /// 읽기 제한 시간. 0 이면 없음 (접속 과정에서 서버가 멈춰 있으면 끊고 다시 시도하려고)
+    func setReadTimeout(_ seconds: Int) {
+        var tv = timeval(tv_sec: seconds, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+    }
+
+    private static func readError() -> RFBError {
+        errno == EAGAIN || errno == EWOULDBLOCK ? .timeout : .closed
     }
 
     func close() {
@@ -108,7 +135,8 @@ final class RFBSocket {
             }
         }
         let n = buf[end...].withUnsafeMutableBytes { Darwin.recv(fd, $0.baseAddress, $0.count, 0) }
-        if n <= 0 { throw RFBError.closed }
+        if n < 0 { throw Self.readError() }
+        if n == 0 { throw RFBError.closed }
         end += n
         received += n
     }
@@ -135,7 +163,8 @@ final class RFBSocket {
         }
         while got < count {
             let n = Darwin.recv(fd, p + got, count - got, 0)
-            if n <= 0 { throw RFBError.closed }
+            if n < 0 { throw Self.readError() }
+            if n == 0 { throw RFBError.closed }
             got += n; received += n
         }
     }
