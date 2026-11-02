@@ -187,9 +187,10 @@ struct SessionView: View {
             }
         }
         .overlay(alignment: .top) { if menuVisible || model.phase != .viewing { topBar } }
-        // 키보드 바로 위: 보낸 마지막 글자(흐리게) + 조합 중인 글자(밝게, 밑줄). 조합 중 글자는 맥에 아직 안 갔다
+        // 키보드 바로 위: 한글을 조합하는 동안만 보낸 마지막 글자(흐리게) + 조합 중인 글자(밑줄). 조합 중 글자는 맥에 아직 안 갔다.
+        // 영어는 치는 즉시 맥으로 가서 보여 줄 필요가 없다
         .overlay(alignment: .bottom) {
-            if model.phase == .viewing && model.typing && !(model.recentTyped.isEmpty && model.composing.isEmpty) {
+            if model.phase == .viewing && model.typing && !model.composing.isEmpty {
                 (Text(model.recentTyped).foregroundStyle(.white.opacity(0.55))
                  + Text(model.composing).foregroundStyle(.white).underline())
                     .font(.title3.monospaced())
