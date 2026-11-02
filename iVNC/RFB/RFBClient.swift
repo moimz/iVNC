@@ -680,6 +680,11 @@ final class RFBClient {
             case -239:
                 try s.skip(w * h * 4 + (w + 7) / 8 * h)
             default:
+                DebugLog.write("알 수 없는 인코딩 \(enc) (\(String(format: "%08x", UInt32(bitPattern: enc)))) 사각형 \(x),\(y) \(w)x\(h). 이 메시지의 앞 사각형 \(encs.dropLast()), 사각형 수 \(count)")
+                let recent = s.recentBytes
+                for k in stride(from: 0, to: recent.count, by: 64) {
+                    DebugLog.write("최근 받은 바이트 \(k): " + recent[k..<min(k + 64, recent.count)].map { String(format: "%02x", $0) }.joined())
+                }
                 throw RFBError.protocolError("알 수 없는 인코딩 \(enc)")
             }
             if i == Int.max { break }

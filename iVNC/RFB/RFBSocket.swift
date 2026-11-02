@@ -25,6 +25,16 @@ final class RFBSocket {
     private var start = 0, end = 0
     private let writeLock = NSLock()
     private(set) var received = 0
+    /// 최근에 읽어 간 바이트 (통신이 어긋났을 때 원인을 보려고)
+    private var history = [UInt8](repeating: 0, count: 512)
+    private var historyPos = 0
+
+    private func remember(_ p: UnsafeRawBufferPointer) {
+        for b in p.suffix(history.count) { history[historyPos] = b; historyPos = (historyPos + 1) % history.count }
+    }
+
+    /// 최근에 읽은 바이트 (오래된 것부터)
+    var recentBytes: [UInt8] { Array(history[historyPos...] + history[..<historyPos]) }
 
     init(host: String, port: Int) throws {
         var hints = addrinfo(ai_flags: 0, ai_family: AF_UNSPEC, ai_socktype: SOCK_STREAM, ai_protocol: IPPROTO_TCP,
@@ -150,6 +160,7 @@ final class RFBSocket {
             out += buf[start..<(start + k)]
             start += k
         }
+        out.withUnsafeBytes { remember($0) }
         return out
     }
 
@@ -174,6 +185,7 @@ final class RFBSocket {
         while left > 0 {
             if start == end { try fill() }
             let k = min(left, end - start)
+            buf[start..<(start + k)].withUnsafeBytes { remember($0) }
             start += k; left -= k
         }
     }
@@ -181,6 +193,7 @@ final class RFBSocket {
     func u8() throws -> UInt8 {
         if start == end { try fill() }
         let v = buf[start]; start += 1
+        history[historyPos] = v; historyPos = (historyPos + 1) % history.count
         return v
     }
 
