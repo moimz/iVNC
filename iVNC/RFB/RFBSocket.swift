@@ -50,12 +50,31 @@ final class RFBSocket {
         throw RFBError.connect(String(cString: strerror(lastErr)))
     }
 
-    /// TCP 상대의 IPv4 주소 (고성능 UDP 를 보낼 곳). IPv4 가 아니면 nil
-    var peerIPv4: in_addr_t? {
-        var addr = sockaddr_in(), len = socklen_t(MemoryLayout<sockaddr_in>.size)
-        let rc = withUnsafeMutablePointer(to: &addr) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getpeername(fd, $0, &len) } }
-        guard rc == 0, addr.sin_family == sa_family_t(AF_INET) else { return nil }
-        return addr.sin_addr.s_addr
+    /// TCP 상대 주소를 IPv6 형태로 (IPv4 면 ::ffff:a.b.c.d). 고성능 UDP 를 보낼 곳.
+    /// LTE 는 IPv6 전용이라 IPv4 서버도 통신사 NAT64 주소(64:ff9b::…)로 보인다.
+    var peerAddress6: sockaddr_in6? {
+        var storage = sockaddr_storage(), len = socklen_t(MemoryLayout<sockaddr_storage>.size)
+        let rc = withUnsafeMutablePointer(to: &storage) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getpeername(fd, $0, &len) } }
+        guard rc == 0 else { return nil }
+        if storage.ss_family == sa_family_t(AF_INET6) {
+            return withUnsafePointer(to: &storage) { $0.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { $0.pointee } }
+        }
+        guard storage.ss_family == sa_family_t(AF_INET) else { return nil }
+        let v4 = withUnsafePointer(to: &storage) { $0.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee } }
+        var a = sockaddr_in6()
+        a.sin6_family = sa_family_t(AF_INET6)
+        a.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)
+        let ip = UInt32(bigEndian: v4.sin_addr.s_addr)
+        a.sin6_addr = in6_addr(__u6_addr: .init(__u6_addr8: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF,
+            UInt8(ip >> 24), UInt8(ip >> 16 & 0xFF), UInt8(ip >> 8 & 0xFF), UInt8(ip & 0xFF))))
+        return a
+    }
+
+    static func describe(_ a: sockaddr_in6) -> String {
+        var a = a
+        var buf = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
+        inet_ntop(AF_INET6, &a.sin6_addr, &buf, socklen_t(buf.count))
+        return String(cString: buf)
     }
 
     func close() {

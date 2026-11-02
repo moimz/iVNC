@@ -95,8 +95,8 @@ final class RFBClient {
             DebugLog.write("HP Message1 문자열 \(HP.message1Strings(body))")
             let secrets = HP.Secrets()
             hpSecrets = secrets
-            if let r = hpReceiver, let ports = hpServerPorts, let ip = socket?.peerIPv4 {
-                r.punch(serverIP: ip, ports: [ports.audio, ports.video])
+            if let r = hpReceiver, let ports = hpServerPorts, let peer = socket?.peerAddress6 {
+                r.punch(server: peer, ports: [ports.audio, ports.video])
                 DebugLog.write("HP 먼저 보내기 (제안 직전)")
             }
             do {
@@ -114,9 +114,11 @@ final class RFBClient {
                     let r = HPUDPReceiver()
                     let local = [ports.audio &+ Self.hpPortOffset, ports.video &+ Self.hpPortOffset]
                     if let err = r.bind(ports: local) { DebugLog.write("HP " + err) } else { hpReceiver = r; DebugLog.write("HP UDP 받는 포트 \(local)") }
-                    if let ip = socket?.peerIPv4 {
-                        r.punch(serverIP: ip, ports: [ports.audio, ports.video])
-                        DebugLog.write("HP 먼저 보내기 (포트 알림 직후)")
+                    if let peer = socket?.peerAddress6 {
+                        r.punch(server: peer, ports: [ports.audio, ports.video])
+                        DebugLog.write("HP 먼저 보내기 (포트 알림 직후) → [\(RFBSocket.describe(peer))]")
+                    } else {
+                        DebugLog.write("HP 서버 주소를 알 수 없음")
                     }
                 }
             } else {
@@ -133,9 +135,12 @@ final class RFBClient {
 
     /// 답을 받은 뒤: 키를 넣고, 1초마다 SRTCP 수신 보고를 보내고, 2초마다 받은 양을 적는다
     private func hpStartStreaming(_ a: HP.Answer) {
-        guard hpTimer == nil, let r = hpReceiver, let ports = hpServerPorts, let s = hpSecrets, let ip = socket?.peerIPv4 else { return }
-        r.configure(index: 0, keys: s.audioKeys, mySSRC: s.audioSSRC, serverSSRC: a.audioSSRC, serverIP: ip, remotePort: ports.audio)
-        r.configure(index: 1, keys: s.videoKeys, mySSRC: s.videoSSRC, serverSSRC: a.videoSSRC, serverIP: ip, remotePort: ports.video)
+        guard hpTimer == nil, let r = hpReceiver, let ports = hpServerPorts, let s = hpSecrets, let peer = socket?.peerAddress6 else {
+            DebugLog.write("HP 받기 시작 못 함 (수신기 \(hpReceiver != nil), 포트 \(hpServerPorts != nil), 키 \(hpSecrets != nil), 서버 주소 \(socket?.peerAddress6 != nil))")
+            return
+        }
+        r.configure(index: 0, keys: s.audioKeys, mySSRC: s.audioSSRC, serverSSRC: a.audioSSRC, server: peer, remotePort: ports.audio)
+        r.configure(index: 1, keys: s.videoKeys, mySSRC: s.videoSSRC, serverSSRC: a.videoSSRC, server: peer, remotePort: ports.video)
         var n = 0
         let t = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
         t.schedule(deadline: .now(), repeating: 1)

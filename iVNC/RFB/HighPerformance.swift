@@ -247,21 +247,25 @@ final class HPUDPReceiver {
     }
 
     private var streams: [Stream] = []
-    private var serverIP: in_addr_t = 0
+    private var server = sockaddr_in6()
     private var stopped = false
     private let lock = NSLock()
 
     /// 각 포트에 UDP 소켓을 연다. 실패하면 그 이유를 돌려준다.
     func bind(ports: [UInt16]) -> String? {
         for p in ports {
-            let fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+            // IPv6 이중 스택: IPv4(::ffff:…)와 IPv6(LTE NAT64)를 함께 받는다
+            let fd = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP)
             var rcv: Int32 = 8 << 20
             setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcv, socklen_t(MemoryLayout<Int32>.size))
-            var addr = sockaddr_in()
-            addr.sin_family = sa_family_t(AF_INET)
-            addr.sin_port = p.bigEndian
-            addr.sin_addr.s_addr = INADDR_ANY
-            let rc = withUnsafePointer(to: &addr) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
+            var off: Int32 = 0
+            setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &off, socklen_t(MemoryLayout<Int32>.size))
+            var addr = sockaddr_in6()
+            addr.sin6_family = sa_family_t(AF_INET6)
+            addr.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)
+            addr.sin6_port = p.bigEndian
+            addr.sin6_addr = in6addr_any
+            let rc = withUnsafePointer(to: &addr) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in6>.size)) } }
             if rc != 0 {
                 let err = String(cString: strerror(errno))
                 Darwin.close(fd)
@@ -277,7 +281,7 @@ final class HPUDPReceiver {
 
     /// 답을 받은 뒤: 키와 SSRC 를 넣는다. keys 는 0x1c 에 실은 92바이트 키 블록
     /// ([0,32) 클라이언트→서버 키, [32,46) 그 소금, [46,78) 서버→클라이언트 키, [78,92) 그 소금)
-    func configure(index: Int, keys: [UInt8], mySSRC: UInt32, serverSSRC: UInt32, serverIP: in_addr_t, remotePort: UInt16) {
+    func configure(index: Int, keys: [UInt8], mySSRC: UInt32, serverSSRC: UInt32, server: sockaddr_in6, remotePort: UInt16) {
         lock.lock(); defer { lock.unlock() }
         guard index < streams.count else { return }
         streams[index].outbound = SRTPContext(masterKey: Array(keys[0..<32]), masterSalt: Array(keys[32..<46]))
@@ -285,23 +289,23 @@ final class HPUDPReceiver {
         streams[index].mySSRC = mySSRC
         streams[index].serverSSRC = serverSSRC
         streams[index].remotePort = remotePort
-        self.serverIP = serverIP
+        self.server = server
+    }
+
+    private static func send(_ fd: Int32, _ pkt: [UInt8], to server: sockaddr_in6, port: UInt16) {
+        var addr = server
+        addr.sin6_port = port.bigEndian
+        _ = withUnsafePointer(to: &addr) { a in
+            a.withMemoryRebound(to: sockaddr.self, capacity: 1) { sendto(fd, pkt, pkt.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in6>.size)) }
+        }
     }
 
     /// 서버가 영상을 보내기 전에 각 로컬 포트에서 서버 포트로 작은 패킷을 먼저 내보낸다.
     /// 우리 쪽 공유기·통신사 NAT 에 "이 포트의 답장은 이 기기로" 기록을 만들어 두려는 것 (맥은 늘 같은 번호 포트로 보낸다)
-    func punch(serverIP: in_addr_t, ports: [UInt16]) {
+    func punch(server: sockaddr_in6, ports: [UInt16]) {
         lock.lock(); let fds = streams.map(\.fd); lock.unlock()
         let pkt: [UInt8] = [0x80, 0xC9, 0x00, 0x01, 0, 0, 0, 0]
-        for (fd, port) in zip(fds, ports) {
-            var addr = sockaddr_in()
-            addr.sin_family = sa_family_t(AF_INET)
-            addr.sin_port = port.bigEndian
-            addr.sin_addr.s_addr = serverIP
-            _ = withUnsafePointer(to: &addr) { a in
-                a.withMemoryRebound(to: sockaddr.self, capacity: 1) { sendto(fd, pkt, pkt.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
-            }
-        }
+        for (fd, port) in zip(fds, ports) { Self.send(fd, pkt, to: server, port: port) }
     }
 
     /// 1초마다 부른다: 스트림마다 SRTCP 수신 보고를 서버로 보낸다
@@ -315,17 +319,9 @@ final class HPUDPReceiver {
             packets.append((streams[i].fd, streams[i].remotePort, out.protectRTCP(rr)))
             streams[i].sentReports += 1
         }
-        let ip = serverIP
+        let to = server
         lock.unlock()
-        for (fd, port, pkt) in packets {
-            var addr = sockaddr_in()
-            addr.sin_family = sa_family_t(AF_INET)
-            addr.sin_port = port.bigEndian
-            addr.sin_addr.s_addr = ip
-            _ = withUnsafePointer(to: &addr) { a in
-                a.withMemoryRebound(to: sockaddr.self, capacity: 1) { sendto(fd, pkt, pkt.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
-            }
-        }
+        for (fd, port, pkt) in packets { Self.send(fd, pkt, to: to, port: port) }
     }
 
     func summary() -> String {
@@ -350,7 +346,7 @@ final class HPUDPReceiver {
             var pfds = fds.map { pollfd(fd: $0, events: Int16(POLLIN), revents: 0) }
             if poll(&pfds, nfds_t(pfds.count), 500) <= 0 { continue }
             for (i, p) in pfds.enumerated() where p.revents & Int16(POLLIN) != 0 {
-                var from = sockaddr_in(), len = socklen_t(MemoryLayout<sockaddr_in>.size)
+                var from = sockaddr_in6(), len = socklen_t(MemoryLayout<sockaddr_in6>.size)
                 let n = withUnsafeMutablePointer(to: &from) { f in
                     f.withMemoryRebound(to: sockaddr.self, capacity: 1) { recvfrom(p.fd, &buf, buf.count, 0, $0, &len) }
                 }
@@ -375,8 +371,7 @@ final class HPUDPReceiver {
                 }
                 lock.unlock()
                 if first {
-                    let fromIP = String(cString: inet_ntoa(from.sin_addr)), fromPort = UInt16(bigEndian: from.sin_port)
-                    DebugLog.write("HP UDP 첫 패킷: 포트 \(streams[i].localPort) ← \(fromIP):\(fromPort), \(n)바이트")
+                    DebugLog.write("HP UDP 첫 패킷: 포트 \(streams[i].localPort) ← [\(RFBSocket.describe(from))]:\(UInt16(bigEndian: from.sin6_port)), \(n)바이트")
                 }
             }
         }
