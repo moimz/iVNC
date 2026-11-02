@@ -125,22 +125,17 @@ final class SessionModel: ObservableObject {
         mouseMode = mouseMode == .touch ? .trackpad : .touch
         UserDefaults.standard.set(mouseMode.rawValue, forKey: "mouseMode." + computer.id.uuidString)
     }
-    /// 조합 중이라 아직 안 보낸 글자, 최근에 보낸 글자 (키보드 위에 보여 준다)
-    /// 조합이 끝나면(표시가 숨으면) 최근 글자도 비운다: 다음에 다시 뜰 때는 새로 친 것만 보인다
-    @Published var composing = "" { didSet { if composing.isEmpty { recentTyped = "" } } }
-    @Published private(set) var recentTyped = ""
+    /// 조합 중이라 아직 안 보낸 글자 (키보드 위에 보여 준다)
+    @Published var composing = ""
 
     func sendText(_ t: String) {
         client?.sendText(t)
-        recentTyped = String((recentTyped + t).suffix(12))
     }
     func sendBackspace(_ n: Int) {
         for _ in 0..<n { client?.sendSpecialKey(0xFF08, name: "BackSpace") }
-        recentTyped = String(recentTyped.dropLast(n))
     }
     func sendReturn() {
         client?.sendSpecialKey(0xFF0D, name: "Return")
-        recentTyped = ""
     }
 
     func close() {
@@ -188,12 +183,11 @@ struct SessionView: View {
             }
         }
         .overlay(alignment: .top) { if menuVisible || model.phase != .viewing { topBar } }
-        // 키보드 바로 위: 한글을 조합하는 동안만 보낸 마지막 글자(흐리게) + 조합 중인 글자(밑줄). 조합 중 글자는 맥에 아직 안 갔다.
+        // 키보드 바로 위: 한글을 조합하는 동안 조합 중인 글자(맥에 아직 안 간 것)만 보여 준다.
         // 영어는 치는 즉시 맥으로 가서 보여 줄 필요가 없다
         .overlay(alignment: .bottom) {
             if model.phase == .viewing && model.typing && !model.composing.isEmpty {
-                (Text(model.recentTyped).foregroundStyle(.white.opacity(0.55))
-                 + Text(model.composing).foregroundStyle(.white).underline())
+                Text(model.composing).foregroundStyle(.white).underline()
                     .font(.title3.monospaced())
                     .lineLimit(1)
                     .padding(.horizontal, 14).frame(height: 40)
