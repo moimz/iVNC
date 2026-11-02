@@ -11,6 +11,8 @@ struct KeyInputField: UIViewRepresentable {
     let onText: (String) -> Void
     let onBackspace: (Int) -> Void
     let onReturn: () -> Void
+    /// 아직 맥으로 안 보낸 조합 중 글자 (화면에 보여 주려고)
+    var onPending: (String) -> Void = { _ in }
 
     func makeUIView(context: Context) -> HangulInputField {
         let f = HangulInputField()
@@ -22,6 +24,7 @@ struct KeyInputField: UIViewRepresentable {
         f.onText = onText
         f.onBackspace = onBackspace
         f.onReturn = onReturn
+        f.onPending = onPending
         if active && !f.isFirstResponder {
             DispatchQueue.main.async { f.becomeFirstResponder() }
         } else if !active && f.isFirstResponder {
@@ -35,6 +38,7 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
     var onBackspace: (Int) -> Void = { _ in }
     var onReturn: () -> Void = {}
     var onEnd: () -> Void = {}
+    var onPending: (String) -> Void = { _ in }
     /// 입력창 안에서 이미 맥으로 보낸 부분
     private var sent = ""
 
@@ -80,6 +84,7 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
     private func reset() {
         text = ""
         sent = ""
+        onPending("")
     }
 
     /// 조합이 끝난 부분: 키보드가 조합 중(marked text)이라고 알려 주면 그 앞까지,
@@ -105,6 +110,8 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
         if s.count > p { onBackspace(s.count - p) }
         if c.count > p { onText(String(c[p...])) }
         sent = String(c)
+        let all = Array(text ?? "")
+        onPending(final || all.count <= c.count ? "" : String(all[c.count...]))
     }
 
     static func isHangul(_ u: Unicode.Scalar) -> Bool {

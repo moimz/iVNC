@@ -125,9 +125,22 @@ final class SessionModel: ObservableObject {
         mouseMode = mouseMode == .touch ? .trackpad : .touch
         UserDefaults.standard.set(mouseMode.rawValue, forKey: "mouseMode." + computer.id.uuidString)
     }
-    func sendText(_ t: String) { client?.sendText(t) }
-    func sendBackspace(_ n: Int) { for _ in 0..<n { client?.sendSpecialKey(0xFF08, name: "BackSpace") } }
-    func sendReturn() { client?.sendSpecialKey(0xFF0D, name: "Return") }
+    /// 조합 중이라 아직 안 보낸 글자, 최근에 보낸 글자 (키보드 위에 보여 준다)
+    @Published var composing = ""
+    @Published private(set) var recentTyped = ""
+
+    func sendText(_ t: String) {
+        client?.sendText(t)
+        recentTyped = String((recentTyped + t).suffix(12))
+    }
+    func sendBackspace(_ n: Int) {
+        for _ in 0..<n { client?.sendSpecialKey(0xFF08, name: "BackSpace") }
+        recentTyped = String(recentTyped.dropLast(n))
+    }
+    func sendReturn() {
+        client?.sendSpecialKey(0xFF0D, name: "Return")
+        recentTyped = ""
+    }
 
     func close() {
         saveThumbnail()
@@ -174,6 +187,19 @@ struct SessionView: View {
             }
         }
         .overlay(alignment: .top) { if menuVisible || model.phase != .viewing { topBar } }
+        // 키보드 바로 위: 보낸 마지막 글자(흐리게) + 조합 중인 글자(밝게, 밑줄). 조합 중 글자는 맥에 아직 안 갔다
+        .overlay(alignment: .bottom) {
+            if model.phase == .viewing && model.typing && !(model.recentTyped.isEmpty && model.composing.isEmpty) {
+                (Text(model.recentTyped).foregroundStyle(.white.opacity(0.55))
+                 + Text(model.composing).foregroundStyle(.white).underline())
+                    .font(.title3.monospaced())
+                    .lineLimit(1)
+                    .padding(.horizontal, 14).frame(height: 40)
+                    .glassEffect()
+                    .padding(.bottom, 8)
+                    .allowsHitTesting(false)
+            }
+        }
         .statusBarHidden(model.phase == .viewing && !menuVisible)
         .preferredColorScheme(.dark)
         // 시스템이 키보드를 내리면 키보드 버튼 상태도 맞춘다 (안 그러면 다음에 누를 때 거꾸로 동작한다)
@@ -196,7 +222,8 @@ struct SessionView: View {
             ZStack {
                 ScreenView(renderer: model.renderer, mode: model.mouseMode, input: model)
                     .ignoresSafeArea()
-                KeyInputField(active: $model.typing, onText: model.sendText, onBackspace: model.sendBackspace, onReturn: model.sendReturn)
+                KeyInputField(active: $model.typing, onText: model.sendText, onBackspace: model.sendBackspace, onReturn: model.sendReturn,
+                              onPending: { model.composing = $0 })
                     .frame(width: 1, height: 1)
                     .opacity(0.01)
                 if !model.hasImage { ProgressView().controlSize(.large) }
