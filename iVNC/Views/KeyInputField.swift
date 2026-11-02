@@ -56,6 +56,15 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
         tintColor = .clear
         textColor = .clear
         addTarget(self, action: #selector(changed), for: .editingChanged)
+        NotificationCenter.default.addObserver(self, selector: #selector(inputModeChanged), name: UITextInputMode.currentInputModeDidChangeNotification, object: nil)
+    }
+
+    /// 키보드를 바꾸면(한글 → 영어 등) 조합 중이라 안 보낸 글자를 바로 보내고 비운다
+    @objc private func inputModeChanged() {
+        guard isFirstResponder, !(text ?? "").isEmpty else { return }
+        unmarkText()
+        sync(final: true)
+        reset()
     }
 
     required init?(coder: NSCoder) { fatalError() }
