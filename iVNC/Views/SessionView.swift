@@ -83,6 +83,8 @@ final class SessionModel: ObservableObject {
         case .frame:
             if let fb = client?.framebuffer { renderer.presentStandard(fb) }
             client?.frameConsumed()
+        case .cursor(let x, let y):
+            cursor = CGPoint(x: x, y: y)
         case .stripe(let pb, let stripe, let stripes):
             renderer.presentStripe(pb, stripe: stripe, stripes: stripes)
             client?.frameConsumed()
@@ -110,6 +112,13 @@ final class SessionModel: ObservableObject {
         selected = d
         phase = .viewing
         client?.select(display: d.id)
+        // 서버는 커서가 움직일 때만 위치를 알려 준다: 모르면 화면이 나온 뒤 가운데로 한 번 옮겨 위치를 맞춘다
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self, self.phase == .viewing, let c = self.client, c.cursorPosition == nil else { return }
+            let w = c.framebuffer.width, h = c.framebuffer.height
+            guard w > 0, h > 0 else { return }
+            c.mouseMove(x: w / 2, y: h / 2)
+        }
     }
 
     func backToPicker() {
@@ -117,6 +126,9 @@ final class SessionModel: ObservableObject {
         client?.pause()
         phase = .picking
     }
+
+    /// 맥 커서 위치 (프레임버퍼 픽셀). 앱이 큰 포인터로 보여 준다
+    @Published private(set) var cursor: CGPoint?
 
     /// 스크롤 모드 (메뉴에서 켜고 끈다)
     @Published var scrollMode = false
@@ -233,7 +245,7 @@ struct SessionView: View {
                 .padding(.top, 56)
         case .viewing:
             ZStack {
-                ScreenView(renderer: model.renderer, mode: model.mouseMode, scrollMode: model.scrollMode, input: model)
+                ScreenView(renderer: model.renderer, mode: model.mouseMode, scrollMode: model.scrollMode, cursor: model.cursor, input: model)
                     .ignoresSafeArea()
                 KeyInputField(active: $model.typing, onText: model.sendText, onBackspace: model.sendBackspace, onReturn: model.sendReturn,
                               onPending: { model.composing = $0 })

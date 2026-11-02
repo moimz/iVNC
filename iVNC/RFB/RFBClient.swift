@@ -14,6 +14,8 @@ final class RFBClient {
         case frame
         /// 고성능: 디코딩된 줄무늬 (BGRA 픽셀 버퍼, 번호, 줄무늬 수)
         case stripe(CVPixelBuffer, Int, Int)
+        /// 맥 커서 위치가 바뀜 (서버 알림 1100, 또는 우리가 보낸 마우스). 프레임버퍼 픽셀
+        case cursor(Int, Int)
         case failed(String)
         /// 고성능 결과: true 면 가상 디스플레이로 바로 보기, false 면 일반 모드로 바뀌었고 모니터 목록이 뒤따른다
         case highPerformance(Bool)
@@ -672,7 +674,7 @@ final class RFBClient {
                 let moved = cursor?.x != x || cursor?.y != y
                 if moved { cursor = (x, y); cursorChangedAt = Date() }
                 stateLock.unlock()
-                if moved { DebugLog.write("커서 위치 \(x),\(y)") }
+                if moved { DebugLog.write("커서 위치 \(x),\(y)"); emit(.cursor(x, y)) }
             case -223:
                 framebuffer.resize(width: w, height: h)
             case -224:
@@ -802,7 +804,8 @@ final class RFBClient {
     private func pointer(_ x: Int, _ y: Int, _ mask: UInt8) {
         let x = max(0, min(x, framebuffer.width - 1)), y = max(0, min(y, framebuffer.height - 1))
         socket?.send([5, mask] + [UInt8].be16(x) + [UInt8].be16(y))
-        stateLock.lock(); cursor = (x, y); cursorChangedAt = Date(); stateLock.unlock()
+        stateLock.lock(); let moved = cursor?.x != x || cursor?.y != y; cursor = (x, y); cursorChangedAt = Date(); stateLock.unlock()
+        if moved { emit(.cursor(x, y)) }
         markLocalInput()
     }
 

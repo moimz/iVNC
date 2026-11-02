@@ -29,6 +29,8 @@ struct ScreenView: UIViewRepresentable {
     let mode: MouseMode
     /// 스크롤 모드: 한 손가락 끌기는 스크롤만 (포인터 이동·클릭 없음)
     var scrollMode = false
+    /// 맥 커서 위치 (터치 모드에서 큰 포인터로 보여 준다)
+    var cursor: CGPoint?
     weak var input: MouseInput?
 
     func makeUIView(context: Context) -> ZoomingImageView {
@@ -44,6 +46,7 @@ struct ScreenView: UIViewRepresentable {
         v.input = input
         if v.mode != mode { v.mode = mode }
         if v.scrollMode != scrollMode { v.scrollMode = scrollMode }
+        if v.macCursor != cursor { v.macCursor = cursor }
     }
 }
 
@@ -51,6 +54,14 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     weak var input: MouseInput?
     var mode: MouseMode = .touch { didSet { applyMode() } }
     var scrollMode = false { didSet { applyMode() } }
+    /// 맥 커서 위치. 터치 모드에서는 큰 포인터가 이걸 따라간다 (맥 커서는 너무 작아 잘 안 보인다)
+    var macCursor: CGPoint? {
+        didSet {
+            guard mode == .touch, let c = macCursor else { return }
+            pointer = c
+            placePointer()
+        }
+    }
 
     private let content = LayerHostView()
     private var pixelSize = CGSize.zero
@@ -178,7 +189,10 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate, UIGestureRecog
             pointerView.isHidden = pixelSize == .zero
             placePointer()
         } else {
-            pointerView.isHidden = true
+            // 터치 모드: 큰 포인터는 맥 커서 위치를 보여 주기만 한다
+            pointer = macCursor
+            pointerView.isHidden = macCursor == nil
+            placePointer()
         }
     }
 
@@ -400,7 +414,7 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     }
 
     private func placePointer() {
-        guard mode == .trackpad, let p = pointer, pixelSize.width > 0 else { return }
+        guard let p = pointer, pixelSize.width > 0 else { return }
         pointerView.isHidden = false
         let v = viewPoint(ofPixel: p)
         pointerView.frame.origin = CGPoint(x: v.x - 2, y: v.y - 1) // 화살표 끝이 좌표
