@@ -389,8 +389,12 @@ final class FloatingButtonHost: UIView {
 }
 
 extension SessionModel: MouseInput {
-    func mouseClick(_ p: CGPoint, button: UInt8) { client?.click(x: Int(p.x), y: Int(p.y), button: button) }
-    func mouseDown(_ p: CGPoint) { client?.mouseDown(x: Int(p.x), y: Int(p.y)) }
+    /// 클릭하면 맥의 포커스가 옮겨 갈 수 있으니, 조합 중인 글자를 먼저 원래 자리에 보낸다
+    private func flushComposition() {
+        if !composing.isEmpty { NotificationCenter.default.post(name: HangulInputField.flushNotification, object: nil) }
+    }
+    func mouseClick(_ p: CGPoint, button: UInt8) { flushComposition(); client?.click(x: Int(p.x), y: Int(p.y), button: button) }
+    func mouseDown(_ p: CGPoint) { flushComposition(); client?.mouseDown(x: Int(p.x), y: Int(p.y)) }
     func mouseMove(_ p: CGPoint) { client?.mouseMove(x: Int(p.x), y: Int(p.y)) }
     func mouseUp(_ p: CGPoint) { client?.mouseUp(x: Int(p.x), y: Int(p.y)) }
     var serverCursor: CGPoint? { client?.cursorPosition }

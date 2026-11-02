@@ -57,9 +57,13 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
         textColor = .clear
         addTarget(self, action: #selector(changed), for: .editingChanged)
         NotificationCenter.default.addObserver(self, selector: #selector(inputModeChanged), name: UITextInputMode.currentInputModeDidChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(inputModeChanged), name: Self.flushNotification, object: nil)
     }
 
-    /// 키보드를 바꾸면(한글 → 영어 등) 조합 중이라 안 보낸 글자를 바로 보내고 비운다
+    /// 조합 중인 글자를 지금 보내라는 알림 (마우스를 누르기 직전: 클릭으로 맥의 포커스가 옮겨 가기 전에 원래 입력창에 넣는다)
+    static let flushNotification = Notification.Name("iVNC.flushComposition")
+
+    /// 키보드를 바꾸거나 마우스를 누르기 직전: 조합 중이라 안 보낸 글자를 바로 보내고 비운다
     @objc private func inputModeChanged() {
         guard isFirstResponder, !(text ?? "").isEmpty else { return }
         unmarkText()
