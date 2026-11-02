@@ -174,7 +174,7 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         if !scrollMode { stopMomentum() }
         lastTap = nil
         if mode == .trackpad {
-            if pointer == nil { pointer = input?.serverCursor ?? CGPoint(x: pixelSize.width / 2, y: pixelSize.height / 2) }
+            if pointer == nil { placeInitialPointer() }
             pointerView.isHidden = pixelSize == .zero
             placePointer()
         } else {
@@ -367,7 +367,7 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         switch g.state {
         case .began:
             lastPanTranslation = .zero
-            if pointer == nil { pointer = input?.serverCursor ?? CGPoint(x: pixelSize.width / 2, y: pixelSize.height / 2) }
+            if pointer == nil { placeInitialPointer() }
             fallthrough
         case .changed:
             let dx = t.x - lastPanTranslation.x, dy = t.y - lastPanTranslation.y
@@ -383,6 +383,19 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         case .ended, .cancelled:
             if let p = pointer { sendMove(p, force: true) }
         default: break
+        }
+    }
+
+    /// 트랙패드 포인터 시작점: 맥 커서 위치를 알면 거기, 모르면(서버는 커서가 움직일 때만 알려 준다) 화면 가운데에 두고
+    /// 맥 커서를 그리로 옮겨 둘을 맞춘다
+    private func placeInitialPointer() {
+        guard pixelSize.width > 0 else { return }
+        if let c = input?.serverCursor {
+            pointer = clampPixel(c)
+        } else {
+            let p = CGPoint(x: (pixelSize.width / 2).rounded(.down), y: (pixelSize.height / 2).rounded(.down))
+            pointer = p
+            input?.mouseMove(p)
         }
     }
 
@@ -443,7 +456,7 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         zoomScale = fit
         centerContent()
         if mode == .trackpad {
-            if let p = pointer { pointer = clampPixel(p) } else { pointer = CGPoint(x: pixelSize.width / 2, y: pixelSize.height / 2) }
+            if let p = pointer { pointer = clampPixel(p) } else { placeInitialPointer() }
             placePointer()
         }
     }

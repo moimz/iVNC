@@ -844,6 +844,8 @@ final class RFBClient {
 
     /// 지금 커서 자리에서 스크롤한다. dx, dy 는 맥 포인트, 양수 dy = 아래로 (내용이 위로 감)
     func scroll(dx: Double, dy: Double, phase: ScrollPhase = .none, momentum: MomentumPhase = .none) {
+        // 서버는 양수를 위로 받는다 (2026-11-03 실측: 그대로 보내면 끌기·버튼 모두 거꾸로였다)
+        let dx = -dx, dy = -dy
         stateLock.lock(); let pos = cursor ?? (framebuffer.width / 2, framebuffer.height / 2); stateLock.unlock()
         let x = UInt16(clamping: pos.0), y = UInt16(clamping: pos.1)
         let sx = Float(dx) / Self.pointsPerLine, sy = Float(dy) / Self.pointsPerLine
