@@ -139,10 +139,18 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
         let all = Array(text ?? "")
         let pending = final || all.count <= c.count ? "" : String(all[c.count...])
         onPending(pending)
-        // 조합 중인 글자가 없어지면(띄어쓰기, 다 지움 등) 입력창을 비운다. 다음 지우기는 바로 맥으로 간다
+        // 조합 중인 글자가 없어지면(띄어쓰기, 다 지움 등) 입력창과 키보드 조합 기록까지 모두 초기화한다.
+        // 입력창만 비우면 키보드가 기록에 남은 "도레" 로 다음 지우기 때 "돌" 을 만든다 (2026-11-02 실측).
+        // 키보드가 글자를 넣는 도중에 바꾸면 모르고 지나가니, 처리가 끝난 뒤 비우고 바뀌었다고 알린다. 다음 지우기는 바로 맥으로 간다
         if pending.isEmpty && !final && markedTextRange == nil && !(text ?? "").isEmpty {
-            text = ""
-            sent = ""
+            let snapshot = text
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.text == snapshot else { return }
+                self.inputDelegate?.textWillChange(self)
+                self.text = ""
+                self.sent = ""
+                self.inputDelegate?.textDidChange(self)
+            }
         }
     }
 
