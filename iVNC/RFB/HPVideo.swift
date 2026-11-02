@@ -279,13 +279,63 @@ final class HPVideoDecoder {
                 return
             }
             self.count { $0._decoded += 1 }
-            self.onStripe?(image, stripe)
+            if let copy = self.displayCopy(image) { self.onStripe?(copy, stripe) }
         }
         if rc != noErr {
             count { $0._failed += 1 }
             DebugLog.write("HP 디코딩 실패 \(rc)")
             if rc == kVTInvalidSessionErr { self.session = nil; parameterSets = [] }
         }
+    }
+
+    private var pool: CVPixelBufferPool?
+    private var poolSize = (0, 0)
+    private var loggedOutput = false
+    private var loggedPixel = false
+    private var fillAlpha = false
+
+    /// 디코더 버퍼를 화면용 IOSurface 버퍼로 복사한다.
+    /// 디코더 버퍼를 레이어에 바로 넣으면 아이폰에서 검게 나왔다 (2026-11-02). 직접 만든 버퍼는 일반 모드에서 잘 보인다
+    private func displayCopy(_ src: CVPixelBuffer) -> CVPixelBuffer? {
+        let w = CVPixelBufferGetWidth(src), h = CVPixelBufferGetHeight(src)
+        if !loggedOutput {
+            loggedOutput = true
+            let f = CVPixelBufferGetPixelFormatType(src)
+            let fcc = String(bytes: [24, 16, 8, 0].map { UInt8((f >> $0) & 0xFF) }, encoding: .ascii) ?? "\(f)"
+            DebugLog.write("HP 디코더 출력: \(w)x\(h) 형식 \(fcc) IOSurface \(CVPixelBufferGetIOSurface(src) != nil ? "있음" : "없음") 평면 \(CVPixelBufferGetPlaneCount(src))")
+        }
+        if pool == nil || poolSize != (w, h) {
+            let attrs: [CFString: Any] = [kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA, kCVPixelBufferWidthKey: w,
+                                          kCVPixelBufferHeightKey: h, kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary]
+            var p: CVPixelBufferPool?
+            CVPixelBufferPoolCreate(nil, nil, attrs as CFDictionary, &p)
+            pool = p; poolSize = (w, h)
+        }
+        guard let pool else { return nil }
+        var out: CVPixelBuffer?
+        CVPixelBufferPoolCreatePixelBuffer(nil, pool, &out)
+        guard let out else { return nil }
+        CVPixelBufferLockBaseAddress(src, .readOnly); CVPixelBufferLockBaseAddress(out, [])
+        defer { CVPixelBufferUnlockBaseAddress(out, []); CVPixelBufferUnlockBaseAddress(src, .readOnly) }
+        guard let s = CVPixelBufferGetBaseAddress(src), let d = CVPixelBufferGetBaseAddress(out) else { return nil }
+        let sb = CVPixelBufferGetBytesPerRow(src), db = CVPixelBufferGetBytesPerRow(out)
+        if sb == db { d.copyMemory(from: s, byteCount: sb * h) } else {
+            for y in 0..<h { (d + y * db).copyMemory(from: s + y * sb, byteCount: min(sb, db)) }
+        }
+        // 알파가 0 으로 오면 검은 배경만 보인다: 첫 픽셀로 판단해 채운다
+        let px = s.assumingMemoryBound(to: UInt8.self)
+        if !loggedPixel {
+            loggedPixel = true
+            fillAlpha = px[3] != 0xFF
+            DebugLog.write("HP 첫 픽셀 BGRA \(px[0]) \(px[1]) \(px[2]) \(px[3]) → 알파 채움 \(fillAlpha)")
+        }
+        if fillAlpha {
+            for y in 0..<h {
+                let row = (d + y * db).assumingMemoryBound(to: UInt32.self)
+                for x in 0..<w { row[x] |= 0xFF00_0000 }
+            }
+        }
+        return out
     }
 
     private func makeSession(_ sets: [[UInt8]]) -> Bool {

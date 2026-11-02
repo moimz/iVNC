@@ -96,6 +96,8 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate {
             let wasMin = zoomScale <= minimumZoomScale + 0.0001
             lastBounds = bounds.size
             guard pixelSize.width > 0 else { return }
+            // 뷰 크기가 정해지기 전에 화면 크기가 먼저 왔으면 (고성능은 첫 그림이 뷰보다 먼저 온다) 여기서 처음 잡는다
+            if content.bounds.size != originalSize { resetZoom(); return }
             let fit = min(bounds.width / originalSize.width, bounds.height / originalSize.height)
             minimumZoomScale = fit
             maximumZoomScale = max(1, fit)

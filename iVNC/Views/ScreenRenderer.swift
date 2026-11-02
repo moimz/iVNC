@@ -24,6 +24,7 @@ final class ScreenRenderer {
     // 고성능: 지금 보이는 줄무늬 (레이어가 쓰는 동안 디코더 풀이 다시 쓰지 않게 붙잡아 둔다)
     private var stripeBuffers: [CVPixelBuffer?] = []
     private var shown = false
+    private var loggedStripe = false
 
     init() {
         layer.isOpaque = true
@@ -126,6 +127,10 @@ final class ScreenRenderer {
         CATransaction.begin(); CATransaction.setDisableActions(true)
         stripeLayers[stripe].contents = CVPixelBufferGetIOSurface(pb)?.takeUnretainedValue()
         CATransaction.commit()
+        if !loggedStripe && stripe == stripes - 1 {
+            loggedStripe = true
+            DebugLog.write("HP 줄무늬 레이어: 전체 \(layer.frame), 마지막 \(stripeLayers[stripe].frame), 상위 \(layer.superlayer != nil ? "붙음" : "없음"), IOSurface \(stripeLayers[stripe].contents != nil ? "있음" : "없음")")
+        }
         first()
     }
 

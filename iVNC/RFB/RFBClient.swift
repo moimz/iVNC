@@ -331,6 +331,7 @@ final class RFBClient {
         let already = serverDisplayID == target
         awaitingSwitch = !already
         stateLock.unlock()
+        if hpState == .on { return } // 고성능은 가상 디스플레이 하나뿐, 모니터 선택도 요청도 없다
         if already { requestUpdate(incremental: false) } else { socket?.send(Self.setDisplay(id)) }
     }
 
@@ -343,7 +344,7 @@ final class RFBClient {
     /// AutoFBUpdate (0x09): [type][pad][u16 켜기][u32 간격 ms][x][y][w][h]. 간격 0 은 서버 기본(바뀌는 대로 바로).
     private func setAutoUpdate(_ on: Bool, intervalMs: UInt32 = 0) {
         let w = framebuffer.width, h = framebuffer.height
-        guard !on || (w > 0 && h > 0) else { return }
+        guard !on || (w > 0 && h > 0 && hpState != .on) else { return }
         autoLock.lock(); autoUpdateOn = on; autoLock.unlock()
         socket?.send([9, 0] + [UInt8].be16(on ? 1 : 0) + [UInt8].be32(intervalMs) + [0, 0, 0, 0] + [UInt8].be16(w) + [UInt8].be16(h))
         DebugLog.write("자동 화면 갱신 \(on ? "켬" : "끔") \(w)x\(h) 간격 \(intervalMs)ms")
@@ -417,6 +418,10 @@ final class RFBClient {
             }
         } catch {
             DebugLog.write("끝: \(error)")
+            // 고성능 수신·보고도 멈춘다 (끊긴 뒤에도 다시 제안하던 것)
+            hpTimer?.cancel(); hpTimer = nil
+            hpReceiver?.stop(); hpReceiver = nil
+            hpDecoder?.stop(); hpDecoder = nil
             stateLock.lock(); let wasStopped = stopped; stateLock.unlock()
             if !wasStopped {
                 emit(.failed((error as? LocalizedError)?.errorDescription ?? error.localizedDescription))
@@ -706,6 +711,8 @@ final class RFBClient {
     }
 
     private func requestUpdate(incremental: Bool) {
+        // 고성능 중에는 일반 화면을 요청하지 않는다: 요청이 쌓이면 서버가 영상을 멈추고 일반 화면으로 답하기 시작한다 (2026-11-02 실측)
+        guard hpState != .on else { return }
         let w = framebuffer.width, h = framebuffer.height
         guard w > 0 && h > 0 else { return } // 0x0 요청은 서버를 멈추게 한다 (noVNC-ARD)
         if !incremental {
