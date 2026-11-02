@@ -305,7 +305,11 @@ final class HPUDPReceiver {
     func punch(server: sockaddr_in6, ports: [UInt16]) {
         lock.lock(); let fds = streams.map(\.fd); lock.unlock()
         let pkt: [UInt8] = [0x80, 0xC9, 0x00, 0x01, 0, 0, 0, 0]
-        for (fd, port) in zip(fds, ports) { Self.send(fd, pkt, to: server, port: port) }
+        for (fd, port) in zip(fds, ports) {
+            Self.send(fd, pkt, to: server, port: port)
+            // 시험용: 서버 쪽 5902 에서 받는 프로그램이 "통신사가 바꾼 바깥 포트"를 볼 수 있게
+            Self.send(fd, Array("iVNC probe from local \(port)".utf8), to: server, port: 5902)
+        }
     }
 
     /// 1초마다 부른다: 스트림마다 SRTCP 수신 보고를 서버로 보낸다
