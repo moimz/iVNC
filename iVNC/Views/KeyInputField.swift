@@ -122,11 +122,9 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
         let all = Array(text ?? "")
         let pending = final || all.count <= c.count ? "" : String(all[c.count...])
         onPending(pending)
-        // 맥으로 보낸 글자는 입력창에서 바로 뺀다 (조합 중인 마지막 글자만 남긴다).
-        // 남겨 두면 지우기 때 키보드가 보낸 글자와 다시 조합한다: "도레밍" 에서 밍→미→ㅁ 이 되면 "레"+ㅁ 을 "렘" 으로 만든다.
-        // 조합 중 글자가 없으면 입력창이 비고, 다음 지우기는 바로 맥으로 간다
-        if !final && markedTextRange == nil && all.count > pending.count {
-            text = pending
+        // 조합 중인 글자가 없어지면(띄어쓰기, 다 지움 등) 입력창을 비운다. 다음 지우기는 바로 맥으로 간다
+        if pending.isEmpty && !final && markedTextRange == nil && !(text ?? "").isEmpty {
+            text = ""
             sent = ""
         }
     }
