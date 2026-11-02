@@ -118,6 +118,29 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         pointerView.isHidden = true
         addSubview(pointerView)
         applyMode()
+        NotificationCenter.default.addObserver(self, selector: #selector(keyboardChanged(_:)), name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(keyboardChanged(_:)), name: UIResponder.keyboardWillHideNotification, object: nil)
+    }
+
+    /// 키보드에 가려지는 높이. 이만큼 화면을 위로 더 끌어 올릴 수 있게 아래 여백을 준다
+    private var keyboardInset: CGFloat = 0
+
+    @objc private func keyboardChanged(_ n: Notification) {
+        var overlap: CGFloat = 0
+        if n.name != UIResponder.keyboardWillHideNotification,
+           let end = (n.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue, let w = window {
+            let mine = convert(bounds, to: w)
+            overlap = max(0, mine.maxY - end.minY)
+        }
+        guard overlap != keyboardInset else { return }
+        keyboardInset = overlap
+        UIView.animate(withDuration: 0.25) {
+            self.centerContent()
+            // 키보드가 내려가면 위로 올려 둔 만큼 다시 내린다 (끌 수 있는 범위 안으로)
+            let maxY = max(-self.contentInset.top, self.contentSize.height - self.bounds.height + self.contentInset.bottom)
+            if self.contentOffset.y > maxY { self.contentOffset.y = maxY }
+            self.placePointer()
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -297,12 +320,13 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         guard let p = pointer else { return }
         let v = viewPoint(ofPixel: p)
         let b = bounds
-        let mx = b.width * 0.15, my = b.height * 0.15
+        let visibleMaxY = b.maxY - keyboardInset // 키보드에 가린 부분은 안 보이는 영역
+        let mx = b.width * 0.15, my = (b.height - keyboardInset) * 0.15
         var off = contentOffset
         if v.x < b.minX + mx { off.x -= b.minX + mx - v.x }
         if v.x > b.maxX - mx { off.x += v.x - (b.maxX - mx) }
         if v.y < b.minY + my { off.y -= b.minY + my - v.y }
-        if v.y > b.maxY - my { off.y += v.y - (b.maxY - my) }
+        if v.y > visibleMaxY - my { off.y += v.y - (visibleMaxY - my) }
         let minX = -contentInset.left, maxX = max(minX, contentSize.width - b.width + contentInset.right)
         let minY = -contentInset.top, maxY = max(minY, contentSize.height - b.height + contentInset.bottom)
         off.x = min(max(off.x, minX), maxX)
@@ -366,7 +390,7 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     private func centerContent() {
         let dx = max(0, (bounds.width - contentSize.width) / 2)
         let dy = max(0, (bounds.height - contentSize.height) / 2)
-        contentInset = UIEdgeInsets(top: dy, left: dx, bottom: dy, right: dx)
+        contentInset = UIEdgeInsets(top: dy, left: dx, bottom: dy + keyboardInset, right: dx)
     }
 
     func viewForZooming(in scrollView: UIScrollView) -> UIView? { content }
