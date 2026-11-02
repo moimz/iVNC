@@ -34,6 +34,10 @@ final class RFBClient {
 
     private let zrle = Inflater()
     private let zlibRaw = Inflater()
+    private let mvs = MVSDecoder()
+    /// MVS 받은 양과 해독 시간 (속도 비교용, 화면 갱신 기록 때 적고 비운다)
+    private var mvsBytes = 0
+    private var mvsNanos: UInt64 = 0
     private let stateLock = NSLock()
     /// 화면을 받고 있는지 (모니터를 고르기 전에는 화면 요청을 보내지 않는다)
     private var streaming = false
@@ -73,6 +77,9 @@ final class RFBClient {
     private static let typingHold: TimeInterval = 1.0
     private let autoLock = NSLock()
     private var watchdog: DispatchSourceTimer?
+    private var lateCount = 0
+    /// 화면이 안 와서 자동 갱신을 잠깐 켰는지 (화면이 오면 끈다)
+    private var wakeKick = false
 
     /// tryHighPerformance: 서버가 고성능을 지원하면 먼저 가상 디스플레이 고성능을 시도한다
     init(host: String, port: Int, username: String, password: String, tryHighPerformance: Bool = true) {
@@ -148,7 +155,8 @@ final class RFBClient {
         emit(.reconnectStandard)
     }
 
-    private static let standardEncodings: [Int32] = [16, 6, 1, 0, 1105, 1101, 1100, 1109, -223, -224] // 1100: 커서 위치, 1109: 키보드 입력 상태
+    // 1011 = 애플 MVS (손실 DCT, 애플 앱의 화질 "적응"). 무손실 ZRLE 보다 훨씬 작다
+    private static let standardEncodings: [Int32] = [1011, 16, 6, 1, 0, 1105, 1101, 1100, 1109, -223, -224] // 1100: 커서 위치, 1109: 키보드 입력 상태
 
     private var hpSecrets: HP.Secrets?
     private var hpReceiver: HPUDPReceiver?
@@ -338,7 +346,8 @@ final class RFBClient {
     /// 모니터 고르기 화면으로 돌아갈 때: 화면 요청을 멈춘다.
     func pause() {
         stateLock.lock(); streaming = false; stateLock.unlock()
-        setAutoUpdate(false)
+        // 켜져 있을 때만 끈다 (끄라는 메시지 뒤 모니터를 바꾸면 서버가 화면 요청에 답하지 않은 적이 있다, 2026-11-02)
+        if isAutoUpdateOn { setAutoUpdate(false) }
     }
 
     /// AutoFBUpdate (0x09): [type][pad][u16 켜기][u32 간격 ms][x][y][w][h]. 간격 0 은 서버 기본(바뀌는 대로 바로).
@@ -384,7 +393,12 @@ final class RFBClient {
         let now = Date()
         if now.timeIntervalSince(shownSince) >= 2 {
             let fps = Double(shownFrames) / now.timeIntervalSince(shownSince)
-            DebugLog.write("화면 갱신 \(String(format: "%.1f", fps))회/초 (\(hpState == .on ? "고성능, 줄무늬 \(hpStripes)개 그림" : "일반"))")
+            let secs = now.timeIntervalSince(shownSince)
+            let rx = (socket?.received ?? 0) - shownReceived
+            shownReceived = socket?.received ?? 0
+            let mvsInfo = mvsBytes > 0 ? ", MVS \(mvsBytes / 1000)KB 해독 \(mvsNanos / 1_000_000)ms" : ""
+            mvsBytes = 0; mvsNanos = 0
+            DebugLog.write("화면 갱신 \(String(format: "%.1f", fps))회/초 (\(hpState == .on ? "고성능, 줄무늬 \(hpStripes)개 그림" : "일반")), TCP \(String(format: "%.1f", Double(rx) / secs / 1_000_000))MB/초\(mvsInfo)")
             shownFrames = 0; shownSince = now
         }
         stateLock.unlock()
@@ -392,6 +406,7 @@ final class RFBClient {
 
     /// 화면에 실제로 보여 준 횟수 (속도 비교용)
     private var shownFrames = 0
+    private var shownReceived = 0
     private var shownSince = Date()
 
     // MARK: - 수신 스레드
@@ -580,7 +595,7 @@ final class RFBClient {
             let x = try s.u16(), y = try s.u16(), w = try s.u16(), h = try s.u16()
             let enc = try s.s32()
             encs.append(enc)
-            if [0, 1, 6, 16].contains(enc) { framebuffer.markDirty(x: x, y: y, w: w, h: h) }
+            if [0, 1, 6, 16, 1011].contains(enc) { framebuffer.markDirty(x: x, y: y, w: w, h: h) }
             switch enc {
             case 0:
                 drewPixels = true
@@ -623,6 +638,18 @@ final class RFBClient {
                         }
                     }
                 }
+            case 1011:
+                drewPixels = true
+                let data = try s.read(Int(try s.u32()))
+                let t0 = DispatchTime.now().uptimeNanoseconds
+                framebuffer.withPixels { p, fw, fh in
+                    mvs.decode(data, x: x, y: y, w: w, h: h, pixels: p, fbWidth: fw, fbHeight: fh)
+                    #if DEBUG
+                    MVSDump.add(data, x: x, y: y, w: w, h: h, pixels: p, fbWidth: fw, fbHeight: fh)
+                    #endif
+                }
+                mvsBytes += data.count
+                mvsNanos += DispatchTime.now().uptimeNanoseconds - t0
             case 1105:
                 handleDisplayInfo2(try s.read(try s.u16()))
             case 1010, 1110:
@@ -657,6 +684,12 @@ final class RFBClient {
         }
 
         if drewPixels { stateLock.lock(); fullRequestAt = nil; stateLock.unlock() }
+        if drewPixels && wakeKick {
+            wakeKick = false
+            lateCount = 0
+            DebugLog.write("깨우기 뒤 화면이 옴")
+            if !Self.useAutoUpdate { setAutoUpdate(false) }
+        }
         stateLock.lock()
         let stream = streaming && !awaitingSwitch
         DebugLog.write("업데이트 메시지: 인코딩 \(encs), 누적 수신 \(s.received / 1000)KB, 다음 요청 \(stream ? (fullRequestPending ? "전체" : "증분") : "안 보냄 (화면 받는 중 \(streaming), 모니터 전환 대기 \(awaitingSwitch))")")
@@ -736,8 +769,16 @@ final class RFBClient {
             if flowing { self.fullRequestAt = Date(); self.fullRequestReceived = self.socket?.received ?? 0 }
             self.stateLock.unlock()
             if late {
-                DebugLog.write("2초 동안 화면이 안 와서 다시 요청")
+                self.lateCount += 1
+                DebugLog.write("2초 동안 화면이 안 와서 다시 요청 (\(self.lateCount)번째)")
                 self.requestUpdate(incremental: false)
+                // 두 번째부터는 자동 갱신을 잠깐 켜서 서버를 깨운다 (화면이 오면 다시 끈다)
+                if self.lateCount >= 2 && !self.isAutoUpdateOn && self.hpState != .on {
+                    self.wakeKick = true
+                    self.setAutoUpdate(true)
+                }
+            } else if flowing {
+                self.lateCount = 0
             }
         }
         watchdog = t
