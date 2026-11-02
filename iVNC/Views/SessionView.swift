@@ -126,7 +126,8 @@ final class SessionModel: ObservableObject {
         UserDefaults.standard.set(mouseMode.rawValue, forKey: "mouseMode." + computer.id.uuidString)
     }
     /// 조합 중이라 아직 안 보낸 글자, 최근에 보낸 글자 (키보드 위에 보여 준다)
-    @Published var composing = ""
+    /// 조합이 끝나면(표시가 숨으면) 최근 글자도 비운다: 다음에 다시 뜰 때는 새로 친 것만 보인다
+    @Published var composing = "" { didSet { if composing.isEmpty { recentTyped = "" } } }
     @Published private(set) var recentTyped = ""
 
     func sendText(_ t: String) {

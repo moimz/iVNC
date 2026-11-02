@@ -120,7 +120,13 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
         if c.count > p { onText(String(c[p...])) }
         sent = String(c)
         let all = Array(text ?? "")
-        onPending(final || all.count <= c.count ? "" : String(all[c.count...]))
+        let pending = final || all.count <= c.count ? "" : String(all[c.count...])
+        onPending(pending)
+        // 조합 중인 글자가 없어지면(띄어쓰기, 다 지움 등) 입력창을 비운다. 다음 지우기는 바로 맥으로 간다
+        if pending.isEmpty && !final && markedTextRange == nil && !(text ?? "").isEmpty {
+            text = ""
+            sent = ""
+        }
     }
 
     static func isHangul(_ u: Unicode.Scalar) -> Bool {
