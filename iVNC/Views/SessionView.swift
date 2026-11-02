@@ -106,6 +106,21 @@ struct SessionView: View {
             content
         }
         .overlay(alignment: .top) { if chromeVisible || model.phase != .viewing { topBar } }
+        #if DEBUG
+        .overlay(alignment: .bottomLeading) {
+            if RFBClient.hpTest {
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    Text(DebugLog.recent.joined(separator: "\n"))
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.green)
+                        .padding(6)
+                        .background(.black.opacity(0.7))
+                }
+                .padding(.bottom, 30)
+                .allowsHitTesting(false)
+            }
+        }
+        #endif
         .statusBarHidden(model.phase == .viewing && !chromeVisible)
         .preferredColorScheme(.dark)
         .onAppear { model.connect(store: store) }

@@ -21,12 +21,35 @@ enum DebugLog {
             start = Date()
             try? Data().write(to: url)
         }
+        recentLock.lock(); recentLines = []; recentLock.unlock()
+        #endif
+    }
+
+    #if DEBUG
+    private static let recentLock = NSLock()
+    private static var recentLines: [String] = []
+    #endif
+
+    /// 화면에 띄울 최근 고성능(HP) 줄
+    static var recent: [String] {
+        #if DEBUG
+        recentLock.lock(); defer { recentLock.unlock() }
+        return recentLines
+        #else
+        return []
         #endif
     }
 
     static func write(_ s: @autoclosure () -> String) {
         #if DEBUG
-        let line = String(format: "%7.2f ", Date().timeIntervalSince(start)) + s() + "\n"
+        let text = s()
+        if text.hasPrefix("HP") || text.hasPrefix("끝") || text.hasPrefix("인증") {
+            recentLock.lock()
+            recentLines.append(String(format: "%.1f ", Date().timeIntervalSince(start)) + text)
+            if recentLines.count > 8 { recentLines.removeFirst(recentLines.count - 8) }
+            recentLock.unlock()
+        }
+        let line = String(format: "%7.2f ", Date().timeIntervalSince(start)) + text + "\n"
         queue.async {
             guard let h = try? FileHandle(forWritingTo: url) else { try? Data(line.utf8).write(to: url); return }
             h.seekToEndOfFile()

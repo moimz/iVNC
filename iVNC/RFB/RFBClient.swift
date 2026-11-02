@@ -77,10 +77,11 @@ final class RFBClient {
     // MARK: - 고성능 시험 (Debug, 환경 변수 IVNC_HP=1, 받는 포트를 옮기려면 IVNC_HP_PORT_OFFSET)
 
     #if DEBUG
-    static let hpTest = ProcessInfo.processInfo.environment["IVNC_HP"] != nil
+    /// 환경 변수 IVNC_HP 또는 첫 화면의 "고성능 시험" 스위치 (Debug 만)
+    static var hpTest: Bool { ProcessInfo.processInfo.environment["IVNC_HP"] != nil || UserDefaults.standard.bool(forKey: "debug.hpTest") }
     static let hpPortOffset = UInt16(ProcessInfo.processInfo.environment["IVNC_HP_PORT_OFFSET"] ?? "0") ?? 0
     #else
-    static let hpTest = false
+    static var hpTest: Bool { false }
     static let hpPortOffset: UInt16 = 0
     #endif
     private var hpSecrets: HP.Secrets?
@@ -94,6 +95,10 @@ final class RFBClient {
             DebugLog.write("HP Message1 문자열 \(HP.message1Strings(body))")
             let secrets = HP.Secrets()
             hpSecrets = secrets
+            if let r = hpReceiver, let ports = hpServerPorts, let ip = socket?.peerIPv4 {
+                r.punch(serverIP: ip, ports: [ports.audio, ports.video])
+                DebugLog.write("HP 먼저 보내기 (제안 직전)")
+            }
             do {
                 let offer = try HP.offerMessage(secrets)
                 socket?.send(offer)
@@ -109,6 +114,10 @@ final class RFBClient {
                     let r = HPUDPReceiver()
                     let local = [ports.audio &+ Self.hpPortOffset, ports.video &+ Self.hpPortOffset]
                     if let err = r.bind(ports: local) { DebugLog.write("HP " + err) } else { hpReceiver = r; DebugLog.write("HP UDP 받는 포트 \(local)") }
+                    if let ip = socket?.peerIPv4 {
+                        r.punch(serverIP: ip, ports: [ports.audio, ports.video])
+                        DebugLog.write("HP 먼저 보내기 (포트 알림 직후)")
+                    }
                 }
             } else {
                 do {

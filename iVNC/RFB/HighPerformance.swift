@@ -288,6 +288,22 @@ final class HPUDPReceiver {
         self.serverIP = serverIP
     }
 
+    /// 서버가 영상을 보내기 전에 각 로컬 포트에서 서버 포트로 작은 패킷을 먼저 내보낸다.
+    /// 우리 쪽 공유기·통신사 NAT 에 "이 포트의 답장은 이 기기로" 기록을 만들어 두려는 것 (맥은 늘 같은 번호 포트로 보낸다)
+    func punch(serverIP: in_addr_t, ports: [UInt16]) {
+        lock.lock(); let fds = streams.map(\.fd); lock.unlock()
+        let pkt: [UInt8] = [0x80, 0xC9, 0x00, 0x01, 0, 0, 0, 0]
+        for (fd, port) in zip(fds, ports) {
+            var addr = sockaddr_in()
+            addr.sin_family = sa_family_t(AF_INET)
+            addr.sin_port = port.bigEndian
+            addr.sin_addr.s_addr = serverIP
+            _ = withUnsafePointer(to: &addr) { a in
+                a.withMemoryRebound(to: sockaddr.self, capacity: 1) { sendto(fd, pkt, pkt.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+            }
+        }
+    }
+
     /// 1초마다 부른다: 스트림마다 SRTCP 수신 보고를 서버로 보낸다
     func sendReports() {
         lock.lock()
