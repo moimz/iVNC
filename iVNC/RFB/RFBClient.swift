@@ -114,24 +114,26 @@ final class RFBClient {
                 do {
                     let a = try HP.answer(body)
                     DebugLog.write("HP 답: 서버 SSRC 오디오 \(String(a.audioSSRC, radix: 16)) 비디오 \(String(a.videoSSRC, radix: 16)), \(a.width)x\(a.height), 줄무늬 \(a.stripes)")
+                    hpStartStreaming(a)
                 } catch {
                     DebugLog.write("HP 답 해석 실패 \(error)")
                 }
-                hpStartWatching()
             }
         }
     }
 
-    /// 답을 받은 뒤: 1초마다 서버 포트로 작은 패킷을 보내고(포트 따라오기 시험), 2초마다 받은 양을 적는다
-    private func hpStartWatching() {
-        guard hpTimer == nil, let r = hpReceiver, let ports = hpServerPorts, let ip = socket?.peerIPv4 else { return }
+    /// 답을 받은 뒤: 키를 넣고, 1초마다 SRTCP 수신 보고를 보내고, 2초마다 받은 양을 적는다
+    private func hpStartStreaming(_ a: HP.Answer) {
+        guard hpTimer == nil, let r = hpReceiver, let ports = hpServerPorts, let s = hpSecrets, let ip = socket?.peerIPv4 else { return }
+        r.configure(index: 0, keys: s.audioKeys, mySSRC: s.audioSSRC, serverSSRC: a.audioSSRC, serverIP: ip, remotePort: ports.audio)
+        r.configure(index: 1, keys: s.videoKeys, mySSRC: s.videoSSRC, serverSSRC: a.videoSSRC, serverIP: ip, remotePort: ports.video)
         var n = 0
         let t = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
         t.schedule(deadline: .now(), repeating: 1)
         t.setEventHandler {
             n += 1
-            if n <= 10 { r.punch(index: 0, to: ip, port: ports.audio); r.punch(index: 1, to: ip, port: ports.video) }
-            if n % 2 == 0 { DebugLog.write("HP UDP 받은 양: \(r.summary())") }
+            r.sendReports()
+            if n % 2 == 0 { DebugLog.write("HP UDP: \(r.summary())") }
         }
         hpTimer = t
         t.resume()

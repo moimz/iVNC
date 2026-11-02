@@ -229,13 +229,25 @@ enum HP {
     }
 }
 
-/// 고성능 영상 UDP 수신 (시험용: 아직 SRTP 를 풀지 않고 패킷 수·RTP 머리만 센다)
+/// 고성능 영상·소리 UDP 수신. SRTP 를 검증·해독해 개수를 세고, 1초마다 SRTCP 수신 보고를 보낸다 (시험용).
+/// 0 = 소리, 1 = 영상. RTP 와 RTCP 가 같은 포트로 온다.
 final class HPUDPReceiver {
-    private var fds: [Int32] = []
-    private var ports: [UInt16] = []
-    private var counts: [Int] = []
-    private var bytes: [Int] = []
-    private var ssrcs: [Set<UInt32>] = []
+    struct Stream {
+        let fd: Int32
+        let localPort: UInt16
+        var inbound: SRTPContext?
+        var outbound: SRTPContext?
+        var mySSRC: UInt32 = 0
+        var serverSSRC: UInt32 = 0
+        var remotePort: UInt16 = 0
+        var raw = 0, rawBytes = 0, ok = 0, bad = 0, rtcpIn = 0, sentReports = 0
+        var payloadTypes: Set<UInt8> = []
+        var ssrcs: Set<UInt32> = []
+        var naluTypes: [Int: Int] = [:]
+    }
+
+    private var streams: [Stream] = []
+    private var serverIP: in_addr_t = 0
     private var stopped = false
     private let lock = NSLock()
 
@@ -255,7 +267,7 @@ final class HPUDPReceiver {
                 Darwin.close(fd)
                 return "UDP \(p) 열기 실패: \(err)"
             }
-            fds.append(fd); self.ports.append(p); counts.append(0); bytes.append(0); ssrcs.append([])
+            streams.append(Stream(fd: fd, localPort: p))
         }
         let t = Thread { [weak self] in self?.loop() }
         t.name = "HPUDP"
@@ -263,33 +275,61 @@ final class HPUDPReceiver {
         return nil
     }
 
-    /// 로컬 포트 index 에서 서버로 작은 패킷을 보낸다 (NAT 구멍 뚫기·포트 따라오기 시험)
-    func punch(index: Int, to ip: in_addr_t, port: UInt16) {
-        guard index < fds.count else { return }
-        var addr = sockaddr_in()
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = port.bigEndian
-        addr.sin_addr.s_addr = ip
-        let pkt: [UInt8] = [0x80, 0xC9, 0x00, 0x01, 0, 0, 0, 0] // 빈 RTCP 수신 보고 모양
-        _ = withUnsafePointer(to: &addr) { a in
-            a.withMemoryRebound(to: sockaddr.self, capacity: 1) { sendto(fds[index], pkt, pkt.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+    /// 답을 받은 뒤: 키와 SSRC 를 넣는다. keys 는 0x1c 에 실은 92바이트 키 블록
+    /// ([0,32) 클라이언트→서버 키, [32,46) 그 소금, [46,78) 서버→클라이언트 키, [78,92) 그 소금)
+    func configure(index: Int, keys: [UInt8], mySSRC: UInt32, serverSSRC: UInt32, serverIP: in_addr_t, remotePort: UInt16) {
+        lock.lock(); defer { lock.unlock() }
+        guard index < streams.count else { return }
+        streams[index].outbound = SRTPContext(masterKey: Array(keys[0..<32]), masterSalt: Array(keys[32..<46]))
+        streams[index].inbound = SRTPContext(masterKey: Array(keys[46..<78]), masterSalt: Array(keys[78..<92]))
+        streams[index].mySSRC = mySSRC
+        streams[index].serverSSRC = serverSSRC
+        streams[index].remotePort = remotePort
+        self.serverIP = serverIP
+    }
+
+    /// 1초마다 부른다: 스트림마다 SRTCP 수신 보고를 서버로 보낸다
+    func sendReports() {
+        lock.lock()
+        var packets: [(Int32, UInt16, [UInt8])] = []
+        for i in streams.indices {
+            guard let out = streams[i].outbound, let inb = streams[i].inbound else { continue }
+            let highest = inb.highestIndex[streams[i].serverSSRC] ?? 0
+            let rr = SRTPContext.receiverReport(ssrc: streams[i].mySSRC, sourceSSRC: streams[i].serverSSRC, highestSeq: UInt32(truncatingIfNeeded: highest))
+            packets.append((streams[i].fd, streams[i].remotePort, out.protectRTCP(rr)))
+            streams[i].sentReports += 1
+        }
+        let ip = serverIP
+        lock.unlock()
+        for (fd, port, pkt) in packets {
+            var addr = sockaddr_in()
+            addr.sin_family = sa_family_t(AF_INET)
+            addr.sin_port = port.bigEndian
+            addr.sin_addr.s_addr = ip
+            _ = withUnsafePointer(to: &addr) { a in
+                a.withMemoryRebound(to: sockaddr.self, capacity: 1) { sendto(fd, pkt, pkt.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+            }
         }
     }
 
     func summary() -> String {
         lock.lock(); defer { lock.unlock() }
-        return ports.indices.map { "포트 \(ports[$0]): \(counts[$0])개 \(bytes[$0] / 1000)KB SSRC \(ssrcs[$0].map { String($0, radix: 16) }.sorted())" }.joined(separator: ", ")
+        return streams.enumerated().map { i, s in
+            let name = i == 0 ? "소리" : "영상"
+            return "\(name)(\(s.localPort)) 받음 \(s.raw)개 \(s.rawBytes / 1000)KB, 검증 성공 \(s.ok) 실패 \(s.bad), RTCP \(s.rtcpIn), 보고 보냄 \(s.sentReports), PT \(s.payloadTypes.sorted()), SSRC \(s.ssrcs.count)개"
+                + (i == 1 && !s.naluTypes.isEmpty ? ", NAL 종류 \(s.naluTypes.sorted { $0.key < $1.key }.map { "\($0.key):\($0.value)" }.joined(separator: " "))" : "")
+        }.joined(separator: " / ")
     }
 
     func stop() {
         lock.lock(); stopped = true; lock.unlock()
-        for fd in fds { Darwin.close(fd) }
+        for s in streams { Darwin.close(s.fd) }
     }
 
     private func loop() {
         var buf = [UInt8](repeating: 0, count: 65536)
         while true {
-            lock.lock(); let s = stopped; lock.unlock()
+            lock.lock(); let s = stopped; let fds = streams.map(\.fd); lock.unlock()
             if s { return }
             var pfds = fds.map { pollfd(fd: $0, events: Int16(POLLIN), revents: 0) }
             if poll(&pfds, nfds_t(pfds.count), 500) <= 0 { continue }
@@ -299,14 +339,28 @@ final class HPUDPReceiver {
                     f.withMemoryRebound(to: sockaddr.self, capacity: 1) { recvfrom(p.fd, &buf, buf.count, 0, $0, &len) }
                 }
                 guard n > 0 else { continue }
+                let pkt = Array(buf[0..<n])
                 lock.lock()
-                let first = counts[i] == 0
-                counts[i] += 1; bytes[i] += n
-                if n >= 12 { ssrcs[i].insert(UInt32(buf[8]) << 24 | UInt32(buf[9]) << 16 | UInt32(buf[10]) << 8 | UInt32(buf[11])) }
+                let first = streams[i].raw == 0
+                streams[i].raw += 1; streams[i].rawBytes += n
+                // RTP/RTCP 구분 (RFC 5761): 두 번째 바이트가 192~223 이면 RTCP
+                if n >= 2, (192...223).contains(pkt[1]) {
+                    if let inb = streams[i].inbound, inb.unprotectRTCP(pkt) != nil { streams[i].rtcpIn += 1 }
+                } else if let inb = streams[i].inbound {
+                    if let rtp = inb.unprotectRTP(pkt) {
+                        streams[i].ok += 1
+                        streams[i].payloadTypes.insert(rtp.payloadType)
+                        streams[i].ssrcs.insert(rtp.ssrc)
+                        // HEVC RTP 페이로드 머리 2바이트의 NAL 종류 (48 = 묶음, 49 = 조각)
+                        if i == 1, rtp.payload.count >= 2 { streams[i].naluTypes[Int(rtp.payload[0] >> 1) & 0x3F, default: 0] += 1 }
+                    } else {
+                        streams[i].bad += 1
+                    }
+                }
                 lock.unlock()
                 if first {
                     let fromIP = String(cString: inet_ntoa(from.sin_addr)), fromPort = UInt16(bigEndian: from.sin_port)
-                    DebugLog.write("HP UDP 첫 패킷: 포트 \(ports[i]) ← \(fromIP):\(fromPort), \(n)바이트, 머리 \(buf.prefix(12).map { String(format: "%02x", $0) }.joined())")
+                    DebugLog.write("HP UDP 첫 패킷: 포트 \(streams[i].localPort) ← \(fromIP):\(fromPort), \(n)바이트")
                 }
             }
         }
