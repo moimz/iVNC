@@ -211,6 +211,12 @@ final class HPVideoDecoder {
     private var _submitted = 0, _decoded = 0, _failed = 0, _dropped = 0
     private var backlog = 0
     private var skippingToKey = false
+    private var _lastOutput = ProcessInfo.processInfo.systemUptime
+    /// 밀려서 키 그림부터 다시 받아야 할 때 (다시 제안)
+    var onNeedKey: (() -> Void)?
+
+    /// 마지막으로 그림이 나온 시각 (화면이 멈췄는지 판단)
+    var lastOutput: TimeInterval { lock.lock(); defer { lock.unlock() }; return _lastOutput }
 
     var stats: String {
         lock.lock(); defer { lock.unlock() }
@@ -221,8 +227,14 @@ final class HPVideoDecoder {
         lock.lock()
         // 디코더가 많이 밀리면 다음 키 그림까지 버린다 (중간 그림만 버리면 뒤 그림이 깨진다).
         // 키 그림이 안 오면 3초 뒤 다시 제안해 새로 받는다
-        if backlog > 60 { skippingToKey = true }
-        if skippingToKey && !pic.key { _dropped += 1; lock.unlock(); return }
+        var needKey = false
+        if backlog > 60 && !skippingToKey { skippingToKey = true; needKey = true }
+        if skippingToKey && !pic.key {
+            _dropped += 1; lock.unlock()
+            // 서버는 키 그림을 처음과 다시 제안했을 때만 보낸다: 기다리기만 하면 영원히 멈춘다 (2026-11-02 잠금 해제 때 실측)
+            if needKey { onNeedKey?() }
+            return
+        }
         skippingToKey = false
         backlog += 1
         lock.unlock()
@@ -278,8 +290,9 @@ final class HPVideoDecoder {
                 self.count { $0._failed += 1 }
                 return
             }
-            self.count { $0._decoded += 1 }
-            if let copy = self.displayCopy(image) { self.onStripe?(copy, stripe) }
+            self.count { $0._decoded += 1; $0._lastOutput = ProcessInfo.processInfo.systemUptime }
+            self.logOutputOnce(image)
+            self.onStripe?(image, stripe)
         }
         if rc != noErr {
             count { $0._failed += 1 }
@@ -288,54 +301,16 @@ final class HPVideoDecoder {
         }
     }
 
-    private var pool: CVPixelBufferPool?
-    private var poolSize = (0, 0)
     private var loggedOutput = false
-    private var loggedPixel = false
-    private var fillAlpha = false
 
-    /// 디코더 버퍼를 화면용 IOSurface 버퍼로 복사한다.
-    /// 디코더 버퍼를 레이어에 바로 넣으면 아이폰에서 검게 나왔다 (2026-11-02). 직접 만든 버퍼는 일반 모드에서 잘 보인다
-    private func displayCopy(_ src: CVPixelBuffer) -> CVPixelBuffer? {
-        let w = CVPixelBufferGetWidth(src), h = CVPixelBufferGetHeight(src)
-        if !loggedOutput {
-            loggedOutput = true
-            let f = CVPixelBufferGetPixelFormatType(src)
-            let fcc = String(bytes: [24, 16, 8, 0].map { UInt8((f >> $0) & 0xFF) }, encoding: .ascii) ?? "\(f)"
-            DebugLog.write("HP 디코더 출력: \(w)x\(h) 형식 \(fcc) IOSurface \(CVPixelBufferGetIOSurface(src) != nil ? "있음" : "없음") 평면 \(CVPixelBufferGetPlaneCount(src))")
-        }
-        if pool == nil || poolSize != (w, h) {
-            let attrs: [CFString: Any] = [kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA, kCVPixelBufferWidthKey: w,
-                                          kCVPixelBufferHeightKey: h, kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary]
-            var p: CVPixelBufferPool?
-            CVPixelBufferPoolCreate(nil, nil, attrs as CFDictionary, &p)
-            pool = p; poolSize = (w, h)
-        }
-        guard let pool else { return nil }
-        var out: CVPixelBuffer?
-        CVPixelBufferPoolCreatePixelBuffer(nil, pool, &out)
-        guard let out else { return nil }
-        CVPixelBufferLockBaseAddress(src, .readOnly); CVPixelBufferLockBaseAddress(out, [])
-        defer { CVPixelBufferUnlockBaseAddress(out, []); CVPixelBufferUnlockBaseAddress(src, .readOnly) }
-        guard let s = CVPixelBufferGetBaseAddress(src), let d = CVPixelBufferGetBaseAddress(out) else { return nil }
-        let sb = CVPixelBufferGetBytesPerRow(src), db = CVPixelBufferGetBytesPerRow(out)
-        if sb == db { d.copyMemory(from: s, byteCount: sb * h) } else {
-            for y in 0..<h { (d + y * db).copyMemory(from: s + y * sb, byteCount: min(sb, db)) }
-        }
-        // 알파가 0 으로 오면 검은 배경만 보인다: 첫 픽셀로 판단해 채운다
-        let px = s.assumingMemoryBound(to: UInt8.self)
-        if !loggedPixel {
-            loggedPixel = true
-            fillAlpha = px[3] != 0xFF
-            DebugLog.write("HP 첫 픽셀 BGRA \(px[0]) \(px[1]) \(px[2]) \(px[3]) → 알파 채움 \(fillAlpha)")
-        }
-        if fillAlpha {
-            for y in 0..<h {
-                let row = (d + y * db).assumingMemoryBound(to: UInt32.self)
-                for x in 0..<w { row[x] |= 0xFF00_0000 }
-            }
-        }
-        return out
+    /// 디코더 출력 형식을 한 번 적는다. 출력 버퍼는 복사 없이 화면 레이어에 바로 넣는다
+    /// (예전 검은 화면은 버퍼 탓이 아니라 레이어 크기가 0 이던 것이었다)
+    private func logOutputOnce(_ src: CVPixelBuffer) {
+        guard !loggedOutput else { return }
+        loggedOutput = true
+        let f = CVPixelBufferGetPixelFormatType(src)
+        let fcc = String(bytes: [24, 16, 8, 0].map { UInt8((f >> $0) & 0xFF) }, encoding: .ascii) ?? "\(f)"
+        DebugLog.write("HP 디코더 출력: \(CVPixelBufferGetWidth(src))x\(CVPixelBufferGetHeight(src)) 형식 \(fcc) IOSurface \(CVPixelBufferGetIOSurface(src) != nil ? "있음" : "없음")")
     }
 
     private func makeSession(_ sets: [[UInt8]]) -> Bool {

@@ -274,6 +274,7 @@ final class RFBClient {
         }
         let d = HPVideoDecoder()
         d.onStripe = { [weak self] in self?.hpDraw($0, stripe: $1) }
+        d.onNeedKey = { [weak self] in self?.hpRecover("디코더가 밀려 키 그림이 필요") }
         hpDecoder = d
         r.onPicture = { [weak d] in d?.push($0) }
         r.onStall = { [weak self] in self?.hpRecover("조립 막힘") }
@@ -285,8 +286,9 @@ final class RFBClient {
             n += 1
             r.sendReports()
             if n % 2 == 0 { DebugLog.write("HP UDP: \(r.summary()) / \(r.videoDiag) / \(d.stats)") }
-            if let self, self.hpState == .on, let last = r.lastPictureAt, ProcessInfo.processInfo.systemUptime - last > 3 {
-                self.hpRecover("3초 동안 그림 없음")
+            // 화면에 실제로 나온 그림 기준 (조립은 되는데 디코더가 버리는 중이면 조립 기준으로는 멈춘 걸 모른다)
+            if let self, self.hpState == .on, ProcessInfo.processInfo.systemUptime - d.lastOutput > 3 {
+                self.hpRecover("3초 동안 화면에 나온 그림 없음")
             }
         }
         hpTimer = t
