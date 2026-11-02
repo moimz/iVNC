@@ -174,21 +174,6 @@ struct SessionView: View {
             }
         }
         .overlay(alignment: .top) { if menuVisible || model.phase != .viewing { topBar } }
-        #if DEBUG
-        .overlay(alignment: .bottomLeading) {
-            if model.triedHighPerformance && (menuVisible || model.phase != .viewing) { // 보는 중에는 메뉴를 열었을 때만
-                TimelineView(.periodic(from: .now, by: 1)) { _ in
-                    Text(DebugLog.recent.joined(separator: "\n"))
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.green)
-                        .padding(6)
-                        .background(.black.opacity(0.7))
-                }
-                .padding(.bottom, 30)
-                .allowsHitTesting(false)
-            }
-        }
-        #endif
         .statusBarHidden(model.phase == .viewing && !menuVisible)
         .preferredColorScheme(.dark)
         // 시스템이 키보드를 내리면 키보드 버튼 상태도 맞춘다 (안 그러면 다음에 누를 때 거꾸로 동작한다)
