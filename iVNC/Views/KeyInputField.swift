@@ -97,6 +97,7 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
     private func reset() {
         text = ""
         sent = ""
+        lastText = ""
         onPending("")
     }
 
@@ -116,20 +117,44 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
     }
 
     /// 보낸 것과 지금 확정된 것을 비교해 다른 부분만 지우고 다시 보낸다 (자동 고침 등으로 앞 글자가 바뀌어도 맞춰진다)
+    /// 직전 입력창 내용 (키보드가 보낸 글자를 끌어왔는지 보려고)
+    private var lastText = ""
+
     private func sync(final: Bool) {
+        let now = text ?? ""
+        // 입력창에는 조합 중인 글자만 남기는데(아래), 아이폰 키보드는 자기 조합 기록으로 지우기 때 이미 보낸 앞 글자를 끌어온다
+        // ("도레미파" 에서 파를 지우면 "밒": ㅁ 은 이미 보낸 "미" 의 것). 첫 자음이 바뀌면 그런 경우다:
+        // 맥에서 그 글자를 지우고, 끌어온 글자를 조합 중으로 둔다. 결과는 메모 앱과 같다
+        if !final, sent.isEmpty, now.count == 1, lastText.count == 1,
+           let a = Self.initial(lastText.unicodeScalars.first!), let b = Self.initial(now.unicodeScalars.first!),
+           a != b, now.unicodeScalars.first!.value >= 0xAC00 {
+            onBackspace(1)
+        }
         let c = Array(committed(final: final)), s = Array(sent)
         var p = 0
         while p < min(c.count, s.count) && c[p] == s[p] { p += 1 }
         if s.count > p { onBackspace(s.count - p) }
         if c.count > p { onText(String(c[p...])) }
         sent = String(c)
-        let all = Array(text ?? "")
+        let all = Array(now)
         let pending = final || all.count <= c.count ? "" : String(all[c.count...])
         onPending(pending)
-        // 조합 중인 글자가 없어지면(띄어쓰기, 다 지움 등) 입력창을 비운다. 다음 지우기는 바로 맥으로 간다
-        if pending.isEmpty && !final && markedTextRange == nil && !(text ?? "").isEmpty {
-            text = ""
+        // 맥으로 보낸 글자는 입력창에서 바로 빼고 조합 중인 글자만 남긴다. 키보드의 조합 기록은 그대로 둬야 "레" 다음 ㅁ 이 "렘" 이 된다
+        // (바꿨다고 키보드에 알리면 기록이 지워져 "렘" 이 안 된다). 조합 중 글자가 없으면 입력창이 비고, 다음 지우기는 바로 맥으로 간다
+        if !final && markedTextRange == nil && all.count > pending.count {
+            text = pending
             sent = ""
+        }
+        lastText = text ?? ""
+    }
+
+    /// 글자의 첫 자음 (완성형은 초성, 낱자 자음은 그 자음). 모음·그 밖은 nil
+    static func initial(_ u: Unicode.Scalar) -> Character? {
+        let choseong = Array("ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ")
+        switch u.value {
+        case 0xAC00...0xD7A3: return choseong[Int(u.value - 0xAC00) / 588]
+        case 0x3131...0x314E: return Character(u)
+        default: return nil
         }
     }
 
