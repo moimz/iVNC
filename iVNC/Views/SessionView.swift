@@ -14,6 +14,10 @@ final class SessionModel: ObservableObject {
     @Published private(set) var displays: [RemoteDisplay] = []
     @Published private(set) var selected: RemoteDisplay?
     @Published private(set) var image: CGImage?
+    /// 고성능(가상 디스플레이) 연결인지
+    @Published private(set) var isHighPerformance = false
+    /// 고성능을 시도했는지 (Debug 화면 로그를 띄울지)
+    @Published private(set) var triedHighPerformance = false
     /// 키보드로 원격 맥에 입력 중인지
     @Published var typing = false
 
@@ -25,6 +29,9 @@ final class SessionModel: ObservableObject {
         self.computer = computer
     }
 
+    /// 고성능 없이 다시 접속할 때 true
+    private var standardOnly = false
+
     func connect(store: ComputerStore) {
         self.store = store
         client?.stop()
@@ -33,7 +40,10 @@ final class SessionModel: ObservableObject {
             phase = .failed("저장된 암호가 없습니다. 컴퓨터를 길게 눌러 편집에서 암호를 입력하세요.")
             return
         }
-        let c = RFBClient(host: computer.host, port: computer.port, username: computer.username, password: pw)
+        let c = RFBClient(host: computer.host, port: computer.port, username: computer.username, password: pw,
+                          tryHighPerformance: !standardOnly && !UserDefaults.standard.bool(forKey: "debug.hpOff"))
+        isHighPerformance = false
+        triedHighPerformance = !standardOnly
         c.onEvent = { [weak self] in self?.handle($0) }
         client = c
         c.start()
@@ -46,10 +56,22 @@ final class SessionModel: ObservableObject {
         case .displays(let list):
             displays = list
             // 모니터가 하나여도 바로 고르지 않는다: 맥이 깨어날 때는 모니터가 하나씩 붙어서 처음 목록이 전부가 아닐 수 있다
+            // (고성능 시도 중의 목록은 RFBClient 가 결과가 나올 때까지 붙잡아 둔다)
             if case .connecting = phase {
                 store?.markConnected(computer.id)
-                phase = .picking
+                // 고성능은 가상 디스플레이 하나뿐이니 고르지 않고 바로 본다
+                if isHighPerformance, let d = list.first { select(d) } else { phase = .picking }
             }
+        case .highPerformance(let ok):
+            if ok {
+                isHighPerformance = true // 바로 뒤에 오는 모니터 목록(가상 디스플레이)으로 바로 들어간다
+            } else {
+                isHighPerformance = false
+            }
+        case .reconnectStandard:
+            client?.stop()
+            standardOnly = true
+            if let store { connect(store: store) }
         case .frame:
             image = client?.framebuffer.makeImage()
             client?.frameConsumed()
@@ -108,7 +130,7 @@ struct SessionView: View {
         .overlay(alignment: .top) { if chromeVisible || model.phase != .viewing { topBar } }
         #if DEBUG
         .overlay(alignment: .bottomLeading) {
-            if RFBClient.hpTest {
+            if model.triedHighPerformance {
                 TimelineView(.periodic(from: .now, by: 1)) { _ in
                     Text(DebugLog.recent.joined(separator: "\n"))
                         .font(.system(size: 10, design: .monospaced))
@@ -167,6 +189,13 @@ struct SessionView: View {
             Text(title).font(.headline).lineLimit(1)
                 .padding(.horizontal, 14).frame(height: 36)
                 .glassEffect()
+            if model.isHighPerformance {
+                Label("고성능", systemImage: "bolt.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.yellow)
+                    .padding(.horizontal, 10).frame(height: 28)
+                    .glassEffect()
+            }
             Spacer()
             if model.phase == .viewing {
                 Button { model.typing.toggle() } label: {
@@ -175,7 +204,7 @@ struct SessionView: View {
                 .buttonStyle(.glass)
                 .buttonBorderShape(.circle)
             }
-            if model.phase == .viewing && model.displays.count > 1 {
+            if model.phase == .viewing && model.displays.count > 1 && !model.isHighPerformance {
                 Button { model.backToPicker() } label: {
                     Label("모니터", systemImage: "display.2").frame(height: 36)
                 }

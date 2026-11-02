@@ -12,6 +12,10 @@ final class RFBClient {
         case displays([RemoteDisplay])
         case frame
         case failed(String)
+        /// 고성능 결과: true 면 가상 디스플레이로 바로 보기, false 면 일반 모드로 바뀌었고 모니터 목록이 뒤따른다
+        case highPerformance(Bool)
+        /// 같은 접속에서 일반 모드로 못 돌아왔으니 고성능 없이 다시 접속해야 한다
+        case reconnectStandard
     }
 
     var onEvent: ((Event) -> Void)?
@@ -67,23 +71,81 @@ final class RFBClient {
     private let autoLock = NSLock()
     private var watchdog: DispatchSourceTimer?
 
-    init(host: String, port: Int, username: String, password: String) {
+    /// tryHighPerformance: 서버가 고성능을 지원하면 먼저 가상 디스플레이 고성능을 시도한다
+    init(host: String, port: Int, username: String, password: String, tryHighPerformance: Bool = true) {
         self.host = host
         self.port = port
         self.username = username
         self.password = password
+        self.tryHighPerformance = tryHighPerformance
     }
 
-    // MARK: - 고성능 시험 (Debug, 환경 변수 IVNC_HP=1, 받는 포트를 옮기려면 IVNC_HP_PORT_OFFSET)
+    // MARK: - 고성능 (가상 디스플레이 + HEVC/UDP)
+
+    /// off: 시도 안 함, trying: 협상·첫 영상 기다리는 중, on: 영상이 오고 있음, fallingBack: 실패해서 다시 접속을 기다리는 중
+    enum HPState { case off, trying, on, fallingBack }
+    private let tryHighPerformance: Bool
+    private(set) var hpState: HPState = .off
+    /// 시도하는 동안 받은 모니터 목록(가상 디스플레이 하나)은 화면에 바로 알리지 않고 결과가 나온 뒤 알린다
+    private var hpPendingDisplays: [RemoteDisplay] = []
+    /// 협상 답을 받았는지 (5초 협상 시간 초과 판정에서 뺀다)
+    private var hpAnswered = false
 
     #if DEBUG
-    /// 환경 변수 IVNC_HP 또는 첫 화면의 "고성능 시험" 스위치 (Debug 만)
-    static var hpTest: Bool { ProcessInfo.processInfo.environment["IVNC_HP"] != nil || UserDefaults.standard.bool(forKey: "debug.hpTest") }
+    /// 시험용: 받는 UDP 포트를 옮겨 일부러 고성능을 실패시키기 (IVNC_HP_PORT_OFFSET)
     static let hpPortOffset = UInt16(ProcessInfo.processInfo.environment["IVNC_HP_PORT_OFFSET"] ?? "0") ?? 0
     #else
-    static var hpTest: Bool { false }
     static let hpPortOffset: UInt16 = 0
     #endif
+
+    /// 서버가 고성능을 지원하는지: ServerInit 확장 capability 4번째 바이트의 0x0c 두 비트 (noVNC-ARD capability.js)
+    private static func serverOffersHighPerformance(_ capabilities: [UInt8]) -> Bool {
+        capabilities.count > 3 && capabilities[3] & 0x0C == 0x0C
+    }
+
+    /// 판정 시각을 정한다: 협상이 5초 안에 답까지 안 가면 실패, 답 뒤 3초 안에 검증된 영상이 없으면 실패
+    private func hpSchedule(after seconds: Double, _ check: @escaping () -> Void) {
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + seconds) { [weak self] in
+            guard let self, self.hpState == .trying else { return }
+            check()
+        }
+    }
+
+    /// 0.25초마다 본다: 검증된 영상이 하나라도 오면 바로 성공, 시간이 지나면 실패
+    private func hpWaitForVideo(deadline: Date) {
+        hpSchedule(after: 0.25) { [weak self] in
+            guard let self else { return }
+            if (self.hpReceiver?.verifiedVideo ?? 0) > 0 {
+                self.hpSucceeded()
+            } else if Date() >= deadline {
+                self.hpFail("답 뒤 2.5초 동안 영상이 안 옴")
+            } else {
+                self.hpWaitForVideo(deadline: deadline)
+            }
+        }
+    }
+
+    private func hpSucceeded() {
+        hpState = .on
+        DebugLog.write("HP 성공: 영상 \(hpReceiver?.verifiedVideo ?? 0)개 검증됨 → 가상 디스플레이로 바로 보기")
+        emit(.highPerformance(true))
+        if !hpPendingDisplays.isEmpty { emit(.displays(hpPendingDisplays)) }
+    }
+
+    /// 실패: 고성능 없이 다시 접속하라고 알린다.
+    /// 같은 접속에서 일반 모드로 돌아가기는 안 된다 (2026-11-02 시험: 1010/1110 없는 인코딩 + 모든 모니터를 보내도
+    /// 서버가 4초 넘게 가상 디스플레이만 알렸고, 가상 디스플레이 0개(0x1d)를 보내면 1초 만에 접속을 끊었다)
+    private func hpFail(_ reason: String) {
+        guard hpState == .trying else { return }
+        hpState = .fallingBack
+        DebugLog.write("HP 실패: \(reason) → 고성능 없이 다시 접속")
+        hpTimer?.cancel(); hpTimer = nil
+        hpReceiver?.stop(); hpReceiver = nil
+        emit(.reconnectStandard)
+    }
+
+    private static let standardEncodings: [Int32] = [16, 6, 1, 0, 1105, 1101, 1100, 1109, -223, -224] // 1100: 커서 위치, 1109: 키보드 입력 상태
+
     private var hpSecrets: HP.Secrets?
     private var hpReceiver: HPUDPReceiver?
     private var hpServerPorts: (audio: UInt16, video: UInt16)?
@@ -113,7 +175,13 @@ final class RFBClient {
                 if hpReceiver == nil {
                     let r = HPUDPReceiver()
                     let local = [ports.audio &+ Self.hpPortOffset, ports.video &+ Self.hpPortOffset]
-                    if let err = r.bind(ports: local) { DebugLog.write("HP " + err) } else { hpReceiver = r; DebugLog.write("HP UDP 받는 포트 \(local)") }
+                    if let err = r.bind(ports: local) {
+                        DebugLog.write("HP " + err)
+                        hpFail("UDP 포트를 열 수 없음")
+                        return
+                    }
+                    hpReceiver = r
+                    DebugLog.write("HP UDP 받는 포트 \(local)")
                     if let peer = socket?.peerAddress6 {
                         r.punch(server: peer, ports: [ports.audio, ports.video])
                         DebugLog.write("HP 먼저 보내기 (포트 알림 직후) → [\(RFBSocket.describe(peer))]")
@@ -125,9 +193,12 @@ final class RFBClient {
                 do {
                     let a = try HP.answer(body)
                     DebugLog.write("HP 답: 서버 SSRC 오디오 \(String(a.audioSSRC, radix: 16)) 비디오 \(String(a.videoSSRC, radix: 16)), \(a.width)x\(a.height), 줄무늬 \(a.stripes)")
+                    hpAnswered = true
                     hpStartStreaming(a)
+                    hpWaitForVideo(deadline: Date().addingTimeInterval(2.5))
                 } catch {
                     DebugLog.write("HP 답 해석 실패 \(error)")
+                    hpFail("답 해석 실패")
                 }
             }
         }
@@ -325,9 +396,15 @@ final class RFBClient {
         _ = try s.read(16) // 서버 픽셀 형식 (아래에서 우리 것으로 바꾼다)
         let name = try s.read(Int(try s.u32()))
         var serverFlags: UInt32 = 0
+        var capabilities: [UInt8] = []
         if apple && name.count >= 22 && name[0] == 0 {
             serverFlags = UInt32(name[2]) << 24 | UInt32(name[3]) << 16 | UInt32(name[4]) << 8 | UInt32(name[5])
+            capabilities = Array(name[6..<22])
         }
+        if apple && tryHighPerformance && Self.serverOffersHighPerformance(capabilities) {
+            hpState = .trying
+        }
+        DebugLog.write("고성능 판단: 시도 설정 \(tryHighPerformance), 서버 지원 \(Self.serverOffersHighPerformance(capabilities)) → \(hpState == .trying ? "시도" : "안 함")")
         framebuffer.resize(width: w, height: h)
         DebugLog.write("ServerInit \(w)x\(h) flags=0x\(String(serverFlags, radix: 16)) 확장 \(name.count >= 22 && name[0] == 0 ? name[6..<22].map { String(format: "%02x", $0) }.joined() : "없음")")
         if serverFlags & 0x04 != 0 { try sessionSelect(s) }
@@ -337,17 +414,22 @@ final class RFBClient {
         if apple {
             setup += Self.viewerInfo()
             setup += [0x0A, 0, 0, 1] // SetMode: 조작
-            if Self.hpTest {
+            if hpState == .trying {
                 setup += HP.virtualDisplayMessage(width: 1280, height: 800, scale: 2)
                 DebugLog.write("HP 가상 디스플레이 요청 1280x800pt @2")
+                emit(.status("고성능 연결 시도 중…"))
+                hpSchedule(after: 5) { [weak self] in
+                    guard let self, !self.hpAnswered else { return }
+                    self.hpFail("5초 동안 고성능 협상 답이 안 옴")
+                }
             }
             setup += Self.setDisplay(nil)
         }
         // SetPixelFormat: 32bpp depth24 리틀엔디언 true color, R16 G8 B0
         setup += [0, 0, 0, 0, 32, 24, 0, 1] + [UInt8].be16(255) + [UInt8].be16(255) + [UInt8].be16(255) + [16, 8, 0, 0, 0, 0]
         // 1105(DisplayInfo2) 와 1101 을 함께 넣어야 모니터 목록이 온다 (실험으로 확인)
-        var encodings: [Int32] = [16, 6, 1, 0, 1105, 1101, 1100, 1109, -223, -224] // 1100: 커서 위치, 1109: 키보드 입력 상태
-        if Self.hpTest { encodings = [1010] + encodings + [1110] } // 고성능: 1010 맨 앞, 1110 맨 뒤
+        var encodings = Self.standardEncodings
+        if hpState == .trying { encodings = [1010] + encodings + [1110] } // 고성능: 1010 맨 앞, 1110 맨 뒤
         setup += [2, 0] + [UInt8].be16(encodings.count) + encodings.flatMap { [UInt8].be32(UInt32(bitPattern: $0)) }
         s.send(setup)
         if !apple {
@@ -514,6 +596,18 @@ final class RFBClient {
 
     private func handleDisplayInfo2(_ data: [UInt8]) {
         guard let info = DisplayInfo2(data) else { DebugLog.write("DisplayInfo2 해석 실패 \(data.count)바이트"); return }
+        switch hpState {
+        case .trying:
+            // 고성능 시도 중의 목록은 가상 디스플레이 하나다: 결과가 나올 때까지 붙잡아 둔다
+            hpPendingDisplays = info.displays
+            DebugLog.write("HP 시도 중 모니터 목록 \(info.displays.map { "\($0.id) \(Int($0.framebuffer.width))x\(Int($0.framebuffer.height))" })")
+            if info.pixelWidth > 0 && info.pixelHeight > 0 { framebuffer.resize(width: info.pixelWidth, height: info.pixelHeight) }
+            return
+        case .fallingBack:
+            return
+        default:
+            break
+        }
         DebugLog.write("DisplayInfo2 현재=\(String(info.currentDisplayID, radix: 16)) 픽셀 \(info.pixelWidth)x\(info.pixelHeight) 모니터 \(info.displays.count)개: "
             + info.displays.map { "[id \($0.id)\($0.isMain ? " 주" : "") 데스크톱 \(Int($0.desktop.minX)),\(Int($0.desktop.minY)) \(Int($0.desktop.width))x\(Int($0.desktop.height)) fb \(Int($0.framebuffer.minX)),\(Int($0.framebuffer.minY)) \(Int($0.framebuffer.width))x\(Int($0.framebuffer.height))]" }.joined(separator: " "))
         if !info.displays.isEmpty { emit(.displays(info.displays)) }

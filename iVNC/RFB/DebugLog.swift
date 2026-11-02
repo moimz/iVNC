@@ -15,11 +15,18 @@ enum DebugLog {
         return f.string(from: Date())
     }
 
+    /// 새 접속: 시각을 0 으로 돌리고 구분선을 넣는다 (다시 접속할 때 앞 접속 기록이 남도록 지우지 않는다. 2MB 를 넘으면 비운다)
     static func reset() {
         #if DEBUG
         queue.sync {
             start = Date()
-            try? Data().write(to: url)
+            let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+            if size > 2_000_000 { try? Data().write(to: url) }
+            if let h = try? FileHandle(forWritingTo: url) {
+                h.seekToEndOfFile(); h.write(Data("===== 새 접속 =====\n".utf8)); try? h.close()
+            } else {
+                try? Data("===== 새 접속 =====\n".utf8).write(to: url)
+            }
         }
         recentLock.lock(); recentLines = []; recentLock.unlock()
         #endif

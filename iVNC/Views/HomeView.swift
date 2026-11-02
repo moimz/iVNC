@@ -6,7 +6,7 @@ struct HomeView: View {
     @State private var editing: Computer?
     @State private var adding = false
     @State private var connecting: Computer?
-    @AppStorage("debug.hpTest") private var hpTest = false
+    @AppStorage("debug.hpOff") private var hpOff = false
 
     private let columns = [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)]
 
@@ -38,7 +38,7 @@ struct HomeView: View {
             .toolbar {
                 #if DEBUG
                 ToolbarItem(placement: .topBarLeading) {
-                    Toggle("고성능 시험", isOn: $hpTest).toggleStyle(.button)
+                    Toggle("고성능 끔", isOn: $hpOff).toggleStyle(.button)
                 }
                 #endif
                 ToolbarItem(placement: .topBarTrailing) {

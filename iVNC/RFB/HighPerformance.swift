@@ -328,6 +328,12 @@ final class HPUDPReceiver {
         for (fd, port, pkt) in packets { Self.send(fd, pkt, to: to, port: port) }
     }
 
+    /// 검증된 영상 패킷 수 (고성능이 실제로 오는지 판정)
+    var verifiedVideo: Int {
+        lock.lock(); defer { lock.unlock() }
+        return streams.count > 1 ? streams[1].ok : 0
+    }
+
     func summary() -> String {
         lock.lock(); defer { lock.unlock() }
         return streams.enumerated().map { i, s in
