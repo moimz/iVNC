@@ -121,14 +121,20 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
         // 지우기 때 아이폰 키보드는 조합 기록으로 이미 보낸 마지막 글자를 다시 조합 중으로 끌어온다 ("도레" 에서 지우면 "돌").
         // 맥은 바로 고치지 않는다: 보낸 것을 기억해 두고, 조합이 끝날 때 비교해서 필요한 만큼만 고친다.
         // "돌" 에 ㅏ 를 치면 "도라" 가 되어 확정된 "도" 는 이미 보냈으니 안 보내고, 다시 지워 "도" 가 되면 아래에서 조합을 끝낸다
+        // 맥에 이미 보낸 것은 키보드에 따라 고치지 않는다: 보이는 표시와 보낼 것은 보낸 글자 뒤에 새로 생긴 받침 자음(ㄹ)뿐이다
         if !final, !s.isEmpty, t.count == s.count, c.count == s.count - 1, Array(s.prefix(c.count)) == c {
-            onPending(String(t[c.count...]))
+            onPending(Self.extra(t[c.count], over: s[c.count]) ?? String(t[c.count...]))
             return
         }
         var p = 0
         while p < min(c.count, s.count) && c[p] == s[p] { p += 1 }
-        if s.count > p { onBackspace(s.count - p) }
-        if c.count > p { onText(String(c[p...])) }
+        // 보낸 마지막 글자에 받침이 붙은 채 확정되면(돌 + 띄어쓰기) 맥의 "도" 는 두고 새 자음과 그 뒤만 보낸다
+        if p == s.count - 1, p < c.count, let add = Self.extra(c[p], over: s[p]) {
+            onText(add + String(c[(p + 1)...]))
+        } else {
+            if s.count > p { onBackspace(s.count - p) }
+            if c.count > p { onText(String(c[p...])) }
+        }
         sent = String(c)
         let all = Array(text ?? "")
         let pending = final || all.count <= c.count ? "" : String(all[c.count...])
@@ -138,6 +144,21 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
             text = ""
             sent = ""
         }
+    }
+
+    /// 받침 → 자음들 (겹받침은 나눈다). 완성형 받침 순서
+    private static let jongParts: [String] = ["", "ㄱ", "ㄲ", "ㄱㅅ", "ㄴ", "ㄴㅈ", "ㄴㅎ", "ㄷ", "ㄹ", "ㄹㄱ", "ㄹㅁ", "ㄹㅂ", "ㄹㅅ", "ㄹㅌ", "ㄹㅍ", "ㄹㅎ",
+                                              "ㅁ", "ㅂ", "ㅂㅅ", "ㅅ", "ㅆ", "ㅇ", "ㅈ", "ㅊ", "ㅋ", "ㅌ", "ㅍ", "ㅎ"]
+
+    /// 키보드가 보낸 글자 sent 에 받침을 붙여 now 로 끌어왔을 때 새로 생긴 자음 ("도"→"돌" 이면 "ㄹ", "갈"→"갉" 이면 "ㄱ").
+    /// 초성·중성이 다르거나 받침이 늘지 않았으면 nil
+    static func extra(_ now: Character, over sent: Character) -> String? {
+        guard let n = now.unicodeScalars.first?.value, let o = sent.unicodeScalars.first?.value,
+              (0xAC00...0xD7A3).contains(n), (0xAC00...0xD7A3).contains(o),
+              (n - 0xAC00) / 28 == (o - 0xAC00) / 28 else { return nil }
+        let a = jongParts[Int((o - 0xAC00) % 28)], b = jongParts[Int((n - 0xAC00) % 28)]
+        guard b.count > a.count, b.hasPrefix(a) else { return nil }
+        return String(b.dropFirst(a.count))
     }
 
     static func isHangul(_ u: Unicode.Scalar) -> Bool {
