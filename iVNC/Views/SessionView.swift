@@ -176,7 +176,7 @@ struct SessionView: View {
         .overlay(alignment: .top) { if menuVisible || model.phase != .viewing { topBar } }
         #if DEBUG
         .overlay(alignment: .bottomLeading) {
-            if model.triedHighPerformance {
+            if model.triedHighPerformance && (menuVisible || model.phase != .viewing) { // 보는 중에는 메뉴를 열었을 때만
                 TimelineView(.periodic(from: .now, by: 1)) { _ in
                     Text(DebugLog.recent.joined(separator: "\n"))
                         .font(.system(size: 10, design: .monospaced))
