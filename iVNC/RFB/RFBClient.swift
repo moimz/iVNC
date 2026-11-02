@@ -74,6 +74,69 @@ final class RFBClient {
         self.password = password
     }
 
+    // MARK: - 고성능 시험 (Debug, 환경 변수 IVNC_HP=1, 받는 포트를 옮기려면 IVNC_HP_PORT_OFFSET)
+
+    #if DEBUG
+    static let hpTest = ProcessInfo.processInfo.environment["IVNC_HP"] != nil
+    static let hpPortOffset = UInt16(ProcessInfo.processInfo.environment["IVNC_HP_PORT_OFFSET"] ?? "0") ?? 0
+    #else
+    static let hpTest = false
+    static let hpPortOffset: UInt16 = 0
+    #endif
+    private var hpSecrets: HP.Secrets?
+    private var hpReceiver: HPUDPReceiver?
+    private var hpServerPorts: (audio: UInt16, video: UInt16)?
+    private var hpTimer: DispatchSourceTimer?
+
+    private func hpRect(_ enc: Int32, _ body: [UInt8]) {
+        DebugLog.write("HP 사각형 \(enc) \(body.count)바이트: \(body.prefix(24).map { String(format: "%02x", $0) }.joined())")
+        if enc == 1110 {
+            DebugLog.write("HP Message1 문자열 \(HP.message1Strings(body))")
+            let secrets = HP.Secrets()
+            hpSecrets = secrets
+            do {
+                let offer = try HP.offerMessage(secrets)
+                socket?.send(offer)
+                DebugLog.write("HP 제안(0x1c) 보냄 \(offer.count)바이트, 내 SSRC 오디오 \(String(secrets.audioSSRC, radix: 16)) 비디오 \(String(secrets.videoSSRC, radix: 16))")
+            } catch {
+                DebugLog.write("HP 제안 만들기 실패 \(error)")
+            }
+        } else if enc == 1010 {
+            if let ports = HP.streamPorts(body) {
+                hpServerPorts = ports
+                DebugLog.write("HP 서버 UDP 포트: 오디오 \(ports.audio), 비디오 \(ports.video)")
+                if hpReceiver == nil {
+                    let r = HPUDPReceiver()
+                    let local = [ports.audio &+ Self.hpPortOffset, ports.video &+ Self.hpPortOffset]
+                    if let err = r.bind(ports: local) { DebugLog.write("HP " + err) } else { hpReceiver = r; DebugLog.write("HP UDP 받는 포트 \(local)") }
+                }
+            } else {
+                do {
+                    let a = try HP.answer(body)
+                    DebugLog.write("HP 답: 서버 SSRC 오디오 \(String(a.audioSSRC, radix: 16)) 비디오 \(String(a.videoSSRC, radix: 16)), \(a.width)x\(a.height), 줄무늬 \(a.stripes)")
+                } catch {
+                    DebugLog.write("HP 답 해석 실패 \(error)")
+                }
+                hpStartWatching()
+            }
+        }
+    }
+
+    /// 답을 받은 뒤: 1초마다 서버 포트로 작은 패킷을 보내고(포트 따라오기 시험), 2초마다 받은 양을 적는다
+    private func hpStartWatching() {
+        guard hpTimer == nil, let r = hpReceiver, let ports = hpServerPorts, let ip = socket?.peerIPv4 else { return }
+        var n = 0
+        let t = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        t.schedule(deadline: .now(), repeating: 1)
+        t.setEventHandler {
+            n += 1
+            if n <= 10 { r.punch(index: 0, to: ip, port: ports.audio); r.punch(index: 1, to: ip, port: ports.video) }
+            if n % 2 == 0 { DebugLog.write("HP UDP 받은 양: \(r.summary())") }
+        }
+        hpTimer = t
+        t.resume()
+    }
+
     #if DEBUG
     /// 디버그 신호로 지금 접속을 건드리기 위한 참조
     static weak var current: RFBClient?
@@ -104,6 +167,8 @@ final class RFBClient {
         stateLock.lock(); stopped = true; stateLock.unlock()
         keepAwakeTimer?.cancel()
         watchdog?.cancel()
+        hpTimer?.cancel()
+        hpReceiver?.stop()
         socket?.close()
     }
 
@@ -248,7 +313,7 @@ final class RFBClient {
             serverFlags = UInt32(name[2]) << 24 | UInt32(name[3]) << 16 | UInt32(name[4]) << 8 | UInt32(name[5])
         }
         framebuffer.resize(width: w, height: h)
-        DebugLog.write("ServerInit \(w)x\(h) flags=0x\(String(serverFlags, radix: 16))")
+        DebugLog.write("ServerInit \(w)x\(h) flags=0x\(String(serverFlags, radix: 16)) 확장 \(name.count >= 22 && name[0] == 0 ? name[6..<22].map { String(format: "%02x", $0) }.joined() : "없음")")
         if serverFlags & 0x04 != 0 { try sessionSelect(s) }
 
         emit(.status("모니터 정보를 받는 중…"))
@@ -256,12 +321,17 @@ final class RFBClient {
         if apple {
             setup += Self.viewerInfo()
             setup += [0x0A, 0, 0, 1] // SetMode: 조작
+            if Self.hpTest {
+                setup += HP.virtualDisplayMessage(width: 1280, height: 800, scale: 2)
+                DebugLog.write("HP 가상 디스플레이 요청 1280x800pt @2")
+            }
             setup += Self.setDisplay(nil)
         }
         // SetPixelFormat: 32bpp depth24 리틀엔디언 true color, R16 G8 B0
         setup += [0, 0, 0, 0, 32, 24, 0, 1] + [UInt8].be16(255) + [UInt8].be16(255) + [UInt8].be16(255) + [16, 8, 0, 0, 0, 0]
         // 1105(DisplayInfo2) 와 1101 을 함께 넣어야 모니터 목록이 온다 (실험으로 확인)
-        let encodings: [Int32] = [16, 6, 1, 0, 1105, 1101, 1100, 1109, -223, -224] // 1100: 커서 위치, 1109: 키보드 입력 상태 (무엇이 오는지 시험 중)
+        var encodings: [Int32] = [16, 6, 1, 0, 1105, 1101, 1100, 1109, -223, -224] // 1100: 커서 위치, 1109: 키보드 입력 상태
+        if Self.hpTest { encodings = [1010] + encodings + [1110] } // 고성능: 1010 맨 앞, 1110 맨 뒤
         setup += [2, 0] + [UInt8].be16(encodings.count) + encodings.flatMap { [UInt8].be32(UInt32(bitPattern: $0)) }
         s.send(setup)
         if !apple {
@@ -373,6 +443,8 @@ final class RFBClient {
                 }
             case 1105:
                 handleDisplayInfo2(try s.read(try s.u16()))
+            case 1010, 1110:
+                hpRect(enc, try s.read(try s.u16()))
             case 1101:
                 let hdr = try s.read(8)
                 try s.skip((Int(hdr[4]) << 8 | Int(hdr[5])) * 28)

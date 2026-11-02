@@ -50,6 +50,14 @@ final class RFBSocket {
         throw RFBError.connect(String(cString: strerror(lastErr)))
     }
 
+    /// TCP 상대의 IPv4 주소 (고성능 UDP 를 보낼 곳). IPv4 가 아니면 nil
+    var peerIPv4: in_addr_t? {
+        var addr = sockaddr_in(), len = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let rc = withUnsafeMutablePointer(to: &addr) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getpeername(fd, $0, &len) } }
+        guard rc == 0, addr.sin_family == sa_family_t(AF_INET) else { return nil }
+        return addr.sin_addr.s_addr
+    }
+
     func close() {
         if fd >= 0 { shutdown(fd, SHUT_RDWR); Darwin.close(fd); fd = -1 }
     }
