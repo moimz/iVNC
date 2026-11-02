@@ -31,6 +31,7 @@ final class SessionModel: ObservableObject {
     init(computer: Computer) {
         self.computer = computer
         renderer.onFirstImage = { [weak self] in self?.hasImage = true }
+        mouseMode = MouseMode(rawValue: UserDefaults.standard.string(forKey: "mouseMode." + computer.id.uuidString) ?? "") ?? .touch
     }
 
     /// 고성능 없이 다시 접속할 때 true
@@ -117,7 +118,13 @@ final class SessionModel: ObservableObject {
         phase = .picking
     }
 
-    func click(_ p: CGPoint) { client?.click(x: Int(p.x), y: Int(p.y)) }
+    /// 마우스 조작 방식 (컴퓨터별로 기억)
+    @Published private(set) var mouseMode: MouseMode = .touch
+
+    func toggleMouseMode() {
+        mouseMode = mouseMode == .touch ? .trackpad : .touch
+        UserDefaults.standard.set(mouseMode.rawValue, forKey: "mouseMode." + computer.id.uuidString)
+    }
     func sendText(_ t: String) { client?.sendText(t) }
     func sendBackspace(_ n: Int) { for _ in 0..<n { client?.sendSpecialKey(0xFF08, name: "BackSpace") } }
     func sendReturn() { client?.sendSpecialKey(0xFF0D, name: "Return") }
@@ -139,7 +146,8 @@ struct SessionView: View {
     @EnvironmentObject private var store: ComputerStore
     @Environment(\.dismiss) private var dismiss
     @StateObject private var model: SessionModel
-    @State private var chromeVisible = true
+    /// 떠 있는 버튼으로 연 앱 UI (보는 중에는 이게 켜져야 위 막대가 보인다)
+    @State private var menuVisible = false
 
     init(computer: Computer) {
         _model = StateObject(wrappedValue: SessionModel(computer: computer))
@@ -150,7 +158,22 @@ struct SessionView: View {
             Color.black.ignoresSafeArea()
             content
         }
-        .overlay(alignment: .top) { if chromeVisible || model.phase != .viewing { topBar } }
+        .overlay {
+            if model.phase == .viewing {
+                // 앱 UI 가 떠 있을 때: 기능 버튼이 아닌 곳을 누르면 UI 만 닫는다 (맥에는 안 보낸다)
+                if menuVisible {
+                    Button { setMenu(false) } label: {
+                        Color.black.opacity(0.2).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .ignoresSafeArea()
+                }
+                // 떠 있는 버튼: 이 버튼의 터치는 맥에 안 보낸다
+                FloatingMenuButton(open: menuVisible) { setMenu(!menuVisible) }
+                    .ignoresSafeArea()
+            }
+        }
+        .overlay(alignment: .top) { if menuVisible || model.phase != .viewing { topBar } }
         #if DEBUG
         .overlay(alignment: .bottomLeading) {
             if model.triedHighPerformance {
@@ -166,7 +189,7 @@ struct SessionView: View {
             }
         }
         #endif
-        .statusBarHidden(model.phase == .viewing && !chromeVisible)
+        .statusBarHidden(model.phase == .viewing && !menuVisible)
         .preferredColorScheme(.dark)
         .onAppear { model.connect(store: store) }
         .onDisappear { model.close() }
@@ -184,7 +207,7 @@ struct SessionView: View {
                 .padding(.top, 56)
         case .viewing:
             ZStack {
-                ScreenView(renderer: model.renderer, onClick: model.click) { withAnimation(.easeInOut(duration: 0.2)) { chromeVisible.toggle() } }
+                ScreenView(renderer: model.renderer, mode: model.mouseMode, input: model)
                     .ignoresSafeArea()
                 KeyInputField(active: $model.typing, onText: model.sendText, onBackspace: model.sendBackspace, onReturn: model.sendReturn)
                     .frame(width: 1, height: 1)
@@ -200,6 +223,10 @@ struct SessionView: View {
                 Button("다시 시도") { model.connect(store: store) }.buttonStyle(.borderedProminent)
             }
         }
+    }
+
+    private func setMenu(_ on: Bool) {
+        withAnimation(.easeInOut(duration: 0.2)) { menuVisible = on }
     }
 
     private var topBar: some View {
@@ -221,14 +248,20 @@ struct SessionView: View {
             }
             Spacer()
             if model.phase == .viewing {
-                Button { model.typing.toggle() } label: {
+                Button { model.toggleMouseMode(); setMenu(false) } label: {
+                    Image(systemName: model.mouseMode == .touch ? "hand.point.up.left" : "rectangle.and.hand.point.up.left").frame(width: 36, height: 36)
+                }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .accessibilityLabel(model.mouseMode == .touch ? "터치 모드" : "트랙패드 모드")
+                Button { model.typing.toggle(); setMenu(false) } label: {
                     Image(systemName: model.typing ? "keyboard.chevron.compact.down" : "keyboard").frame(width: 36, height: 36)
                 }
                 .buttonStyle(.glass)
                 .buttonBorderShape(.circle)
             }
             if model.phase == .viewing && model.displays.count > 1 && !model.isHighPerformance {
-                Button { model.backToPicker() } label: {
+                Button { setMenu(false); model.backToPicker() } label: {
                     Label("모니터", systemImage: "display.2").frame(height: 36)
                 }
                 .buttonStyle(.glass)
@@ -243,4 +276,110 @@ struct SessionView: View {
               let i = model.displays.sorted(by: DisplayPickerView.order).firstIndex(of: d) else { return model.computer.name }
         return "\(model.computer.name) · 모니터 \(i + 1)"
     }
+}
+
+/// 떠 있는 버튼 (AssistiveTouch 처럼): 끌면 따라오고 놓으면 가까운 좌우 가장자리에 붙는다. 위치를 기억한다.
+/// UIKit 으로 만든다: SwiftUI 버튼에 끌기 손동작을 붙이면 탭이 먹지 않았다. 버튼 밖 터치는 아래(화면)로 그대로 보낸다
+struct FloatingMenuButton: UIViewRepresentable {
+    let open: Bool
+    let action: () -> Void
+
+    func makeUIView(context: Context) -> FloatingButtonHost {
+        let v = FloatingButtonHost()
+        v.action = action
+        return v
+    }
+
+    func updateUIView(_ v: FloatingButtonHost, context: Context) {
+        v.action = action
+        v.setOpen(open)
+    }
+}
+
+final class FloatingButtonHost: UIView {
+    var action: () -> Void = {}
+    private let button = UIButton(type: .custom)
+    private let size: CGFloat = 54
+    private var dragStart: CGPoint?
+
+    private var right: Bool {
+        get { UserDefaults.standard.object(forKey: "floatingButton.right") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "floatingButton.right") }
+    }
+    private var yFraction: CGFloat {
+        get { UserDefaults.standard.object(forKey: "floatingButton.y") as? CGFloat ?? 0.82 }
+        set { UserDefaults.standard.set(newValue, forKey: "floatingButton.y") }
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        button.frame = CGRect(x: 0, y: 0, width: size, height: size)
+        button.layer.cornerRadius = size / 2
+        button.backgroundColor = UIColor.black.withAlphaComponent(0.45)
+        button.layer.borderColor = UIColor.white.withAlphaComponent(0.5).cgColor
+        button.layer.borderWidth = 1
+        button.tintColor = .white
+        button.alpha = 0.75
+        button.addTarget(self, action: #selector(tapped), for: .touchUpInside)
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(panned(_:)))
+        button.addGestureRecognizer(pan)
+        addSubview(button)
+        setOpen(false)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    func setOpen(_ open: Bool) {
+        let cfg = UIImage.SymbolConfiguration(pointSize: 20, weight: .semibold)
+        button.setImage(UIImage(systemName: open ? "xmark" : "circle.grid.2x2.fill", withConfiguration: cfg), for: .normal)
+        button.alpha = open ? 1 : 0.75
+    }
+
+    /// 버튼 밖 터치는 받지 않는다 (화면으로 간다)
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        button.frame.insetBy(dx: -6, dy: -6).contains(point) ? button : nil
+    }
+
+    private func restingCenter() -> CGPoint {
+        let b = bounds
+        let x = right ? b.width - size / 2 - 6 : size / 2 + 6
+        let y = min(max(yFraction * b.height, size), b.height - size / 2 - 6)
+        return CGPoint(x: x, y: y)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if dragStart == nil { button.center = restingCenter() }
+    }
+
+    @objc private func tapped() { action() }
+
+    @objc private func panned(_ g: UIPanGestureRecognizer) {
+        switch g.state {
+        case .began:
+            dragStart = button.center
+            button.alpha = 1
+        case .changed:
+            guard let s = dragStart else { return }
+            let t = g.translation(in: self)
+            button.center = CGPoint(x: s.x + t.x, y: s.y + t.y)
+        default:
+            right = button.center.x > bounds.width / 2
+            yFraction = min(max(button.center.y / bounds.height, 0.08), 0.95)
+            dragStart = nil
+            UIView.animate(withDuration: 0.3, delay: 0, usingSpringWithDamping: 0.8, initialSpringVelocity: 0) {
+                self.button.center = self.restingCenter()
+            }
+            button.alpha = 0.75
+        }
+    }
+}
+
+extension SessionModel: MouseInput {
+    func mouseClick(_ p: CGPoint, button: UInt8) { client?.click(x: Int(p.x), y: Int(p.y), button: button) }
+    func mouseDown(_ p: CGPoint) { client?.mouseDown(x: Int(p.x), y: Int(p.y)) }
+    func mouseMove(_ p: CGPoint) { client?.mouseMove(x: Int(p.x), y: Int(p.y)) }
+    func mouseUp(_ p: CGPoint) { client?.mouseUp(x: Int(p.x), y: Int(p.y)) }
+    var serverCursor: CGPoint? { client?.cursorPosition }
 }

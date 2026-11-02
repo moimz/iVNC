@@ -787,15 +787,45 @@ final class RFBClient {
 
     // MARK: - 마우스
 
-    /// 화면 좌표(프레임버퍼 픽셀)를 누르고 뗀다
-    func click(x: Int, y: Int) {
+    /// 지금 눌린 버튼 (1 왼쪽, 4 오른쪽). 이동할 때도 같이 보내야 드래그가 된다
+    private var buttonMask: UInt8 = 0
+
+    /// 마우스 상태 하나를 보낸다 (RFB PointerEvent). 좌표는 프레임버퍼 픽셀.
+    /// 더블 클릭 전용 메시지는 없다: 같은 좌표로 빨리 두 번 누르고 떼면 맥이 시간·위치로 판단한다
+    private func pointer(_ x: Int, _ y: Int, _ mask: UInt8) {
         let x = max(0, min(x, framebuffer.width - 1)), y = max(0, min(y, framebuffer.height - 1))
-        for mask: UInt8 in [0, 1, 0] {
-            socket?.send([5, mask] + [UInt8].be16(x) + [UInt8].be16(y))
-        }
+        socket?.send([5, mask] + [UInt8].be16(x) + [UInt8].be16(y))
         stateLock.lock(); cursor = (x, y); cursorChangedAt = Date(); stateLock.unlock()
         markLocalInput()
-        DebugLog.write("클릭 \(x),\(y)")
+    }
+
+    /// 누르고 뗀다. button 1 = 왼쪽, 4 = 오른쪽
+    func click(x: Int, y: Int, button: UInt8 = 1) {
+        pointer(x, y, buttonMask)
+        pointer(x, y, buttonMask | button)
+        pointer(x, y, buttonMask)
+        DebugLog.write("\(button == 4 ? "오른쪽 " : "")클릭 \(x),\(y)")
+    }
+
+    func mouseDown(x: Int, y: Int, button: UInt8 = 1) {
+        pointer(x, y, buttonMask)
+        buttonMask |= button
+        pointer(x, y, buttonMask)
+        DebugLog.write("누름 \(x),\(y)")
+    }
+
+    func mouseMove(x: Int, y: Int) { pointer(x, y, buttonMask) }
+
+    func mouseUp(x: Int, y: Int) {
+        buttonMask = 0
+        pointer(x, y, 0)
+        DebugLog.write("뗌 \(x),\(y)")
+    }
+
+    /// 서버가 알려 준 커서 위치 (트랙패드 모드 포인터의 시작점)
+    var cursorPosition: CGPoint? {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return cursor.map { CGPoint(x: $0.x, y: $0.y) }
     }
 
     // MARK: - 키 입력
