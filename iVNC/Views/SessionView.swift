@@ -13,7 +13,10 @@ final class SessionModel: ObservableObject {
     @Published private(set) var phase: Phase = .connecting("접속하는 중…")
     @Published private(set) var displays: [RemoteDisplay] = []
     @Published private(set) var selected: RemoteDisplay?
-    @Published private(set) var image: CGImage?
+    /// 화면은 SwiftUI 를 거치지 않고 렌더러가 레이어에 바로 그린다
+    let renderer = ScreenRenderer()
+    /// 첫 그림이 나왔는지 (기다림 표시용)
+    @Published private(set) var hasImage = false
     /// 고성능(가상 디스플레이) 연결인지
     @Published private(set) var isHighPerformance = false
     /// 고성능을 시도했는지 (Debug 화면 로그를 띄울지)
@@ -27,6 +30,7 @@ final class SessionModel: ObservableObject {
 
     init(computer: Computer) {
         self.computer = computer
+        renderer.onFirstImage = { [weak self] in self?.hasImage = true }
     }
 
     /// 고성능 없이 다시 접속할 때 true
@@ -76,7 +80,10 @@ final class SessionModel: ObservableObject {
             standardOnly = true
             if let store { connect(store: store) }
         case .frame:
-            image = client?.framebuffer.makeImage()
+            if let fb = client?.framebuffer { renderer.presentStandard(fb) }
+            client?.frameConsumed()
+        case .stripe(let pb, let stripe, let stripes):
+            renderer.presentStripe(pb, stripe: stripe, stripes: stripes)
             client?.frameConsumed()
         case .failed(let msg):
             // 화면을 보기 전(접속·인증 단계) 실패는 자동으로 3번까지 다시 시도한다.
@@ -99,7 +106,6 @@ final class SessionModel: ObservableObject {
 
     func select(_ d: RemoteDisplay) {
         saveThumbnail()
-        image = nil
         selected = d
         phase = .viewing
         client?.select(display: d.id)
@@ -123,7 +129,7 @@ final class SessionModel: ObservableObject {
     }
 
     private func saveThumbnail() {
-        guard phase == .viewing, let img = image else { return }
+        guard phase == .viewing, hasImage, let fb = client?.framebuffer, let img = renderer.snapshot(fb) else { return }
         Thumbnails.save(img, computer: computer.id, display: selected?.stableKey)
         store?.thumbnailsChanged()
     }
@@ -178,12 +184,12 @@ struct SessionView: View {
                 .padding(.top, 56)
         case .viewing:
             ZStack {
-                ScreenView(image: model.image, onClick: model.click) { withAnimation(.easeInOut(duration: 0.2)) { chromeVisible.toggle() } }
+                ScreenView(renderer: model.renderer, onClick: model.click) { withAnimation(.easeInOut(duration: 0.2)) { chromeVisible.toggle() } }
                     .ignoresSafeArea()
                 KeyInputField(active: $model.typing, onText: model.sendText, onBackspace: model.sendBackspace, onReturn: model.sendReturn)
                     .frame(width: 1, height: 1)
                     .opacity(0.01)
-                if model.image == nil { ProgressView().controlSize(.large) }
+                if !model.hasImage { ProgressView().controlSize(.large) }
             }
         case .failed(let msg):
             ContentUnavailableView {

@@ -4,12 +4,13 @@ import UIKit
 /// 원격 화면. 처음엔 화면 안에 다 들어오게(contain), 핀치로 확대는 원본 픽셀(1:1)까지, 축소는 contain 까지.
 /// 한 손가락 탭은 그 자리 클릭, 두 손가락 탭은 위 막대 보이기·숨기기.
 struct ScreenView: UIViewRepresentable {
-    let image: CGImage?
+    let renderer: ScreenRenderer
     var onClick: (CGPoint) -> Void = { _ in }
     var onTwoFingerTap: () -> Void = {}
 
     func makeUIView(context: Context) -> ZoomingImageView {
         let v = ZoomingImageView()
+        v.attach(renderer)
         v.onClick = onClick
         v.onTwoFingerTap = onTwoFingerTap
         return v
@@ -18,14 +19,13 @@ struct ScreenView: UIViewRepresentable {
     func updateUIView(_ v: ZoomingImageView, context: Context) {
         v.onClick = onClick
         v.onTwoFingerTap = onTwoFingerTap
-        v.setImage(image)
     }
 }
 
 final class ZoomingImageView: UIScrollView, UIScrollViewDelegate {
     var onClick: (CGPoint) -> Void = { _ in }
     var onTwoFingerTap: () -> Void = {}
-    private let content = UIView()
+    private let content = LayerHostView()
     private var pixelSize = CGSize.zero
     private var lastBounds = CGSize.zero
 
@@ -38,8 +38,6 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate {
         contentInsetAdjustmentBehavior = .never
         decelerationRate = .fast
         bouncesZoom = true
-        content.layer.magnificationFilter = .nearest // 원본 근처에서 글자가 또렷하게
-        content.layer.minificationFilter = .trilinear
         addSubview(content)
         let tap = UITapGestureRecognizer(target: self, action: #selector(tapped(_:)))
         addGestureRecognizer(tap)
@@ -62,14 +60,15 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate {
 
     @objc private func twoFingerTapped() { onTwoFingerTap() }
 
-    func setImage(_ image: CGImage?) {
-        content.layer.contents = image
-        guard let image else { return }
-        let size = CGSize(width: image.width, height: image.height)
-        if size != pixelSize {
-            pixelSize = size
-            resetZoom()
+    /// 렌더러의 레이어를 붙이고, 원격 화면 크기가 바뀌면 확대 기준을 다시 잡는다
+    func attach(_ r: ScreenRenderer) {
+        content.hosted = r
+        content.layer.addSublayer(r.layer)
+        r.onSizeChange = { [weak self] size in
+            self?.pixelSize = size
+            self?.resetZoom()
         }
+        if r.pixelSize != .zero { pixelSize = r.pixelSize; resetZoom() }
     }
 
     /// 원본 크기 = 그림 1픽셀이 화면 1픽셀. 포인트로는 픽셀 / 화면 배율.
@@ -114,4 +113,13 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate {
     func viewForZooming(in scrollView: UIScrollView) -> UIView? { content }
 
     func scrollViewDidZoom(_ scrollView: UIScrollView) { centerContent() }
+}
+
+/// 렌더러 레이어를 담는 뷰: 크기가 바뀌면 렌더러 레이어를 맞춘다 (확대는 이 뷰의 변환으로)
+final class LayerHostView: UIView {
+    weak var hosted: ScreenRenderer?
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        hosted?.layout(bounds: bounds)
+    }
 }

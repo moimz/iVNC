@@ -12,6 +12,8 @@ final class RFBClient {
         case status(String)
         case displays([RemoteDisplay])
         case frame
+        /// 고성능: 디코딩된 줄무늬 (BGRA 픽셀 버퍼, 번호, 줄무늬 수)
+        case stripe(CVPixelBuffer, Int, Int)
         case failed(String)
         /// 고성능 결과: true 면 가상 디스플레이로 바로 보기, false 면 일반 모드로 바뀌었고 모니터 목록이 뒤따른다
         case highPerformance(Bool)
@@ -227,6 +229,7 @@ final class RFBClient {
         r.configure(index: 0, keys: s.audioKeys, mySSRC: s.audioSSRC, serverSSRC: a.audioSSRC, server: peer, remotePort: ports.audio)
         r.configure(index: 1, keys: s.videoKeys, mySSRC: s.videoSSRC, serverSSRC: a.videoSSRC, server: peer, remotePort: ports.video)
         r.startVideo(baseSSRC: a.videoSSRC, stripes: a.stripes)
+        hpStripeCount = max(a.stripes, 1)
         if a.width > 0 && a.height > 0 { framebuffer.resize(width: a.width, height: a.height) }
     }
 
@@ -245,28 +248,13 @@ final class RFBClient {
         DispatchQueue.global().asyncAfter(deadline: .now() + 5) { [weak self] in self?.hpReoffering = false } // 답이 안 오면 다음 막힘 때 다시
     }
 
-    /// 디코딩된 줄무늬를 화면 버퍼의 제자리에 복사하고 화면에 알린다
+    /// 디코딩된 줄무늬를 복사 없이 화면에 넘긴다 (화면이 줄무늬 레이어에 바로 넣는다)
     private func hpDraw(_ image: CVPixelBuffer, stripe: Int) {
-        CVPixelBufferLockBaseAddress(image, .readOnly)
-        defer { CVPixelBufferUnlockBaseAddress(image, .readOnly) }
-        guard let base = CVPixelBufferGetBaseAddress(image) else { return }
-        let w = CVPixelBufferGetWidth(image), h = CVPixelBufferGetHeight(image), bpr = CVPixelBufferGetBytesPerRow(image)
-        framebuffer.withPixels { p, fw, fh in
-            let y0 = stripe * h
-            let cw = min(w, fw)
-            for row in 0..<h where y0 + row < fh {
-                (p + (y0 + row) * fw).withMemoryRebound(to: UInt8.self, capacity: cw * 4) { dst in
-                    dst.update(from: (base + row * bpr).assumingMemoryBound(to: UInt8.self), count: cw * 4)
-                }
-            }
-        }
         hpStripes += 1
-        stateLock.lock()
-        let notify = !framePending
-        if notify { framePending = true }
-        stateLock.unlock()
-        if notify { emit(.frame) }
+        emit(.stripe(image, stripe, hpStripeCount))
     }
+
+    private var hpStripeCount = 4
 
     private var hpStripes = 0
 
@@ -587,6 +575,7 @@ final class RFBClient {
             let x = try s.u16(), y = try s.u16(), w = try s.u16(), h = try s.u16()
             let enc = try s.s32()
             encs.append(enc)
+            if [0, 1, 6, 16].contains(enc) { framebuffer.markDirty(x: x, y: y, w: w, h: h) }
             switch enc {
             case 0:
                 drewPixels = true

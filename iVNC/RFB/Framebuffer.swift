@@ -7,6 +7,8 @@ final class Framebuffer {
     private(set) var height = 0
     private(set) var pixels: UnsafeMutablePointer<UInt32>?
     private let lock = NSLock()
+    /// 화면 쪽이 아직 가져가지 않은 바뀐 영역 (픽셀)
+    private var dirty: CGRect?
 
     deinit { pixels?.deallocate() }
 
@@ -23,6 +25,21 @@ final class Framebuffer {
         } else {
             pixels = nil
         }
+        dirty = CGRect(x: 0, y: 0, width: width, height: height)
+    }
+
+    func markDirty(x: Int, y: Int, w: Int, h: Int) {
+        lock.lock(); defer { lock.unlock() }
+        let r = CGRect(x: x, y: y, width: w, height: h).intersection(CGRect(x: 0, y: 0, width: width, height: height))
+        guard !r.isEmpty else { return }
+        dirty = dirty.map { $0.union(r) } ?? r
+    }
+
+    /// 바뀐 영역을 가져가고 비운다
+    func takeDirty() -> CGRect? {
+        lock.lock(); defer { lock.unlock() }
+        let d = dirty; dirty = nil
+        return d
     }
 
     /// 잠근 채로 픽셀을 고친다. 사각형이 화면 밖이면 잘라낸다.
