@@ -15,6 +15,8 @@ struct KeyInputField: UIViewRepresentable {
     var onPending: (String) -> Void = { _ in }
     /// 키보드 위 줄의 특수키 (keysym, 이름)
     var onKey: (UInt32, String) -> Void = { _, _ in }
+    /// 조합키를 켜 둔 채 누른 키 (조합키들, 키, 이름)
+    var onCombo: ([UInt32], UInt32, String) -> Void = { _, _, _ in }
     /// 키보드 위 줄의 메뉴 버튼이 띄울 메뉴 (떠 있는 버튼과 같은 것)
     var menu: UIMenu?
 
@@ -30,6 +32,7 @@ struct KeyInputField: UIViewRepresentable {
         f.onReturn = onReturn
         f.onPending = onPending
         f.onKey = onKey
+        f.onCombo = onCombo
         f.setMenu(menu)
         if active && !f.isFirstResponder {
             DispatchQueue.main.async { f.becomeFirstResponder() }
@@ -46,23 +49,37 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
     var onEnd: () -> Void = {}
     var onPending: (String) -> Void = { _ in }
     var onKey: (UInt32, String) -> Void = { _, _ in }
+    var onCombo: ([UInt32], UInt32, String) -> Void = { _, _, _ in }
     private let menuButton = UIButton(type: .system)
     /// 메뉴는 기준 뷰를 덮으며 펼쳐진다: 메뉴 버튼 바로 위의 얇은 띠를 기준으로 띄워 버튼을 가리지 않게 한다
     private let menuAnchor = UIButton(type: .custom)
-    /// 아이폰 키보드로 못 치는 키 (키보드 위 줄 왼쪽, 좌우로 스크롤). keysym 은 X11 값
+    /// 조합키 (맥 기호). 누르면 켜져 있다가 다음 키와 함께 보내고 꺼진다. ⌘ 는 Meta_L 로 보낸다 (애플 서버 확인 필요)
+    private static let modifierKeys: [(title: String, keysym: UInt32, name: String)] = [
+        ("⌘", 0xFFE7, "Command"),
+        ("⌥", 0xFFE9, "Option"),
+        ("⌃", 0xFFE3, "Control"),
+        ("⇧", 0xFFE1, "Shift"),
+    ]
+    /// 아이폰 키보드로 못 치는 키 (키보드 위 줄 왼쪽, 좌우로 스크롤). keysym 은 X11 값, 이름은 맥 기호
     private static let specialKeys: [(title: String, keysym: UInt32, name: String)] = [
-        ("esc", 0xFF1B, "Escape"),
-        ("tab", 0xFF09, "Tab"),
+        ("⎋", 0xFF1B, "Escape"),
+        ("⇥", 0xFF09, "Tab"),
         ("←", 0xFF51, "Left"),
         ("↑", 0xFF52, "Up"),
         ("↓", 0xFF54, "Down"),
         ("→", 0xFF53, "Right"),
-        ("del", 0xFFFF, "Delete"),
-        ("home", 0xFF50, "Home"),
-        ("end", 0xFF57, "End"),
-        ("pgup", 0xFF55, "Page_Up"),
-        ("pgdn", 0xFF56, "Page_Down"),
+        ("⌦", 0xFFFF, "Delete"),
+        ("↖", 0xFF50, "Home"),
+        ("↘", 0xFF57, "End"),
+        ("⇞", 0xFF55, "Page_Up"),
+        ("⇟", 0xFF56, "Page_Down"),
     ] + (1...12).map { ("F\($0)", 0xFFBE + UInt32($0 - 1), "F\($0)") }
+    /// 켜 둔 조합키 (keysym) 와 그 버튼
+    private var latched: [UInt32] = []
+    private var modifierButtons: [UInt32: UIButton] = [:]
+    /// 조합키를 켜는 동안 영어 키보드를 쓰고, 다 끄면 원래 키보드로 돌린다
+    private var forcedInputMode: UITextInputMode?
+    private var inputModeBeforeLatch: UITextInputMode?
     /// 입력창 안에서 이미 맥으로 보낸 부분
     private var sent = ""
 
@@ -102,6 +119,72 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
     }
 
     func setMenu(_ menu: UIMenu?) { menuAnchor.menu = menu }
+
+    // MARK: 조합키
+
+    override var textInputMode: UITextInputMode? { forcedInputMode ?? super.textInputMode }
+
+    private func toggleModifier(_ keysym: UInt32) {
+        if let i = latched.firstIndex(of: keysym) { latched.remove(at: i) } else { latched.append(keysym) }
+        modifiersChanged()
+    }
+
+    private func clearModifiers() {
+        guard !latched.isEmpty else { return }
+        latched = []
+        modifiersChanged()
+    }
+
+    private func modifiersChanged() {
+        for (k, b) in modifierButtons { b.configuration = Self.keyConfig(title: b.configuration?.title ?? "", on: latched.contains(k)) }
+        if !latched.isEmpty && forcedInputMode == nil {
+            // 영어 키보드가 추가돼 있으면 그걸로 (⌘C 처럼 영어 글자와 함께 쓴다)
+            inputModeBeforeLatch = super.textInputMode
+            if let en = UITextInputMode.activeInputModes.first(where: { $0.primaryLanguage?.hasPrefix("en") == true }),
+               en.primaryLanguage != inputModeBeforeLatch?.primaryLanguage {
+                flushPending()
+                forcedInputMode = en
+                reloadInputViews()
+            }
+        } else if latched.isEmpty, forcedInputMode != nil {
+            forcedInputMode = inputModeBeforeLatch
+            reloadInputViews()
+            forcedInputMode = nil
+        }
+    }
+
+    /// 켜 둔 조합키와 함께 키 하나를 보내고 조합키를 끈다
+    private func sendWithModifiers(_ keysym: UInt32, name: String) {
+        flushPending()
+        onCombo(latched, keysym, name)
+        clearModifiers()
+    }
+
+    /// 키보드로 친 글자의 keysym (조합키와 함께 보낼 때). 영문 대문자는 소문자로 (⇧ 는 조합키로 따로 켠다)
+    private static func keysym(for c: Character) -> UInt32? {
+        guard let u = String(c).lowercased().unicodeScalars.first else { return nil }
+        switch u.value {
+        case 0x20...0x7E, 0xA0...0xFF: return u.value
+        default: return 0x0100_0000 | u.value
+        }
+    }
+
+    func textField(_ textField: UITextField, shouldChangeCharactersIn range: NSRange, replacementString string: String) -> Bool {
+        guard !latched.isEmpty, let c = string.first, let k = Self.keysym(for: c) else { return true }
+        sendWithModifiers(k, name: String(c))
+        return false
+    }
+
+    static func keyConfig(title: String, on: Bool = false) -> UIButton.Configuration {
+        var c = UIButton.Configuration.filled()
+        c.cornerStyle = .capsule
+        c.baseBackgroundColor = on ? .systemBlue : UIColor.white.withAlphaComponent(0.14)
+        c.title = title
+        c.attributedTitle = AttributedString(title, attributes: AttributeContainer([
+            .font: UIFont.systemFont(ofSize: 16, weight: .semibold), .foregroundColor: UIColor.white]))
+        c.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 9, bottom: 0, trailing: 9)
+        return c
+    }
 
     required init?(coder: NSCoder) { fatalError() }
 
@@ -145,19 +228,25 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
         let keys = UIStackView()
         keys.axis = .horizontal
         keys.spacing = 6
-        for k in Self.specialKeys {
-            var c = UIButton.Configuration.filled()
-            c.cornerStyle = .capsule
-            c.baseBackgroundColor = UIColor.white.withAlphaComponent(0.14)
-            c.attributedTitle = AttributedString(k.title, attributes: AttributeContainer([
-                .font: UIFont.systemFont(ofSize: 15, weight: .semibold), .foregroundColor: UIColor.white]))
-            c.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 14, bottom: 0, trailing: 14)
-            let b = UIButton(configuration: c, primaryAction: UIAction { [weak self] _ in
-                // 조합 중인 글자를 먼저 보내고 키를 보낸다
-                self?.flushPending()
-                self?.onKey(k.keysym, k.name)
+        for k in Self.modifierKeys {
+            let b = UIButton(configuration: Self.keyConfig(title: k.title), primaryAction: UIAction { [weak self] _ in
+                self?.toggleModifier(k.keysym)
             })
-            b.widthAnchor.constraint(greaterThanOrEqualToConstant: 50).isActive = true
+            b.accessibilityLabel = k.name
+            b.widthAnchor.constraint(greaterThanOrEqualToConstant: 38).isActive = true
+            modifierButtons[k.keysym] = b
+            keys.addArrangedSubview(b)
+        }
+        for k in Self.specialKeys {
+            let b = UIButton(configuration: Self.keyConfig(title: k.title), primaryAction: UIAction { [weak self] _ in
+                guard let self else { return }
+                if !self.latched.isEmpty { self.sendWithModifiers(k.keysym, name: k.name); return }
+                // 조합 중인 글자를 먼저 보내고 키를 보낸다
+                self.flushPending()
+                self.onKey(k.keysym, k.name)
+            })
+            b.accessibilityLabel = k.name
+            b.widthAnchor.constraint(greaterThanOrEqualToConstant: 38).isActive = true
             keys.addArrangedSubview(b)
         }
         let scroll = UIScrollView()
@@ -203,6 +292,7 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
 
     /// 입력창이 비어 있을 때 지우기: 맥 쪽 글자를 지운다
     override func deleteBackward() {
+        if !latched.isEmpty { sendWithModifiers(0xFF08, name: "BackSpace"); return }
         if (text ?? "").isEmpty { onBackspace(1) }
         super.deleteBackward()
     }
@@ -210,6 +300,7 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
     @objc private func changed() { sync(final: false) }
 
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+        if !latched.isEmpty { sendWithModifiers(0xFF0D, name: "Return"); return false }
         sync(final: true)
         onReturn()
         reset()
@@ -219,6 +310,7 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
     func textFieldDidEndEditing(_ textField: UITextField) {
         sync(final: true)
         reset()
+        clearModifiers()
         onEnd()
     }
 

@@ -185,6 +185,9 @@ final class SessionModel: ObservableObject {
     func sendKey(_ keysym: UInt32, name: String) {
         client?.sendSpecialKey(keysym, name: name)
     }
+    func sendCombo(_ modifiers: [UInt32], _ key: UInt32, name: String) {
+        client?.sendCombo(modifiers: modifiers, key: key, name: name)
+    }
 
     func close() {
         saveThumbnail()
@@ -337,7 +340,7 @@ struct SessionView: View {
                 ScreenView(renderer: model.renderer, mode: model.mouseMode, scrollMode: model.scrollMode, cursor: model.cursor, input: model)
                     .ignoresSafeArea()
                 KeyInputField(active: $model.typing, onText: model.sendText, onBackspace: model.sendBackspace, onReturn: model.sendReturn,
-                              onPending: { model.composing = $0 }, onKey: model.sendKey, menu: menu)
+                              onPending: { model.composing = $0 }, onKey: model.sendKey, onCombo: model.sendCombo, menu: menu)
                     .frame(width: 1, height: 1)
                     .opacity(0.01)
                 if !model.hasImage { ProgressView().controlSize(.large) }

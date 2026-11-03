@@ -925,6 +925,17 @@ final class RFBClient {
         DebugLog.write("키 보냄 \(name) 시각 \(DebugLog.wallClock())")
     }
 
+    /// 조합키를 누른 채 키 하나를 눌렀다 떼고 조합키를 놓는다 (⌘C 등)
+    func sendCombo(modifiers: [UInt32], key: UInt32, name: String) {
+        holdUpdatesForTyping()
+        for m in modifiers { sendKeyEvent(m, down: true) }
+        sendKeyEvent(key, down: true)
+        sendKeyEvent(key, down: false)
+        for m in modifiers.reversed() { sendKeyEvent(m, down: false) }
+        markLocalInput()
+        DebugLog.write("조합 보냄 \(modifiers.map { String(format: "%04x", $0) }) + \(name) 시각 \(DebugLog.wallClock())")
+    }
+
     private func markLocalInput() {
         stateLock.lock(); lastLocalInput = Date(); stateLock.unlock()
     }
