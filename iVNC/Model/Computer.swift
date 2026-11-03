@@ -13,6 +13,10 @@ struct Computer: Identifiable, Codable, Hashable {
     /// 가능하면 고성능 모드(가상 디스플레이)를 먼저 쓴다. 이 값이 없던 예전 기록은 예전의 전체 "고성능 끔" 설정을 따른다
     var preferHighPerformance: Bool?
 
+    /// 앱을 나가도 연결을 유지한다 (위치를 낮은 정확도로 켜 둔다). 예전 기록은 켬
+    var keepAliveInBackground: Bool?
+    var keepsAliveInBackground: Bool { keepAliveInBackground ?? true }
+
     var prefersHighPerformance: Bool {
         preferHighPerformance ?? !UserDefaults.standard.bool(forKey: "debug.hpOff")
     }

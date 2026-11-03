@@ -12,6 +12,7 @@ struct ComputerEditView: View {
     @State private var username = ""
     @State private var password = ""
     @State private var preferHP = true
+    @State private var keepAlive = true
 
     var body: some View {
         NavigationStack {
@@ -37,6 +38,11 @@ struct ComputerEditView: View {
                 } footer: {
                     Text("맥이 지원하면 가상 디스플레이로 영상처럼 받습니다. 안 되면 기본 방식으로 접속합니다.")
                 }
+                Section {
+                    Toggle("백그라운드에서 연결 유지", isOn: $keepAlive)
+                } footer: {
+                    Text("앱을 잠깐 나가도 연결이 끊기지 않고 맥도 잠들지 않습니다. 그동안 위치를 아주 낮은 정확도로 켜 두어 배터리를 조금 더 씁니다.")
+                }
             }
             .navigationTitle(computer == nil ? "컴퓨터 추가" : "컴퓨터 편집")
             .navigationBarTitleDisplayMode(.inline)
@@ -50,6 +56,7 @@ struct ComputerEditView: View {
                 guard let c = computer else { return }
                 name = c.name == c.host ? "" : c.name; host = c.host; port = String(c.port); username = c.username
                 preferHP = c.prefersHighPerformance
+                keepAlive = c.keepsAliveInBackground
             }
         }
     }
@@ -62,6 +69,7 @@ struct ComputerEditView: View {
         c.port = Int(port) ?? 5900
         c.username = username.trimmingCharacters(in: .whitespaces)
         c.preferHighPerformance = preferHP
+        c.keepAliveInBackground = keepAlive
         store.save(c, password: password.isEmpty ? nil : password)
         dismiss()
     }

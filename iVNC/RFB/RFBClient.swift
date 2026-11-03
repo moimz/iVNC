@@ -956,6 +956,9 @@ final class RFBClient {
 
     // MARK: - 화면 보호기 막기
 
+    /// 앱이 백그라운드에서 연결만 유지하는 동안: 화면은 안 받아도 맥이 잠들지 않게 계속 깨운다
+    var keepAwakeWhilePaused = false
+
     private func startKeepAwake() {
         let t = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
         t.schedule(deadline: .now() + 20, repeating: 20)
@@ -969,7 +972,7 @@ final class RFBClient {
         stateLock.lock()
         let now = Date()
         let pos = cursor, still = now.timeIntervalSince(cursorChangedAt), idle = now.timeIntervalSince(lastLocalInput)
-        let active = streaming && !awaitingSwitch
+        let active = (streaming && !awaitingSwitch) || keepAwakeWhilePaused
         stateLock.unlock()
         // 맥 앞에서 마우스를 움직이는 중(5초 안)이거나 앱에서 조작 중(30초 안)이면 보내지 않는다.
         guard active, still >= 5, idle >= 30 else {

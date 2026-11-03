@@ -119,6 +119,7 @@ final class SessionModel: ObservableObject {
         saveThumbnail()
         selected = d
         phase = .viewing
+        if computer.keepsAliveInBackground && !preview { BackgroundKeeper.shared.start() }
         if !guided {
             guided = true
             showGuide(mouseMode.title + "\n" + mouseMode.guide)
@@ -191,8 +192,38 @@ final class SessionModel: ObservableObject {
 
     func close() {
         saveThumbnail()
+        BackgroundKeeper.shared.stop()
         client?.stop()
         client = nil
+    }
+
+    /// 앱을 나갈 때: 화면 받기는 멈추고 연결만 둔다 (맥은 계속 깨워 둔다). 돌아오면 다시 받는다
+    private var backgrounded = false
+    /// 연결 유지를 안 하는 컴퓨터는 앱을 나가면 바로 끊고 화면을 닫는다 (목록으로)
+    @Published private(set) var ended = false
+
+    func enterBackground() {
+        // iOS 가 앱을 멈출 때까지 연결이 애매하게 물려 있으면 고성능은 맥에 모니터를 돌려주지 못한다: 바로 끊는다
+        if !computer.keepsAliveInBackground || preview {
+            DebugLog.write("백그라운드: 연결 유지 안 함, 바로 끊음")
+            close()
+            ended = true
+            return
+        }
+        guard phase == .viewing, !backgrounded else { return }
+        backgrounded = true
+        saveThumbnail()
+        client?.keepAwakeWhilePaused = true
+        client?.pause()
+        DebugLog.write("백그라운드: 화면 받기 멈춤")
+    }
+
+    func enterForeground() {
+        guard backgrounded else { return }
+        backgrounded = false
+        client?.keepAwakeWhilePaused = false
+        if phase == .viewing, let d = selected { client?.select(display: d.id) }
+        DebugLog.write("포그라운드: 화면 다시 받음")
     }
 
     /// 마지막 접속 그림(없으면 무늬)을 맥 화면인 척 띄우고, 가짜 모니터 두 대로 바로 보기에 들어간다
@@ -237,6 +268,7 @@ struct SessionView: View {
     @EnvironmentObject private var store: ComputerStore
     @Environment(\.dismiss) private var dismiss
     @StateObject private var model: SessionModel
+    @Environment(\.scenePhase) private var scenePhase
     @State private var mouseSettings = false
     /// 마우스 설정 팝업 높이 (안의 내용을 재서 맞춘다)
     @State private var mouseSettingsHeight: CGFloat = 320
@@ -321,6 +353,10 @@ struct SessionView: View {
         .preferredColorScheme(.dark)
         // 시스템이 키보드를 내리면 키보드 버튼 상태도 맞춘다 (안 그러면 다음에 누를 때 거꾸로 동작한다)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidHideNotification)) { _ in model.typing = false }
+        .onChange(of: scenePhase) { _, p in
+            if p == .background { model.enterBackground() } else if p == .active { model.enterForeground() }
+        }
+        .onChange(of: model.ended) { _, e in if e { dismiss() } }
         .onAppear { model.connect(store: store) }
         .onDisappear { model.close() }
     }
