@@ -353,8 +353,13 @@ struct SessionView: View {
             if p == .background { model.enterBackground() } else if p == .active { model.enterForeground() }
         }
         .onChange(of: model.ended) { _, e in if e { dismiss() } }
+        // 화면을 보는 동안은 손을 안 대도(영상·작업 지켜보기) 기기가 잠기지 않게
+        .onChange(of: model.phase == .viewing, initial: true) { _, viewing in UIApplication.shared.isIdleTimerDisabled = viewing }
         .onAppear { model.connect(store: store) }
-        .onDisappear { model.close() }
+        .onDisappear {
+            UIApplication.shared.isIdleTimerDisabled = false
+            model.close()
+        }
     }
 
     @ViewBuilder private var content: some View {
