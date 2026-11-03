@@ -49,7 +49,7 @@ final class SessionModel: ObservableObject {
             return
         }
         let c = RFBClient(host: computer.host, port: computer.port, username: computer.username, password: pw,
-                          tryHighPerformance: !standardOnly && !UserDefaults.standard.bool(forKey: "debug.hpOff"))
+                          tryHighPerformance: !standardOnly && computer.prefersHighPerformance)
         isHighPerformance = false
         triedHighPerformance = !standardOnly
         c.onEvent = { [weak self] in self?.handle($0) }

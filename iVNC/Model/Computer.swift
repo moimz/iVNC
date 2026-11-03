@@ -10,6 +10,12 @@ struct Computer: Identifiable, Codable, Hashable {
     var port: Int = 5900
     var username: String
     var lastConnected: Date?
+    /// 가능하면 고성능 모드(가상 디스플레이)를 먼저 쓴다. 이 값이 없던 예전 기록은 예전의 전체 "고성능 끔" 설정을 따른다
+    var preferHighPerformance: Bool?
+
+    var prefersHighPerformance: Bool {
+        preferHighPerformance ?? !UserDefaults.standard.bool(forKey: "debug.hpOff")
+    }
 }
 
 /// 컴퓨터 목록 (Application Support/computers.json)

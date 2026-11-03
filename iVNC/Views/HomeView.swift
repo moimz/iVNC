@@ -1,14 +1,12 @@
 import SwiftUI
 
-/// 첫 화면: 등록한 컴퓨터를 한 줄에 두 개씩 카드로 보여 준다.
+/// 첫 화면: 등록한 컴퓨터를 카드로 보여 준다. 화면이 넓어지면(가로, 아이패드) 한 줄에 더 많이 놓는다.
 struct HomeView: View {
     @EnvironmentObject private var store: ComputerStore
     @State private var editing: Computer?
     @State private var adding = false
     @State private var connecting: Computer?
-    @AppStorage("debug.hpOff") private var hpOff = false
-
-    private let columns = [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)]
+    private let columns = [GridItem(.adaptive(minimum: 170, maximum: 320), spacing: 16)]
 
     var body: some View {
         NavigationStack {
@@ -36,11 +34,6 @@ struct HomeView: View {
             }
             .navigationTitle("컴퓨터")
             .toolbar {
-                #if DEBUG
-                ToolbarItem(placement: .topBarLeading) {
-                    Toggle("고성능 끔", isOn: $hpOff).toggleStyle(.button)
-                }
-                #endif
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("추가", systemImage: "plus") { adding = true }
                 }
