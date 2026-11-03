@@ -306,7 +306,6 @@ struct SessionView: View {
                 }
             }
         }
-        .overlay(alignment: .top) { if model.phase != .viewing { topBar } }
         // 키보드 바로 위: 한글을 조합하는 동안 조합 중인 글자(맥에 아직 안 간 것)만 보여 준다.
         // 영어는 치는 즉시 맥으로 가서 보여 줄 필요가 없다
         .overlay(alignment: .bottom) {
@@ -365,12 +364,22 @@ struct SessionView: View {
         switch model.phase {
         case .connecting(let status):
             VStack(spacing: 16) {
+                Text(model.computer.name).font(.title2.weight(.semibold)).lineLimit(1)
                 ProgressView().controlSize(.large)
                 Text(status).foregroundStyle(.secondary)
+                Button("접속 취소") { end() }
+                    .buttonStyle(.glass)
+                    .padding(.top, 12)
             }
+            .padding(.horizontal, 24)
         case .picking:
-            DisplayPickerView(computer: model.computer, displays: model.displays) { model.select($0) }
-                .padding(.top, 56)
+            VStack(spacing: 0) {
+                DisplayPickerView(computer: model.computer, displays: model.displays) { model.select($0) }
+                    .padding(.top, 56)
+                Button("취소") { end() }
+                    .buttonStyle(.glass)
+                    .padding(.bottom, 24)
+            }
         case .viewing:
             ZStack {
                 ScreenView(renderer: model.renderer, mode: model.mouseMode, scrollMode: model.scrollMode, cursor: model.cursor, input: model)
@@ -388,6 +397,7 @@ struct SessionView: View {
                 Text(msg)
             } actions: {
                 Button("다시 시도") { model.connect(store: store) }.buttonStyle(.borderedProminent)
+                Button("닫기") { end() }
             }
         }
     }
@@ -419,57 +429,9 @@ struct SessionView: View {
         ])
     }
 
-    private var topBar: some View {
-        HStack(spacing: 12) {
-            Button { model.close(); dismiss() } label: {
-                Image(systemName: "xmark").font(.body.weight(.semibold)).frame(width: 36, height: 36)
-            }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            // 버튼이 많아 자리가 모자라면 이름은 숨긴다 (빈 칸으로 찌그러지지 않게)
-            ViewThatFits(in: .horizontal) {
-                Text(title).font(.headline).lineLimit(1).fixedSize()
-                    .padding(.horizontal, 14).frame(height: 36)
-                    .glassEffect()
-                Color.clear.frame(width: 0, height: 36)
-            }
-            if model.isHighPerformance {
-                Label("고성능", systemImage: "bolt.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.yellow)
-                    .padding(.horizontal, 10).frame(height: 28)
-                    .glassEffect()
-            }
-            Spacer()
-            if model.phase == .viewing {
-                Button { model.toggleMouseMode() } label: {
-                    Image(systemName: model.mouseMode == .touch ? "hand.point.up.left" : "rectangle.and.hand.point.up.left").frame(width: 36, height: 36)
-                }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
-                .accessibilityLabel(model.mouseMode == .touch ? "터치 모드" : "트랙패드 모드")
-                Button { model.scrollMode.toggle() } label: {
-                    Image(systemName: "arrow.up.and.down").frame(width: 36, height: 36)
-                }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
-                .tint(model.scrollMode ? .yellow : nil)
-                .accessibilityLabel(model.scrollMode ? "스크롤 모드 끄기" : "스크롤 모드")
-                Button { model.typing.toggle() } label: {
-                    Image(systemName: model.typing ? "keyboard.chevron.compact.down" : "keyboard").frame(width: 36, height: 36)
-                }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
-            }
-            if model.phase == .viewing && model.displays.count > 1 && !model.isHighPerformance {
-                Button { model.backToPicker() } label: {
-                    Label("모니터", systemImage: "display.2").frame(height: 36)
-                }
-                .buttonStyle(.glass)
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
+    private func end() {
+        model.close()
+        dismiss()
     }
 
     private var title: String {
