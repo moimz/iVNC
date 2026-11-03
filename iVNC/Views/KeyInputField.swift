@@ -49,10 +49,20 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
     private let menuButton = UIButton(type: .system)
     /// 메뉴는 기준 뷰를 덮으며 펼쳐진다: 메뉴 버튼 바로 위의 얇은 띠를 기준으로 띄워 버튼을 가리지 않게 한다
     private let menuAnchor = UIButton(type: .custom)
-    /// 아이폰 키보드로 못 치는 키 (키보드 위 줄 왼쪽, 좌우로 스크롤). 시험으로 ESC 하나
+    /// 아이폰 키보드로 못 치는 키 (키보드 위 줄 왼쪽, 좌우로 스크롤). keysym 은 X11 값
     private static let specialKeys: [(title: String, keysym: UInt32, name: String)] = [
         ("esc", 0xFF1B, "Escape"),
-    ]
+        ("tab", 0xFF09, "Tab"),
+        ("←", 0xFF51, "Left"),
+        ("↑", 0xFF52, "Up"),
+        ("↓", 0xFF54, "Down"),
+        ("→", 0xFF53, "Right"),
+        ("del", 0xFFFF, "Delete"),
+        ("home", 0xFF50, "Home"),
+        ("end", 0xFF57, "End"),
+        ("pgup", 0xFF55, "Page_Up"),
+        ("pgdn", 0xFF56, "Page_Down"),
+    ] + (1...12).map { ("F\($0)", 0xFFBE + UInt32($0 - 1), "F\($0)") }
     /// 입력창 안에서 이미 맥으로 보낸 부분
     private var sent = ""
 
