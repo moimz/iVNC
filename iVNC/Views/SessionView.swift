@@ -113,10 +113,16 @@ final class SessionModel: ObservableObject {
         }
     }
 
+    private var guided = false
+
     func select(_ d: RemoteDisplay) {
         saveThumbnail()
         selected = d
         phase = .viewing
+        if !guided {
+            guided = true
+            showGuide(mouseMode.title + "\n" + mouseMode.guide)
+        }
         client?.select(display: d.id)
         // 서버는 커서가 움직일 때만 위치를 알려 준다: 모르면 화면이 나온 뒤 가운데로 한 번 옮겨 위치를 맞춘다
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
@@ -145,9 +151,24 @@ final class SessionModel: ObservableObject {
     /// 마우스 조작 방식 (컴퓨터별로 기억)
     @Published private(set) var mouseMode: MouseMode = .touch
 
-    func toggleMouseMode() {
-        mouseMode = mouseMode == .touch ? .trackpad : .touch
-        UserDefaults.standard.set(mouseMode.rawValue, forKey: "mouseMode." + computer.id.uuidString)
+    func toggleMouseMode() { setMouseMode(mouseMode == .touch ? .trackpad : .touch) }
+
+    func setMouseMode(_ m: MouseMode) {
+        mouseMode = m
+        UserDefaults.standard.set(m.rawValue, forKey: "mouseMode." + computer.id.uuidString)
+    }
+
+    /// 화면 위에 잠깐 보여 주는 안내 (접속 직후 마우스 조작법)
+    @Published private(set) var guide: String?
+    private var guideToken = 0
+
+    func showGuide(_ text: String, seconds: Double = 3.5) {
+        guideToken += 1
+        let t = guideToken
+        guide = text
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
+            if self?.guideToken == t { self?.guide = nil }
+        }
     }
     /// 조합 중이라 아직 안 보낸 글자 (키보드 위에 보여 준다)
     @Published var composing = ""
@@ -210,6 +231,7 @@ struct SessionView: View {
     @EnvironmentObject private var store: ComputerStore
     @Environment(\.dismiss) private var dismiss
     @StateObject private var model: SessionModel
+    @State private var mouseSettings = false
 
     init(computer: Computer, preview: Bool = false) {
         _model = StateObject(wrappedValue: SessionModel(computer: computer, preview: preview))
@@ -252,6 +274,24 @@ struct SessionView: View {
                     .allowsHitTesting(false)
             }
         }
+        .overlay(alignment: .top) {
+            if model.phase == .viewing, let g = model.guide {
+                Text(g)
+                    .font(.subheadline)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 18).padding(.vertical, 12)
+                    .glassEffect(in: RoundedRectangle(cornerRadius: 20))
+                    .padding(.horizontal, 24).padding(.top, 12)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: model.guide)
+        .sheet(isPresented: $mouseSettings) {
+            MouseSettingsView(mode: model.mouseMode) { model.setMouseMode($0); mouseSettings = false }
+                .presentationDetents([.height(370)])
+        }
         .statusBarHidden(model.phase == .viewing)
         .preferredColorScheme(.dark)
         // 시스템이 키보드를 내리면 키보드 버튼 상태도 맞춘다 (안 그러면 다음에 누를 때 거꾸로 동작한다)
@@ -293,16 +333,12 @@ struct SessionView: View {
 
     /// 떠 있는 버튼의 메뉴 (iOS 기본 팝업 메뉴: 버튼 위치에 따라 위나 아래에 뜬다)
     private var menu: UIMenu {
-        let mouse = UIMenu(title: "마우스", options: .displayInline, children: [
-            UIAction(title: "터치 모드", image: UIImage(systemName: "hand.point.up.left"), state: model.mouseMode == .touch ? .on : .off) { _ in
-                if model.mouseMode != .touch { model.toggleMouseMode() }
-            },
-            UIAction(title: "트랙패드 모드", image: UIImage(systemName: "rectangle.and.hand.point.up.left"), state: model.mouseMode == .trackpad ? .on : .off) { _ in
-                if model.mouseMode != .trackpad { model.toggleMouseMode() }
-            },
-        ])
+        // 체크 표시(state)는 쓰지 않는다: 하나라도 있으면 모든 항목이 체크 자리만큼 밀린다
+        let mouse = UIAction(title: "마우스 설정…", subtitle: model.mouseMode.title, image: UIImage(systemName: model.mouseMode.symbol)) { _ in
+            mouseSettings = true
+        }
         var tools: [UIMenuElement] = [
-            UIAction(title: "스크롤 모드", image: UIImage(systemName: "arrow.up.and.down"), state: model.scrollMode ? .on : .off) { _ in
+            UIAction(title: model.scrollMode ? "스크롤 모드 끄기" : "스크롤 모드", image: UIImage(systemName: "arrow.up.and.down")) { _ in
                 model.scrollMode.toggle()
             },
             UIAction(title: model.typing ? "키보드 숨기기" : "키보드", image: UIImage(systemName: model.typing ? "keyboard.chevron.compact.down" : "keyboard")) { _ in
@@ -316,7 +352,7 @@ struct SessionView: View {
             model.close(); dismiss()
         }
         return UIMenu(title: title + (model.isHighPerformance ? " · 고성능" : ""), children: [
-            mouse,
+            UIMenu(options: .displayInline, children: [mouse]),
             UIMenu(options: .displayInline, children: tools),
             UIMenu(options: .displayInline, children: [end]),
         ])
@@ -427,7 +463,6 @@ final class FloatingButtonHost: UIView {
         button.addTarget(self, action: #selector(tapped), for: .touchUpInside)
         menuButton.showsMenuAsPrimaryAction = true
         menuButton.isUserInteractionEnabled = false
-        menuButton.frame = button.frame
         addSubview(menuButton)
         let hold = UILongPressGestureRecognizer(target: self, action: #selector(held(_:)))
         hold.minimumPressDuration = 0.3
@@ -439,6 +474,12 @@ final class FloatingButtonHost: UIView {
     required init?(coder: NSCoder) { fatalError() }
 
     func setMenu(_ menu: UIMenu) { menuButton.menu = menu }
+
+    /// 메뉴는 기준 뷰를 덮으며 펼쳐진다: 기준을 버튼 바로 위(위쪽 모서리면 바로 아래)의 얇은 띠로 두어 버튼을 가리지 않게 한다
+    private func placeMenuAnchor(_ c: CGPoint) {
+        let y = bottom ? c.y - size / 2 - 6 : c.y + size / 2 + 5
+        menuButton.frame = CGRect(x: c.x - size / 2, y: y, width: size, height: 1)
+    }
 
     @objc private func tapped() { menuButton.performPrimaryAction() }
 
@@ -471,7 +512,7 @@ final class FloatingButtonHost: UIView {
         super.layoutSubviews()
         if grabStart == nil {
             let c = corner(right: right, bottom: bottom)
-            menuButton.center = c
+            placeMenuAnchor(c)
             UIView.animate(withDuration: 0.25) { self.button.center = c }
         }
     }
@@ -515,8 +556,51 @@ final class FloatingButtonHost: UIView {
             UIView.animate(withDuration: 0.35, delay: 0, usingSpringWithDamping: 0.75, initialSpringVelocity: 0) {
                 self.button.transform = .identity
                 self.button.center = self.corner(right: r, bottom: btm)
-                self.menuButton.center = self.button.center
             }
+            placeMenuAnchor(corner(right: r, bottom: btm))
+        }
+    }
+}
+
+/// 마우스 모드 고르기 팝업: 모드마다 조작법을 짧게 보여 준다
+struct MouseSettingsView: View {
+    let mode: MouseMode
+    let choose: (MouseMode) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("마우스 설정").font(.headline).padding(.bottom, 4)
+            ForEach([MouseMode.touch, .trackpad], id: \.self) { m in
+                Button { choose(m) } label: {
+                    HStack(alignment: .top, spacing: 14) {
+                        Image(systemName: m.symbol).font(.title2).frame(width: 36)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(m.title).font(.body.weight(.semibold))
+                            Text(m.guide).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 0)
+                        if m == mode { Image(systemName: "checkmark.circle.fill").font(.title3).foregroundStyle(.tint) }
+                    }
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .background(RoundedRectangle(cornerRadius: 16).fill(m == mode ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.08)))
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(20)
+    }
+}
+
+extension MouseMode {
+    var title: String { self == .touch ? "터치 모드" : "트랙패드 모드" }
+    var symbol: String { self == .touch ? "hand.point.up.left" : "rectangle.and.hand.point.up.left" }
+    var guide: String {
+        switch self {
+        case .touch: return "누른 곳 클릭 · 길게 누르면 우클릭 · 길게 누른 채 끌면 드래그 · 한 손가락으로 화면 이동"
+        case .trackpad: return "한 손가락으로 포인터 이동 · 탭하면 클릭 · 두 손가락 탭은 우클릭 · 길게 누른 채 끌면 드래그 · 두 손가락으로 화면 이동"
         }
     }
 }
