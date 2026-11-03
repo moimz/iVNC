@@ -453,6 +453,8 @@ final class FloatingButtonHost: UIView {
     private let flickDistance: CGFloat = 24
     private let flickSpeed: CGFloat = 250
     private var scroll = false
+    /// 첫 배치를 마쳤는지
+    private var placed = false
     /// 길게 눌러 끄는 중: 누른 자리, 던진 속도를 재려는 최근 위치
     private var grabStart: CGPoint?
     private var samples: [(p: CGPoint, t: TimeInterval)] = []
@@ -523,7 +525,13 @@ final class FloatingButtonHost: UIView {
         if grabStart == nil {
             let c = corner(right: right, bottom: bottom)
             placeMenuAnchor(c)
-            UIView.animate(withDuration: 0.25) { self.button.center = c }
+            // 처음에는 제자리에 바로 놓는다 (애니메이션하면 화면 원점에서 날아온다). 그 뒤 크기가 바뀔 때만 움직인다
+            if placed {
+                UIView.animate(withDuration: 0.25) { self.button.center = c }
+            } else if bounds.width > 0 {
+                button.center = c
+                placed = true
+            }
         }
     }
 
