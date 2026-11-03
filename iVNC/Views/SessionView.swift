@@ -261,8 +261,11 @@ struct SessionView: View {
                     .padding(.trailing, 8)
                 }
                 // 떠 있는 버튼: 누르면 버튼 옆에 메뉴가 뜬다. 이 버튼의 터치는 맥에 안 보낸다
-                FloatingMenuButton(scroll: model.scrollMode, menu: menu)
-                    .ignoresSafeArea(.container) // 키보드가 뜨면 그 위로 올라가게 (키보드 영역은 피한다)
+                // 키보드가 떠 있는 동안은 키보드 위 줄에 같은 메뉴 버튼이 있어 숨긴다
+                if !model.typing {
+                    FloatingMenuButton(scroll: model.scrollMode, menu: menu)
+                        .ignoresSafeArea(.container) // 키보드가 뜨면 그 위로 올라가게 (키보드 영역은 피한다)
+                }
             }
         }
         .overlay(alignment: .top) { if model.phase != .viewing { topBar } }
@@ -497,7 +500,7 @@ final class FloatingButtonHost: UIView {
         var c = UIButton.Configuration.glass()
         c.cornerStyle = .capsule
         // 글래스 버튼은 글자색 설정을 덮어써서, 그림 자체에 색을 입힌다
-        c.image = UIImage(systemName: scroll ? "arrow.up.and.down" : "circle.grid.2x2.fill",
+        c.image = UIImage(systemName: scroll ? "arrow.up.and.down" : "ellipsis",
                           withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .semibold))?
             .withTintColor(scroll ? .systemYellow : .white, renderingMode: .alwaysOriginal)
         button.configuration = c

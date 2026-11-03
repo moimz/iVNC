@@ -95,80 +95,98 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    /// 키보드 바로 위 버튼 줄 (배경 없이 버튼만): 왼쪽은 특수키(좌우 스크롤), 오른쪽 끝은 메뉴·키보드 숨기기
+    /// 키보드 바로 위 버튼 줄: 왼쪽은 꽉 찬 글래스 캡슐 안에서 좌우로 스크롤되는 특수키, 오른쪽은 메뉴·키보드 숨기기 묶음
     private func makeAccessoryBar() -> UIView {
-        let bar = UIView(frame: CGRect(x: 0, y: 0, width: 0, height: 52))
+        let bar = UIView(frame: CGRect(x: 0, y: 0, width: 0, height: 56))
         bar.backgroundColor = .clear
 
-        func glass(_ symbol: String) -> UIButton.Configuration {
-            var c = UIButton.Configuration.glass()
-            c.cornerStyle = .capsule
+        func capsule() -> UIVisualEffectView {
+            let v = UIVisualEffectView(effect: UIGlassEffect())
+            v.cornerConfiguration = .capsule()
+            v.clipsToBounds = true
+            return v
+        }
+        func icon(_ symbol: String) -> UIButton.Configuration {
+            var c = UIButton.Configuration.plain()
             c.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold))?
                 .withTintColor(.white, renderingMode: .alwaysOriginal)
             return c
         }
-        let hide = UIButton(configuration: glass("keyboard.chevron.compact.down"), primaryAction: UIAction { [weak self] _ in
-            // 내리면 textFieldDidEndEditing 이 조합 중인 글자를 먼저 보낸다
-            self?.resignFirstResponder()
-        })
-        hide.accessibilityLabel = "키보드 숨기기"
-        menuButton.configuration = glass("circle.grid.2x2.fill")
+
+        // 오른쪽 묶음: [메뉴][숨기기]
+        let group = capsule()
+        menuButton.configuration = icon("ellipsis")
         menuButton.addAction(UIAction { [weak self] _ in self?.menuAnchor.performPrimaryAction() }, for: .primaryActionTriggered)
         menuButton.accessibilityLabel = "메뉴"
         menuAnchor.showsMenuAsPrimaryAction = true
         menuAnchor.isUserInteractionEnabled = false
+        let hide = UIButton(configuration: icon("keyboard.chevron.compact.down"), primaryAction: UIAction { [weak self] _ in
+            // 내리면 textFieldDidEndEditing 이 조합 중인 글자를 먼저 보낸다
+            self?.resignFirstResponder()
+        })
+        hide.accessibilityLabel = "키보드 숨기기"
+        let pair = UIStackView(arrangedSubviews: [menuButton, hide])
+        pair.axis = .horizontal
+        pair.distribution = .fillEqually
+        group.contentView.addSubview(pair)
 
+        // 왼쪽: 특수키
+        let keysBox = capsule()
         let keys = UIStackView()
         keys.axis = .horizontal
-        keys.spacing = 8
+        keys.spacing = 6
         for k in Self.specialKeys {
-            var c = UIButton.Configuration.glass()
+            var c = UIButton.Configuration.filled()
             c.cornerStyle = .capsule
+            c.baseBackgroundColor = UIColor.white.withAlphaComponent(0.14)
             c.attributedTitle = AttributedString(k.title, attributes: AttributeContainer([
-                .font: UIFont.systemFont(ofSize: 16, weight: .semibold), .foregroundColor: UIColor.white]))
+                .font: UIFont.systemFont(ofSize: 15, weight: .semibold), .foregroundColor: UIColor.white]))
             c.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 14, bottom: 0, trailing: 14)
             let b = UIButton(configuration: c, primaryAction: UIAction { [weak self] _ in
                 // 조합 중인 글자를 먼저 보내고 키를 보낸다
                 self?.flushPending()
                 self?.onKey(k.keysym, k.name)
             })
-            b.widthAnchor.constraint(greaterThanOrEqualToConstant: 52).isActive = true
+            b.widthAnchor.constraint(greaterThanOrEqualToConstant: 50).isActive = true
             keys.addArrangedSubview(b)
         }
         let scroll = UIScrollView()
         scroll.showsHorizontalScrollIndicator = false
         scroll.alwaysBounceHorizontal = true
-        scroll.clipsToBounds = false // 글래스 버튼 그림자가 잘리지 않게
         scroll.addSubview(keys)
+        keysBox.contentView.addSubview(scroll)
 
-        for v in [scroll, menuButton, hide, menuAnchor] as [UIView] {
-            v.translatesAutoresizingMaskIntoConstraints = false
-            bar.addSubview(v)
-        }
-        keys.translatesAutoresizingMaskIntoConstraints = false
+        for v in [keysBox, group, menuAnchor, pair, scroll, keys] as [UIView] { v.translatesAutoresizingMaskIntoConstraints = false }
+        bar.addSubview(keysBox)
+        bar.addSubview(group)
+        bar.addSubview(menuAnchor)
         let g = bar.safeAreaLayoutGuide
         NSLayoutConstraint.activate([
-            hide.trailingAnchor.constraint(equalTo: g.trailingAnchor, constant: -10),
-            hide.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
-            hide.widthAnchor.constraint(equalToConstant: 52),
-            hide.heightAnchor.constraint(equalToConstant: 40),
-            menuButton.trailingAnchor.constraint(equalTo: hide.leadingAnchor, constant: -8),
-            menuButton.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
-            menuButton.widthAnchor.constraint(equalToConstant: 52),
-            menuButton.heightAnchor.constraint(equalToConstant: 40),
-            menuAnchor.leadingAnchor.constraint(equalTo: menuButton.leadingAnchor),
-            menuAnchor.trailingAnchor.constraint(equalTo: menuButton.trailingAnchor),
-            menuAnchor.bottomAnchor.constraint(equalTo: menuButton.topAnchor, constant: -6),
+            group.trailingAnchor.constraint(equalTo: g.trailingAnchor, constant: -10),
+            group.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            group.heightAnchor.constraint(equalToConstant: 44),
+            group.widthAnchor.constraint(equalToConstant: 104),
+            pair.leadingAnchor.constraint(equalTo: group.contentView.leadingAnchor, constant: 2),
+            pair.trailingAnchor.constraint(equalTo: group.contentView.trailingAnchor, constant: -2),
+            pair.topAnchor.constraint(equalTo: group.contentView.topAnchor),
+            pair.bottomAnchor.constraint(equalTo: group.contentView.bottomAnchor),
+            menuAnchor.leadingAnchor.constraint(equalTo: group.leadingAnchor),
+            menuAnchor.trailingAnchor.constraint(equalTo: group.trailingAnchor),
+            menuAnchor.bottomAnchor.constraint(equalTo: group.topAnchor, constant: -6),
             menuAnchor.heightAnchor.constraint(equalToConstant: 1),
-            scroll.leadingAnchor.constraint(equalTo: g.leadingAnchor, constant: 10),
-            scroll.trailingAnchor.constraint(equalTo: menuButton.leadingAnchor, constant: -8),
-            scroll.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
-            scroll.heightAnchor.constraint(equalToConstant: 40),
-            keys.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
-            keys.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
-            keys.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
-            keys.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
-            keys.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
+            keysBox.leadingAnchor.constraint(equalTo: g.leadingAnchor, constant: 10),
+            keysBox.trailingAnchor.constraint(equalTo: group.leadingAnchor, constant: -8),
+            keysBox.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            keysBox.heightAnchor.constraint(equalToConstant: 44),
+            scroll.leadingAnchor.constraint(equalTo: keysBox.contentView.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: keysBox.contentView.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: keysBox.contentView.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: keysBox.contentView.bottomAnchor),
+            keys.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 5),
+            keys.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -5),
+            keys.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 5),
+            keys.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -5),
+            keys.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor, constant: -10),
         ])
         return bar
     }
