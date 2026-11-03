@@ -210,8 +210,6 @@ struct SessionView: View {
     @EnvironmentObject private var store: ComputerStore
     @Environment(\.dismiss) private var dismiss
     @StateObject private var model: SessionModel
-    /// 떠 있는 버튼으로 연 앱 UI (보는 중에는 이게 켜져야 위 막대가 보인다)
-    @State private var menuVisible = false
 
     init(computer: Computer, preview: Bool = false) {
         _model = StateObject(wrappedValue: SessionModel(computer: computer, preview: preview))
@@ -224,17 +222,8 @@ struct SessionView: View {
         }
         .overlay {
             if model.phase == .viewing {
-                // 앱 UI 가 떠 있을 때: 기능 버튼이 아닌 곳을 누르면 UI 만 닫는다 (맥에는 안 보낸다)
-                if menuVisible {
-                    Button { setMenu(false) } label: {
-                        Color.black.opacity(0.2).contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .ignoresSafeArea()
-                }
-                // 떠 있는 버튼: 이 버튼의 터치는 맥에 안 보낸다
                 // 스크롤 모드: 오른쪽에 위·아래 버튼 (한 번에 50포인트)
-                if model.scrollMode && !menuVisible {
+                if model.scrollMode {
                     VStack(spacing: 12) {
                         Button { model.scrollStep(-50) } label: { Image(systemName: "chevron.up").frame(width: 44, height: 44) }
                         Button { model.scrollStep(50) } label: { Image(systemName: "chevron.down").frame(width: 44, height: 44) }
@@ -244,11 +233,12 @@ struct SessionView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
                     .padding(.trailing, 8)
                 }
-                FloatingMenuButton(open: menuVisible, scroll: model.scrollMode) { setMenu(!menuVisible) }
+                // 떠 있는 버튼: 누르면 버튼 옆에 메뉴가 뜬다. 이 버튼의 터치는 맥에 안 보낸다
+                FloatingMenuButton(scroll: model.scrollMode, menu: menu)
                     .ignoresSafeArea(.container) // 키보드가 뜨면 그 위로 올라가게 (키보드 영역은 피한다)
             }
         }
-        .overlay(alignment: .top) { if menuVisible || model.phase != .viewing { topBar } }
+        .overlay(alignment: .top) { if model.phase != .viewing { topBar } }
         // 키보드 바로 위: 한글을 조합하는 동안 조합 중인 글자(맥에 아직 안 간 것)만 보여 준다.
         // 영어는 치는 즉시 맥으로 가서 보여 줄 필요가 없다
         .overlay(alignment: .bottom) {
@@ -262,7 +252,7 @@ struct SessionView: View {
                     .allowsHitTesting(false)
             }
         }
-        .statusBarHidden(model.phase == .viewing && !menuVisible)
+        .statusBarHidden(model.phase == .viewing)
         .preferredColorScheme(.dark)
         // 시스템이 키보드를 내리면 키보드 버튼 상태도 맞춘다 (안 그러면 다음에 누를 때 거꾸로 동작한다)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidHideNotification)) { _ in model.typing = false }
@@ -301,8 +291,35 @@ struct SessionView: View {
         }
     }
 
-    private func setMenu(_ on: Bool) {
-        withAnimation(.easeInOut(duration: 0.2)) { menuVisible = on }
+    /// 떠 있는 버튼의 메뉴 (iOS 기본 팝업 메뉴: 버튼 위치에 따라 위나 아래에 뜬다)
+    private var menu: UIMenu {
+        let mouse = UIMenu(title: "마우스", options: .displayInline, children: [
+            UIAction(title: "터치 모드", image: UIImage(systemName: "hand.point.up.left"), state: model.mouseMode == .touch ? .on : .off) { _ in
+                if model.mouseMode != .touch { model.toggleMouseMode() }
+            },
+            UIAction(title: "트랙패드 모드", image: UIImage(systemName: "rectangle.and.hand.point.up.left"), state: model.mouseMode == .trackpad ? .on : .off) { _ in
+                if model.mouseMode != .trackpad { model.toggleMouseMode() }
+            },
+        ])
+        var tools: [UIMenuElement] = [
+            UIAction(title: "스크롤 모드", image: UIImage(systemName: "arrow.up.and.down"), state: model.scrollMode ? .on : .off) { _ in
+                model.scrollMode.toggle()
+            },
+            UIAction(title: model.typing ? "키보드 숨기기" : "키보드", image: UIImage(systemName: model.typing ? "keyboard.chevron.compact.down" : "keyboard")) { _ in
+                model.typing.toggle()
+            },
+        ]
+        if model.displays.count > 1 && !model.isHighPerformance {
+            tools.append(UIAction(title: "모니터 바꾸기", image: UIImage(systemName: "display.2")) { _ in model.backToPicker() })
+        }
+        let end = UIAction(title: "연결 끊기", image: UIImage(systemName: "xmark"), attributes: .destructive) { _ in
+            model.close(); dismiss()
+        }
+        return UIMenu(title: title + (model.isHighPerformance ? " · 고성능" : ""), children: [
+            mouse,
+            UIMenu(options: .displayInline, children: tools),
+            UIMenu(options: .displayInline, children: [end]),
+        ])
     }
 
     private var topBar: some View {
@@ -328,27 +345,27 @@ struct SessionView: View {
             }
             Spacer()
             if model.phase == .viewing {
-                Button { model.toggleMouseMode(); setMenu(false) } label: {
+                Button { model.toggleMouseMode() } label: {
                     Image(systemName: model.mouseMode == .touch ? "hand.point.up.left" : "rectangle.and.hand.point.up.left").frame(width: 36, height: 36)
                 }
                 .buttonStyle(.glass)
                 .buttonBorderShape(.circle)
                 .accessibilityLabel(model.mouseMode == .touch ? "터치 모드" : "트랙패드 모드")
-                Button { model.scrollMode.toggle(); setMenu(false) } label: {
+                Button { model.scrollMode.toggle() } label: {
                     Image(systemName: "arrow.up.and.down").frame(width: 36, height: 36)
                 }
                 .buttonStyle(.glass)
                 .buttonBorderShape(.circle)
                 .tint(model.scrollMode ? .yellow : nil)
                 .accessibilityLabel(model.scrollMode ? "스크롤 모드 끄기" : "스크롤 모드")
-                Button { model.typing.toggle(); setMenu(false) } label: {
+                Button { model.typing.toggle() } label: {
                     Image(systemName: model.typing ? "keyboard.chevron.compact.down" : "keyboard").frame(width: 36, height: 36)
                 }
                 .buttonStyle(.glass)
                 .buttonBorderShape(.circle)
             }
             if model.phase == .viewing && model.displays.count > 1 && !model.isHighPerformance {
-                Button { setMenu(false); model.backToPicker() } label: {
+                Button { model.backToPicker() } label: {
                     Label("모니터", systemImage: "display.2").frame(height: 36)
                 }
                 .buttonStyle(.glass)
@@ -365,34 +382,33 @@ struct SessionView: View {
     }
 }
 
-/// 떠 있는 버튼 (AssistiveTouch 처럼): 끌면 따라오고 놓으면 가까운 좌우 가장자리에 붙는다. 위치를 기억한다.
+/// 떠 있는 버튼: 누르면 메뉴, 길게 누른 뒤 던지면 네 모서리 중 그쪽으로 옮긴다. 위치를 기억한다.
 /// UIKit 으로 만든다: SwiftUI 버튼에 끌기 손동작을 붙이면 탭이 먹지 않았다. 버튼 밖 터치는 아래(화면)로 그대로 보낸다
 struct FloatingMenuButton: UIViewRepresentable {
-    let open: Bool
     var scroll = false
-    let action: () -> Void
+    let menu: UIMenu
 
-    func makeUIView(context: Context) -> FloatingButtonHost {
-        let v = FloatingButtonHost()
-        v.action = action
-        return v
-    }
+    func makeUIView(context: Context) -> FloatingButtonHost { FloatingButtonHost() }
 
     func updateUIView(_ v: FloatingButtonHost, context: Context) {
-        v.action = action
-        v.setOpen(open, scroll: scroll)
+        v.setMenu(menu)
+        v.setScroll(scroll)
     }
 }
 
-/// 떠 있는 메뉴 버튼: 네 모서리 중 하나에 붙는다. 길게 눌러 끌거나 던지면 가까운 모서리로 옮겨 간다.
+/// 떠 있는 메뉴 버튼: 네 모서리 중 하나에 붙는다. 누르면 메뉴, 길게 누른 뒤 던지면 그쪽 모서리로 옮겨 간다.
 final class FloatingButtonHost: UIView {
-    var action: () -> Void = {}
     private let button = UIButton(type: .system)
+    /// 메뉴만 띄우는 숨은 버튼: 보이는 버튼에 메뉴를 붙이면 메뉴가 터치를 가져가 길게 누르기가 안 된다
+    private let menuButton = UIButton(type: .custom)
     private let size: CGFloat = 54
     private let margin: CGFloat = 12
-    private var open = false
-    /// 길게 눌러 끄는 중: 손가락과 버튼 중심의 차이, 던진 속도를 재려는 최근 위치
-    private var grabOffset: CGPoint?
+    /// 이만큼 움직이거나 이 속도로 튕기면 그 방향 모서리로 옮긴다
+    private let flickDistance: CGFloat = 24
+    private let flickSpeed: CGFloat = 250
+    private var scroll = false
+    /// 길게 눌러 끄는 중: 누른 자리, 던진 속도를 재려는 최근 위치
+    private var grabStart: CGPoint?
     private var samples: [(p: CGPoint, t: TimeInterval)] = []
 
     private var right: Bool {
@@ -409,27 +425,34 @@ final class FloatingButtonHost: UIView {
         backgroundColor = .clear
         button.frame = CGRect(x: 0, y: 0, width: size, height: size)
         button.addTarget(self, action: #selector(tapped), for: .touchUpInside)
+        menuButton.showsMenuAsPrimaryAction = true
+        menuButton.isUserInteractionEnabled = false
+        menuButton.frame = button.frame
+        addSubview(menuButton)
         let hold = UILongPressGestureRecognizer(target: self, action: #selector(held(_:)))
         hold.minimumPressDuration = 0.3
         button.addGestureRecognizer(hold)
         addSubview(button)
-        setOpen(false)
+        setScroll(false, force: true)
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    /// 열림이면 X, 스크롤 모드면 위아래 화살표(노란색), 아니면 기본 아이콘
-    func setOpen(_ open: Bool, scroll: Bool = false) {
+    func setMenu(_ menu: UIMenu) { menuButton.menu = menu }
+
+    @objc private func tapped() { menuButton.performPrimaryAction() }
+
+    /// 스크롤 모드면 위아래 화살표(노란색), 아니면 기본 아이콘
+    func setScroll(_ scroll: Bool, force: Bool = false) {
+        guard scroll != self.scroll || force else { return }
+        self.scroll = scroll
         var c = UIButton.Configuration.glass()
         c.cornerStyle = .capsule
-        c.image = UIImage(systemName: open ? "xmark" : (scroll ? "arrow.up.and.down" : "circle.grid.2x2.fill"),
-                          withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .semibold))
-        c.baseForegroundColor = scroll && !open ? .systemYellow : .white
+        // 글래스 버튼은 글자색 설정을 덮어써서, 그림 자체에 색을 입힌다
+        c.image = UIImage(systemName: scroll ? "arrow.up.and.down" : "circle.grid.2x2.fill",
+                          withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .semibold))?
+            .withTintColor(scroll ? .systemYellow : .white, renderingMode: .alwaysOriginal)
         button.configuration = c
-        if open != self.open {
-            self.open = open
-            setNeedsLayout()
-        }
     }
 
     /// 버튼 밖 터치는 받지 않는다 (화면으로 간다)
@@ -440,16 +463,16 @@ final class FloatingButtonHost: UIView {
     private func corner(right: Bool, bottom: Bool) -> CGPoint {
         let b = bounds, s = safeAreaInsets
         let x = right ? b.width - s.right - margin - size / 2 : s.left + margin + size / 2
-        var y = bottom ? b.height - max(s.bottom, margin) - size / 2 : s.top + margin + size / 2
-        // 메뉴가 열리면 위 막대가 생긴다: 위 모서리에 있으면 그 아래로 잠깐 비킨다
-        if !bottom && open { y += 64 }
+        let y = bottom ? b.height - max(s.bottom, margin) - size / 2 : s.top + margin + size / 2
         return CGPoint(x: x, y: y)
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        if grabOffset == nil {
-            UIView.animate(withDuration: 0.25) { self.button.center = self.corner(right: self.right, bottom: self.bottom) }
+        if grabStart == nil {
+            let c = corner(right: right, bottom: bottom)
+            menuButton.center = c
+            UIView.animate(withDuration: 0.25) { self.button.center = c }
         }
     }
 
@@ -458,38 +481,41 @@ final class FloatingButtonHost: UIView {
         setNeedsLayout()
     }
 
-    @objc private func tapped() { action() }
-
     @objc private func held(_ g: UILongPressGestureRecognizer) {
         let p = g.location(in: self)
         let now = CACurrentMediaTime()
         switch g.state {
         case .began:
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-            grabOffset = CGPoint(x: button.center.x - p.x, y: button.center.y - p.y)
+            grabStart = p
             samples = [(p, now)]
             UIView.animate(withDuration: 0.15) { self.button.transform = CGAffineTransform(scaleX: 1.15, y: 1.15) }
         case .changed:
-            guard let o = grabOffset else { return }
-            button.center = CGPoint(x: p.x + o.x, y: p.y + o.y)
+            guard let s = grabStart else { return }
+            // 손가락을 절반만 따라온다: 끌어다 놓기보다 던지는 느낌
+            let home = corner(right: right, bottom: bottom)
+            button.center = CGPoint(x: home.x + (p.x - s.x) * 0.5, y: home.y + (p.y - s.y) * 0.5)
             samples.append((p, now))
             samples.removeAll { now - $0.t > 0.1 }
         default:
-            guard grabOffset != nil else { return }
-            // 던진 속도만큼 조금 더 간 자리로 모서리를 고른다
+            guard let s = grabStart else { return }
             var v = CGPoint.zero
             if let first = samples.first, now - first.t > 0.01 {
                 v = CGPoint(x: (p.x - first.p.x) / (now - first.t), y: (p.y - first.p.y) / (now - first.t))
             }
-            let target = CGPoint(x: button.center.x + v.x * 0.2, y: button.center.y + v.y * 0.2)
-            let r = target.x > bounds.midX, btm = target.y > bounds.midY
+            // 축마다: 조금이라도 움직였거나 튕겼으면 그 방향 모서리로
+            let dx = p.x - s.x, dy = p.y - s.y
+            var r = right, btm = bottom
+            if abs(dx) > flickDistance || abs(v.x) > flickSpeed { r = (abs(dx) > flickDistance ? dx : v.x) > 0 }
+            if abs(dy) > flickDistance || abs(v.y) > flickSpeed { btm = (abs(dy) > flickDistance ? dy : v.y) > 0 }
             if r != right || btm != bottom { UISelectionFeedbackGenerator().selectionChanged() }
             right = r; bottom = btm
-            grabOffset = nil
+            grabStart = nil
             samples = []
             UIView.animate(withDuration: 0.35, delay: 0, usingSpringWithDamping: 0.75, initialSpringVelocity: 0) {
                 self.button.transform = .identity
                 self.button.center = self.corner(right: r, bottom: btm)
+                self.menuButton.center = self.button.center
             }
         }
     }
