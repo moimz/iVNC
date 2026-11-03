@@ -56,6 +56,7 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
         tintColor = .clear
         textColor = .clear
         addTarget(self, action: #selector(changed), for: .editingChanged)
+        inputAccessoryView = makeAccessoryBar()
         NotificationCenter.default.addObserver(self, selector: #selector(inputModeChanged), name: UITextInputMode.currentInputModeDidChangeNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(inputModeChanged), name: Self.flushNotification, object: nil)
     }
@@ -72,6 +73,31 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    /// 키보드 바로 위 버튼 줄 (배경 없이 버튼만). 지금은 맨 오른쪽에 키보드 숨기기만 있다
+    private func makeAccessoryBar() -> UIView {
+        let bar = UIView(frame: CGRect(x: 0, y: 0, width: 0, height: 52))
+        bar.backgroundColor = .clear
+        var c = UIButton.Configuration.glass()
+        c.cornerStyle = .capsule
+        c.image = UIImage(systemName: "keyboard.chevron.compact.down",
+                          withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold))?
+            .withTintColor(.white, renderingMode: .alwaysOriginal)
+        let hide = UIButton(configuration: c, primaryAction: UIAction { [weak self] _ in
+            // 내리면 textFieldDidEndEditing 이 조합 중인 글자를 먼저 보낸다
+            self?.resignFirstResponder()
+        })
+        hide.accessibilityLabel = "키보드 숨기기"
+        hide.translatesAutoresizingMaskIntoConstraints = false
+        bar.addSubview(hide)
+        NSLayoutConstraint.activate([
+            hide.trailingAnchor.constraint(equalTo: bar.safeAreaLayoutGuide.trailingAnchor, constant: -10),
+            hide.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            hide.widthAnchor.constraint(equalToConstant: 52),
+            hide.heightAnchor.constraint(equalToConstant: 40),
+        ])
+        return bar
+    }
 
     /// 입력창이 비어 있을 때 지우기: 맥 쪽 글자를 지운다
     override func deleteBackward() {
