@@ -269,6 +269,7 @@ struct SessionView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var model: SessionModel
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var mouseSettings = false
     /// 마우스 설정 팝업 높이 (안의 내용을 재서 맞춘다)
     @State private var mouseSettingsHeight: CGFloat = 320
@@ -335,18 +336,14 @@ struct SessionView: View {
         .animation(.easeInOut(duration: 0.25), value: model.guide)
         .sheet(isPresented: $mouseSettings) {
             MouseSettingsView(mode: model.mouseMode) { model.setMouseMode($0); mouseSettings = false }
-                .fixedSize(horizontal: false, vertical: true)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { mouseSettingsHeight = $0 }
-                .presentationDetents([.height(mouseSettingsHeight)])
+                .fittedSheet(height: $mouseSettingsHeight, regular: sizeClass == .regular)
         }
         .sheet(isPresented: $displaySettings) {
             DisplayPickerView(computer: model.computer, displays: model.displays, title: "모니터 바꾸기", current: model.selected, compact: true) {
                 displaySettings = false
                 if $0 != model.selected { model.select($0) }
             }
-            .fixedSize(horizontal: false, vertical: true)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { displaySettingsHeight = $0 }
-            .presentationDetents([.height(displaySettingsHeight)])
+            .fittedSheet(height: $displaySettingsHeight, regular: sizeClass == .regular)
         }
         .statusBarHidden(model.phase == .viewing)
         .preferredColorScheme(.dark)
@@ -598,6 +595,32 @@ final class FloatingButtonHost: UIView {
             placeMenuAnchor(corner(right: r, bottom: btm))
         }
     }
+}
+
+/// 팝업을 안의 내용 크기에 맞춘다.
+/// 아이폰(좁은 화면)은 아래에서 올라오는 시트를 내용 높이로, 아이패드(넓은 화면)는 화면 가운데 카드를 내용 크기로 (애플 기본 모양)
+private struct FittedSheet: ViewModifier {
+    @Binding var height: CGFloat
+    /// 띄우는 화면이 넓은지 (시트 안쪽은 아이패드에서도 좁은 화면으로 알려 주어 바깥에서 받는다)
+    let regular: Bool
+
+    func body(content: Content) -> some View {
+        if regular {
+            content
+                .frame(width: 520)
+                .fixedSize(horizontal: false, vertical: true)
+                .presentationSizing(.fitted)
+        } else {
+            content
+                .fixedSize(horizontal: false, vertical: true)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
+                .presentationDetents([.height(height)])
+        }
+    }
+}
+
+extension View {
+    fileprivate func fittedSheet(height: Binding<CGFloat>, regular: Bool) -> some View { modifier(FittedSheet(height: height, regular: regular)) }
 }
 
 /// 마우스 모드 고르기 팝업: 모드마다 조작법을 짧게 보여 준다
