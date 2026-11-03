@@ -232,6 +232,8 @@ struct SessionView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var model: SessionModel
     @State private var mouseSettings = false
+    /// 마우스 설정 팝업 높이 (안의 내용을 재서 맞춘다)
+    @State private var mouseSettingsHeight: CGFloat = 320
 
     init(computer: Computer, preview: Bool = false) {
         _model = StateObject(wrappedValue: SessionModel(computer: computer, preview: preview))
@@ -290,7 +292,9 @@ struct SessionView: View {
         .animation(.easeInOut(duration: 0.25), value: model.guide)
         .sheet(isPresented: $mouseSettings) {
             MouseSettingsView(mode: model.mouseMode) { model.setMouseMode($0); mouseSettings = false }
-                .presentationDetents([.height(370)])
+                .fixedSize(horizontal: false, vertical: true)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { mouseSettingsHeight = $0 }
+                .presentationDetents([.height(mouseSettingsHeight)])
         }
         .statusBarHidden(model.phase == .viewing)
         .preferredColorScheme(.dark)
@@ -334,7 +338,7 @@ struct SessionView: View {
     /// 떠 있는 버튼의 메뉴 (iOS 기본 팝업 메뉴: 버튼 위치에 따라 위나 아래에 뜬다)
     private var menu: UIMenu {
         // 체크 표시(state)는 쓰지 않는다: 하나라도 있으면 모든 항목이 체크 자리만큼 밀린다
-        let mouse = UIAction(title: "마우스 설정…", subtitle: model.mouseMode.title, image: UIImage(systemName: model.mouseMode.symbol)) { _ in
+        let mouse = UIAction(title: "마우스 설정", image: UIImage(systemName: model.mouseMode.symbol)) { _ in
             mouseSettings = true
         }
         var tools: [UIMenuElement] = [
@@ -588,7 +592,6 @@ struct MouseSettingsView: View {
                 .buttonStyle(.plain)
                 .background(RoundedRectangle(cornerRadius: 16).fill(m == mode ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.08)))
             }
-            Spacer(minLength: 0)
         }
         .padding(20)
     }
