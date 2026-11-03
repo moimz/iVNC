@@ -6,6 +6,13 @@ struct HomeView: View {
     @State private var editing: Computer?
     @State private var adding = false
     @State private var connecting: Computer?
+    /// UI 시험: DEBUG 빌드에서는 카드를 누르면 접속 없이 화면 UI 만 띄운다. 길게 눌러 "실제 접속" 으로 진짜 접속 (임시)
+    #if DEBUG
+    static let uiPreview = true
+    #else
+    static let uiPreview = false
+    #endif
+    @State private var realConnect = false
     private let columns = [GridItem(.adaptive(minimum: 170, maximum: 320), spacing: 16)]
 
     var body: some View {
@@ -21,9 +28,12 @@ struct HomeView: View {
                 } else {
                     LazyVGrid(columns: columns, spacing: 20) {
                         ForEach(store.computers) { c in
-                            Button { connecting = c } label: { ComputerCard(computer: c) }
+                            Button { realConnect = false; connecting = c } label: { ComputerCard(computer: c) }
                                 .buttonStyle(.plain)
                                 .contextMenu {
+                                    if Self.uiPreview {
+                                        Button("실제 접속", systemImage: "network") { realConnect = true; connecting = c }
+                                    }
                                     Button("편집", systemImage: "pencil") { editing = c }
                                     Button("삭제", systemImage: "trash", role: .destructive) { store.delete(c) }
                                 }
@@ -40,7 +50,7 @@ struct HomeView: View {
             }
             .sheet(isPresented: $adding) { ComputerEditView(computer: nil) }
             .sheet(item: $editing) { ComputerEditView(computer: $0) }
-            .fullScreenCover(item: $connecting) { SessionView(computer: $0) }
+            .fullScreenCover(item: $connecting) { SessionView(computer: $0, preview: Self.uiPreview && !realConnect) }
         }
     }
 }
