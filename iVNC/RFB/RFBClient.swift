@@ -643,8 +643,10 @@ final class RFBClient {
                     }
                 }
             case 1011:
-                drewPixels = true
                 let data = try s.read(Int(try s.u32()))
+                // 종류 2 는 양자화 표라 그림이 아니다. 서버가 표만 보내고 화면을 빠뜨리는 때가 있어서
+                // 이걸 화면으로 치면 2초 감시가 꺼져 검은 화면에 멈춘다 (2026-11-03 맥북 실측)
+                if data.first != 2 { drewPixels = true }
                 let t0 = DispatchTime.now().uptimeNanoseconds
                 framebuffer.withPixels { p, fw, fh in
                     mvs.decode(data, x: x, y: y, w: w, h: h, pixels: p, fbWidth: fw, fbHeight: fh)
