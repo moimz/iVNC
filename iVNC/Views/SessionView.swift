@@ -237,6 +237,9 @@ struct SessionView: View {
     @State private var mouseSettings = false
     /// 마우스 설정 팝업 높이 (안의 내용을 재서 맞춘다)
     @State private var mouseSettingsHeight: CGFloat = 320
+    /// 모니터 바꾸기 팝업
+    @State private var displaySettings = false
+    @State private var displaySettingsHeight: CGFloat = 300
 
     init(computer: Computer, preview: Bool = false) {
         _model = StateObject(wrappedValue: SessionModel(computer: computer, preview: preview))
@@ -302,6 +305,15 @@ struct SessionView: View {
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { mouseSettingsHeight = $0 }
                 .presentationDetents([.height(mouseSettingsHeight)])
         }
+        .sheet(isPresented: $displaySettings) {
+            DisplayPickerView(computer: model.computer, displays: model.displays, title: "모니터 바꾸기", current: model.selected, compact: true) {
+                displaySettings = false
+                if $0 != model.selected { model.select($0) }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { displaySettingsHeight = $0 }
+            .presentationDetents([.height(displaySettingsHeight)])
+        }
         .statusBarHidden(model.phase == .viewing)
         .preferredColorScheme(.dark)
         // 시스템이 키보드를 내리면 키보드 버튼 상태도 맞춘다 (안 그러면 다음에 누를 때 거꾸로 동작한다)
@@ -356,7 +368,7 @@ struct SessionView: View {
             },
         ]
         if model.displays.count > 1 && !model.isHighPerformance {
-            tools.append(UIAction(title: "모니터 바꾸기", image: UIImage(systemName: "display.2")) { _ in model.backToPicker() })
+            tools.append(UIAction(title: "모니터 바꾸기", image: UIImage(systemName: "display.2")) { _ in displaySettings = true })
         }
         let end = UIAction(title: "연결 끊기", image: UIImage(systemName: "xmark"), attributes: .destructive) { _ in
             model.close(); dismiss()

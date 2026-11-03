@@ -4,6 +4,10 @@ import SwiftUI
 struct DisplayPickerView: View {
     let computer: Computer
     let displays: [RemoteDisplay]
+    /// 팝업 안에서 쓸 때: 제목과 지금 보는 모니터 표시, 배치 그림 높이 고정
+    var title = "볼 모니터를 고르세요"
+    var current: RemoteDisplay?
+    var compact = false
     let onSelect: (RemoteDisplay) -> Void
 
     /// 왼쪽에서 오른쪽, 위에서 아래 순서 (모니터 번호)
@@ -13,8 +17,10 @@ struct DisplayPickerView: View {
 
     var body: some View {
         let sorted = displays.sorted(by: Self.order)
+        let all = sorted.reduce(CGRect.null) { $0.union($1.desktop) }
         VStack(spacing: 24) {
-            Text("볼 모니터를 고르세요").font(.title3.weight(.semibold))
+            Text(title).font(compact ? .headline : .title3.weight(.semibold))
+                .frame(maxWidth: .infinity, alignment: compact ? .leading : .center)
             GeometryReader { geo in
                 let union = sorted.reduce(CGRect.null) { $0.union($1.desktop) }
                 let gap: CGFloat = 4
@@ -28,6 +34,7 @@ struct DisplayPickerView: View {
                                        width: d.desktop.width * scale - gap, height: d.desktop.height * scale - gap)
                         Button { onSelect(d) } label: {
                             MonitorTile(computer: computer, display: d, number: i + 1)
+                                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.accentColor, lineWidth: d == current ? 3 : 0))
                         }
                         .buttonStyle(MonitorButtonStyle())
                         .frame(width: r.width, height: r.height)
@@ -37,9 +44,13 @@ struct DisplayPickerView: View {
                 .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
                 .animation(.easeInOut(duration: 0.25), value: sorted)
             }
-            .padding(.horizontal, 24)
-            .padding(.bottom, 40)
+            // 팝업에서는 배치 그림의 가로세로 비율대로 높이를 잡아 위아래가 비지 않게 한다
+            .aspectRatio(compact && all.height > 0 ? all.width / all.height : nil, contentMode: .fit)
+            .frame(maxHeight: compact ? 260 : nil)
+            .padding(.horizontal, compact ? 0 : 24)
+            .padding(.bottom, compact ? 0 : 40)
         }
+        .padding(compact ? 20 : 0)
     }
 }
 
