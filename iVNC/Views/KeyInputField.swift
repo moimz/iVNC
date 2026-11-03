@@ -13,6 +13,10 @@ struct KeyInputField: UIViewRepresentable {
     let onReturn: () -> Void
     /// 아직 맥으로 안 보낸 조합 중 글자 (화면에 보여 주려고)
     var onPending: (String) -> Void = { _ in }
+    /// 키보드 위 줄의 특수키 (keysym, 이름)
+    var onKey: (UInt32, String) -> Void = { _, _ in }
+    /// 키보드 위 줄의 메뉴 버튼이 띄울 메뉴 (떠 있는 버튼과 같은 것)
+    var menu: UIMenu?
 
     func makeUIView(context: Context) -> HangulInputField {
         let f = HangulInputField()
@@ -25,6 +29,8 @@ struct KeyInputField: UIViewRepresentable {
         f.onBackspace = onBackspace
         f.onReturn = onReturn
         f.onPending = onPending
+        f.onKey = onKey
+        f.setMenu(menu)
         if active && !f.isFirstResponder {
             DispatchQueue.main.async { f.becomeFirstResponder() }
         } else if !active && f.isFirstResponder {
@@ -39,6 +45,14 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
     var onReturn: () -> Void = {}
     var onEnd: () -> Void = {}
     var onPending: (String) -> Void = { _ in }
+    var onKey: (UInt32, String) -> Void = { _, _ in }
+    private let menuButton = UIButton(type: .system)
+    /// 메뉴는 기준 뷰를 덮으며 펼쳐진다: 메뉴 버튼 바로 위의 얇은 띠를 기준으로 띄워 버튼을 가리지 않게 한다
+    private let menuAnchor = UIButton(type: .custom)
+    /// 아이폰 키보드로 못 치는 키 (키보드 위 줄 왼쪽, 좌우로 스크롤). 시험으로 ESC 하나
+    private static let specialKeys: [(title: String, keysym: UInt32, name: String)] = [
+        ("esc", 0xFF1B, "Escape"),
+    ]
     /// 입력창 안에서 이미 맥으로 보낸 부분
     private var sent = ""
 
@@ -66,35 +80,95 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
 
     /// 키보드를 바꾸거나 마우스를 누르기 직전: 조합 중이라 안 보낸 글자를 바로 보내고 비운다
     @objc private func inputModeChanged() {
-        guard isFirstResponder, !(text ?? "").isEmpty else { return }
+        guard isFirstResponder else { return }
+        flushPending()
+    }
+
+    private func flushPending() {
+        guard !(text ?? "").isEmpty else { return }
         unmarkText()
         sync(final: true)
         reset()
     }
 
+    func setMenu(_ menu: UIMenu?) { menuAnchor.menu = menu }
+
     required init?(coder: NSCoder) { fatalError() }
 
-    /// 키보드 바로 위 버튼 줄 (배경 없이 버튼만). 지금은 맨 오른쪽에 키보드 숨기기만 있다
+    /// 키보드 바로 위 버튼 줄 (배경 없이 버튼만): 왼쪽은 특수키(좌우 스크롤), 오른쪽 끝은 메뉴·키보드 숨기기
     private func makeAccessoryBar() -> UIView {
         let bar = UIView(frame: CGRect(x: 0, y: 0, width: 0, height: 52))
         bar.backgroundColor = .clear
-        var c = UIButton.Configuration.glass()
-        c.cornerStyle = .capsule
-        c.image = UIImage(systemName: "keyboard.chevron.compact.down",
-                          withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold))?
-            .withTintColor(.white, renderingMode: .alwaysOriginal)
-        let hide = UIButton(configuration: c, primaryAction: UIAction { [weak self] _ in
+
+        func glass(_ symbol: String) -> UIButton.Configuration {
+            var c = UIButton.Configuration.glass()
+            c.cornerStyle = .capsule
+            c.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold))?
+                .withTintColor(.white, renderingMode: .alwaysOriginal)
+            return c
+        }
+        let hide = UIButton(configuration: glass("keyboard.chevron.compact.down"), primaryAction: UIAction { [weak self] _ in
             // 내리면 textFieldDidEndEditing 이 조합 중인 글자를 먼저 보낸다
             self?.resignFirstResponder()
         })
         hide.accessibilityLabel = "키보드 숨기기"
-        hide.translatesAutoresizingMaskIntoConstraints = false
-        bar.addSubview(hide)
+        menuButton.configuration = glass("circle.grid.2x2.fill")
+        menuButton.addAction(UIAction { [weak self] _ in self?.menuAnchor.performPrimaryAction() }, for: .primaryActionTriggered)
+        menuButton.accessibilityLabel = "메뉴"
+        menuAnchor.showsMenuAsPrimaryAction = true
+        menuAnchor.isUserInteractionEnabled = false
+
+        let keys = UIStackView()
+        keys.axis = .horizontal
+        keys.spacing = 8
+        for k in Self.specialKeys {
+            var c = UIButton.Configuration.glass()
+            c.cornerStyle = .capsule
+            c.attributedTitle = AttributedString(k.title, attributes: AttributeContainer([
+                .font: UIFont.systemFont(ofSize: 16, weight: .semibold), .foregroundColor: UIColor.white]))
+            c.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 14, bottom: 0, trailing: 14)
+            let b = UIButton(configuration: c, primaryAction: UIAction { [weak self] _ in
+                // 조합 중인 글자를 먼저 보내고 키를 보낸다
+                self?.flushPending()
+                self?.onKey(k.keysym, k.name)
+            })
+            b.widthAnchor.constraint(greaterThanOrEqualToConstant: 52).isActive = true
+            keys.addArrangedSubview(b)
+        }
+        let scroll = UIScrollView()
+        scroll.showsHorizontalScrollIndicator = false
+        scroll.alwaysBounceHorizontal = true
+        scroll.clipsToBounds = false // 글래스 버튼 그림자가 잘리지 않게
+        scroll.addSubview(keys)
+
+        for v in [scroll, menuButton, hide, menuAnchor] as [UIView] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            bar.addSubview(v)
+        }
+        keys.translatesAutoresizingMaskIntoConstraints = false
+        let g = bar.safeAreaLayoutGuide
         NSLayoutConstraint.activate([
-            hide.trailingAnchor.constraint(equalTo: bar.safeAreaLayoutGuide.trailingAnchor, constant: -10),
+            hide.trailingAnchor.constraint(equalTo: g.trailingAnchor, constant: -10),
             hide.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
             hide.widthAnchor.constraint(equalToConstant: 52),
             hide.heightAnchor.constraint(equalToConstant: 40),
+            menuButton.trailingAnchor.constraint(equalTo: hide.leadingAnchor, constant: -8),
+            menuButton.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            menuButton.widthAnchor.constraint(equalToConstant: 52),
+            menuButton.heightAnchor.constraint(equalToConstant: 40),
+            menuAnchor.leadingAnchor.constraint(equalTo: menuButton.leadingAnchor),
+            menuAnchor.trailingAnchor.constraint(equalTo: menuButton.trailingAnchor),
+            menuAnchor.bottomAnchor.constraint(equalTo: menuButton.topAnchor, constant: -6),
+            menuAnchor.heightAnchor.constraint(equalToConstant: 1),
+            scroll.leadingAnchor.constraint(equalTo: g.leadingAnchor, constant: 10),
+            scroll.trailingAnchor.constraint(equalTo: menuButton.leadingAnchor, constant: -8),
+            scroll.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            scroll.heightAnchor.constraint(equalToConstant: 40),
+            keys.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            keys.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            keys.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            keys.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            keys.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
         ])
         return bar
     }

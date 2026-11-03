@@ -182,6 +182,9 @@ final class SessionModel: ObservableObject {
     func sendReturn() {
         client?.sendSpecialKey(0xFF0D, name: "Return")
     }
+    func sendKey(_ keysym: UInt32, name: String) {
+        client?.sendSpecialKey(keysym, name: name)
+    }
 
     func close() {
         saveThumbnail()
@@ -319,7 +322,7 @@ struct SessionView: View {
                 ScreenView(renderer: model.renderer, mode: model.mouseMode, scrollMode: model.scrollMode, cursor: model.cursor, input: model)
                     .ignoresSafeArea()
                 KeyInputField(active: $model.typing, onText: model.sendText, onBackspace: model.sendBackspace, onReturn: model.sendReturn,
-                              onPending: { model.composing = $0 })
+                              onPending: { model.composing = $0 }, onKey: model.sendKey, menu: menu)
                     .frame(width: 1, height: 1)
                     .opacity(0.01)
                 if !model.hasImage { ProgressView().controlSize(.large) }
