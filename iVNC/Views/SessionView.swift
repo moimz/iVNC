@@ -367,8 +367,7 @@ struct SessionView: View {
                 Text(model.computer.name).font(.title2.weight(.semibold)).lineLimit(1)
                 ProgressView().controlSize(.large)
                 Text(status).foregroundStyle(.secondary)
-                Button("접속 취소") { end() }
-                    .buttonStyle(.glass)
+                cancelButton
                     .padding(.top, 12)
             }
             .padding(.horizontal, 24)
@@ -376,8 +375,7 @@ struct SessionView: View {
             VStack(spacing: 0) {
                 DisplayPickerView(computer: model.computer, displays: model.displays) { model.select($0) }
                     .padding(.top, 56)
-                Button("취소") { end() }
-                    .buttonStyle(.glass)
+                cancelButton
                     .padding(.bottom, 24)
             }
         case .viewing:
@@ -427,6 +425,15 @@ struct SessionView: View {
             UIMenu(options: .displayInline, children: tools),
             UIMenu(options: .displayInline, children: [end]),
         ])
+    }
+
+    /// 접속 전 화면(접속 중·모니터 고르기)의 나가기 버튼: 살짝 붉은 글래스
+    private var cancelButton: some View {
+        Button { end() } label: {
+            Text("접속 취소").padding(.horizontal, 8)
+        }
+        .buttonStyle(.glassProminent)
+        .tint(.red.opacity(0.55))
     }
 
     private func end() {
