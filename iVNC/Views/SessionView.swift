@@ -384,34 +384,34 @@ struct FloatingMenuButton: UIViewRepresentable {
     }
 }
 
+/// 떠 있는 메뉴 버튼: 네 모서리 중 하나에 붙는다. 길게 눌러 끌거나 던지면 가까운 모서리로 옮겨 간다.
 final class FloatingButtonHost: UIView {
     var action: () -> Void = {}
-    private let button = UIButton(type: .custom)
+    private let button = UIButton(type: .system)
     private let size: CGFloat = 54
-    private var dragStart: CGPoint?
+    private let margin: CGFloat = 12
+    private var open = false
+    /// 길게 눌러 끄는 중: 손가락과 버튼 중심의 차이, 던진 속도를 재려는 최근 위치
+    private var grabOffset: CGPoint?
+    private var samples: [(p: CGPoint, t: TimeInterval)] = []
 
     private var right: Bool {
         get { UserDefaults.standard.object(forKey: "floatingButton.right") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "floatingButton.right") }
     }
-    private var yFraction: CGFloat {
-        get { UserDefaults.standard.object(forKey: "floatingButton.y") as? CGFloat ?? 0.82 }
-        set { UserDefaults.standard.set(newValue, forKey: "floatingButton.y") }
+    private var bottom: Bool {
+        get { UserDefaults.standard.object(forKey: "floatingButton.bottom") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "floatingButton.bottom") }
     }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .clear
         button.frame = CGRect(x: 0, y: 0, width: size, height: size)
-        button.layer.cornerRadius = size / 2
-        button.backgroundColor = UIColor.black.withAlphaComponent(0.45)
-        button.layer.borderColor = UIColor.white.withAlphaComponent(0.5).cgColor
-        button.layer.borderWidth = 1
-        button.tintColor = .white
-        button.alpha = 0.75
         button.addTarget(self, action: #selector(tapped), for: .touchUpInside)
-        let pan = UIPanGestureRecognizer(target: self, action: #selector(panned(_:)))
-        button.addGestureRecognizer(pan)
+        let hold = UILongPressGestureRecognizer(target: self, action: #selector(held(_:)))
+        hold.minimumPressDuration = 0.3
+        button.addGestureRecognizer(hold)
         addSubview(button)
         setOpen(false)
     }
@@ -420,11 +420,16 @@ final class FloatingButtonHost: UIView {
 
     /// 열림이면 X, 스크롤 모드면 위아래 화살표(노란색), 아니면 기본 아이콘
     func setOpen(_ open: Bool, scroll: Bool = false) {
-        let cfg = UIImage.SymbolConfiguration(pointSize: 20, weight: .semibold)
-        let name = open ? "xmark" : (scroll ? "arrow.up.and.down" : "circle.grid.2x2.fill")
-        button.setImage(UIImage(systemName: name, withConfiguration: cfg), for: .normal)
-        button.tintColor = scroll && !open ? .systemYellow : .white
-        button.alpha = open ? 1 : 0.75
+        var c = UIButton.Configuration.glass()
+        c.cornerStyle = .capsule
+        c.image = UIImage(systemName: open ? "xmark" : (scroll ? "arrow.up.and.down" : "circle.grid.2x2.fill"),
+                          withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .semibold))
+        c.baseForegroundColor = scroll && !open ? .systemYellow : .white
+        button.configuration = c
+        if open != self.open {
+            self.open = open
+            setNeedsLayout()
+        }
     }
 
     /// 버튼 밖 터치는 받지 않는다 (화면으로 간다)
@@ -432,39 +437,60 @@ final class FloatingButtonHost: UIView {
         button.frame.insetBy(dx: -6, dy: -6).contains(point) ? button : nil
     }
 
-    private func restingCenter() -> CGPoint {
-        let b = bounds
-        let x = right ? b.width - size / 2 - 6 : size / 2 + 6
-        let y = min(max(yFraction * b.height, size), b.height - size / 2 - 6)
+    private func corner(right: Bool, bottom: Bool) -> CGPoint {
+        let b = bounds, s = safeAreaInsets
+        let x = right ? b.width - s.right - margin - size / 2 : s.left + margin + size / 2
+        var y = bottom ? b.height - max(s.bottom, margin) - size / 2 : s.top + margin + size / 2
+        // 메뉴가 열리면 위 막대가 생긴다: 위 모서리에 있으면 그 아래로 잠깐 비킨다
+        if !bottom && open { y += 64 }
         return CGPoint(x: x, y: y)
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        if dragStart == nil {
-            UIView.animate(withDuration: 0.25) { self.button.center = self.restingCenter() }
+        if grabOffset == nil {
+            UIView.animate(withDuration: 0.25) { self.button.center = self.corner(right: self.right, bottom: self.bottom) }
         }
+    }
+
+    override func safeAreaInsetsDidChange() {
+        super.safeAreaInsetsDidChange()
+        setNeedsLayout()
     }
 
     @objc private func tapped() { action() }
 
-    @objc private func panned(_ g: UIPanGestureRecognizer) {
+    @objc private func held(_ g: UILongPressGestureRecognizer) {
+        let p = g.location(in: self)
+        let now = CACurrentMediaTime()
         switch g.state {
         case .began:
-            dragStart = button.center
-            button.alpha = 1
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            grabOffset = CGPoint(x: button.center.x - p.x, y: button.center.y - p.y)
+            samples = [(p, now)]
+            UIView.animate(withDuration: 0.15) { self.button.transform = CGAffineTransform(scaleX: 1.15, y: 1.15) }
         case .changed:
-            guard let s = dragStart else { return }
-            let t = g.translation(in: self)
-            button.center = CGPoint(x: s.x + t.x, y: s.y + t.y)
+            guard let o = grabOffset else { return }
+            button.center = CGPoint(x: p.x + o.x, y: p.y + o.y)
+            samples.append((p, now))
+            samples.removeAll { now - $0.t > 0.1 }
         default:
-            right = button.center.x > bounds.width / 2
-            yFraction = min(max(button.center.y / bounds.height, 0.08), 0.95)
-            dragStart = nil
-            UIView.animate(withDuration: 0.3, delay: 0, usingSpringWithDamping: 0.8, initialSpringVelocity: 0) {
-                self.button.center = self.restingCenter()
+            guard grabOffset != nil else { return }
+            // 던진 속도만큼 조금 더 간 자리로 모서리를 고른다
+            var v = CGPoint.zero
+            if let first = samples.first, now - first.t > 0.01 {
+                v = CGPoint(x: (p.x - first.p.x) / (now - first.t), y: (p.y - first.p.y) / (now - first.t))
             }
-            button.alpha = 0.75
+            let target = CGPoint(x: button.center.x + v.x * 0.2, y: button.center.y + v.y * 0.2)
+            let r = target.x > bounds.midX, btm = target.y > bounds.midY
+            if r != right || btm != bottom { UISelectionFeedbackGenerator().selectionChanged() }
+            right = r; bottom = btm
+            grabOffset = nil
+            samples = []
+            UIView.animate(withDuration: 0.35, delay: 0, usingSpringWithDamping: 0.75, initialSpringVelocity: 0) {
+                self.button.transform = .identity
+                self.button.center = self.corner(right: r, bottom: btm)
+            }
         }
     }
 }
