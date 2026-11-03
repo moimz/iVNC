@@ -28,13 +28,8 @@ final class SessionModel: ObservableObject {
     private var client: RFBClient?
     private weak var store: ComputerStore?
 
-    /// UI 시험: 접속하지 않고 가짜 화면으로 화면 UI 만 띄운다 (임시, UI 정리용)
-    let preview: Bool
-    private var previewFB: Framebuffer?
-
-    init(computer: Computer, preview: Bool = false) {
+    init(computer: Computer) {
         self.computer = computer
-        self.preview = preview
         renderer.onFirstImage = { [weak self] in self?.hasImage = true }
         mouseMode = MouseMode(rawValue: UserDefaults.standard.string(forKey: "mouseMode." + computer.id.uuidString) ?? "") ?? .touch
     }
@@ -49,7 +44,6 @@ final class SessionModel: ObservableObject {
         self.store = store
         client?.stop()
         if !keepStatus { phase = .connecting("접속하는 중…"); retries = 0 }
-        if preview { startPreview(); return }
         guard let pw = Keychain.password(for: computer.id) else {
             phase = .failed("저장된 암호가 없습니다. 컴퓨터를 길게 눌러 편집에서 암호를 입력하세요.")
             return
@@ -119,7 +113,7 @@ final class SessionModel: ObservableObject {
         saveThumbnail()
         selected = d
         phase = .viewing
-        if computer.keepsAliveInBackground && !preview { BackgroundKeeper.shared.start() }
+        if computer.keepsAliveInBackground { BackgroundKeeper.shared.start() }
         if !guided {
             guided = true
             showGuide(mouseMode.title + "\n" + mouseMode.guide)
@@ -204,7 +198,7 @@ final class SessionModel: ObservableObject {
 
     func enterBackground() {
         // iOS 가 앱을 멈출 때까지 연결이 애매하게 물려 있으면 고성능은 맥에 모니터를 돌려주지 못한다: 바로 끊는다
-        if !computer.keepsAliveInBackground || preview {
+        if !computer.keepsAliveInBackground {
             DebugLog.write("백그라운드: 연결 유지 안 함, 바로 끊음")
             close()
             ended = true
@@ -224,37 +218,6 @@ final class SessionModel: ObservableObject {
         client?.keepAwakeWhilePaused = false
         if phase == .viewing, let d = selected { client?.select(display: d.id) }
         DebugLog.write("포그라운드: 화면 다시 받음")
-    }
-
-    /// 마지막 접속 그림(없으면 무늬)을 맥 화면인 척 띄우고, 가짜 모니터 두 대로 바로 보기에 들어간다
-    private func startPreview() {
-        let w = 2560, h = 1600
-        let fb = Framebuffer()
-        fb.resize(width: w, height: h)
-        fb.withPixels { p, w, h in
-            // 메모리 순서 B G R X = 32비트 리틀 엔디언 + 앞 바이트 버림
-            guard let ctx = CGContext(data: p, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
-                                      space: CGColorSpaceCreateDeviceRGB(),
-                                      bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.noneSkipFirst.rawValue) else { return }
-            let rect = CGRect(x: 0, y: 0, width: w, height: h)
-            if let img = Thumbnails.load(computer: computer.id)?.cgImage {
-                ctx.interpolationQuality = .high
-                ctx.draw(img, in: rect)
-            } else {
-                for i in 0..<16 {
-                    ctx.setFillColor(i % 2 == 0 ? CGColor(red: 0.2, green: 0.45, blue: 0.85, alpha: 1) : CGColor(red: 0.12, green: 0.2, blue: 0.4, alpha: 1))
-                    ctx.fill(CGRect(x: 0, y: h * i / 16, width: w, height: h / 16 + 1))
-                }
-            }
-        }
-        previewFB = fb
-        displays = [
-            RemoteDisplay(id: 1, isMain: true, scale: 2, desktop: CGRect(x: 0, y: 0, width: 1280, height: 800), framebuffer: CGRect(x: 0, y: 0, width: w, height: h)),
-            RemoteDisplay(id: 2, isMain: false, scale: 1, desktop: CGRect(x: 1280, y: 0, width: 1920, height: 1080), framebuffer: CGRect(x: w, y: 0, width: 1920, height: 1080)),
-        ]
-        cursor = CGPoint(x: w / 2, y: h / 2)
-        select(displays[0])
-        renderer.presentStandard(fb)
     }
 
     private func saveThumbnail() {
@@ -277,8 +240,8 @@ struct SessionView: View {
     @State private var displaySettings = false
     @State private var displaySettingsHeight: CGFloat = 300
 
-    init(computer: Computer, preview: Bool = false) {
-        _model = StateObject(wrappedValue: SessionModel(computer: computer, preview: preview))
+    init(computer: Computer) {
+        _model = StateObject(wrappedValue: SessionModel(computer: computer))
     }
 
     var body: some View {
@@ -675,13 +638,11 @@ extension SessionModel: MouseInput {
     private func flushComposition() {
         if !composing.isEmpty { NotificationCenter.default.post(name: HangulInputField.flushNotification, object: nil) }
     }
-    func mouseClick(_ p: CGPoint, button: UInt8) { flushComposition(); previewCursor(p); client?.click(x: Int(p.x), y: Int(p.y), button: button) }
-    func mouseDown(_ p: CGPoint) { flushComposition(); previewCursor(p); client?.mouseDown(x: Int(p.x), y: Int(p.y)) }
-    func mouseMove(_ p: CGPoint) { previewCursor(p); client?.mouseMove(x: Int(p.x), y: Int(p.y)) }
-    func mouseUp(_ p: CGPoint) { previewCursor(p); client?.mouseUp(x: Int(p.x), y: Int(p.y)) }
-    /// UI 시험에서는 맥 대신 커서 위치를 바로 옮겨 준다
-    private func previewCursor(_ p: CGPoint) { if preview { cursor = p } }
-    var serverCursor: CGPoint? { preview ? cursor : client?.cursorPosition }
+    func mouseClick(_ p: CGPoint, button: UInt8) { flushComposition(); client?.click(x: Int(p.x), y: Int(p.y), button: button) }
+    func mouseDown(_ p: CGPoint) { flushComposition(); client?.mouseDown(x: Int(p.x), y: Int(p.y)) }
+    func mouseMove(_ p: CGPoint) { client?.mouseMove(x: Int(p.x), y: Int(p.y)) }
+    func mouseUp(_ p: CGPoint) { client?.mouseUp(x: Int(p.x), y: Int(p.y)) }
+    var serverCursor: CGPoint? { client?.cursorPosition }
     /// 프레임버퍼 픽셀 → 맥 포인트 (레티나 모니터는 2픽셀 = 1포인트)
     func mouseScroll(_ dx: CGFloat, _ dy: CGFloat, phase: RFBClient.ScrollPhase, momentum: RFBClient.MomentumPhase) {
         let scale = max(selected?.scale ?? 1, 1)
