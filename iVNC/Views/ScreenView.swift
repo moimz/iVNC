@@ -31,6 +31,8 @@ struct ScreenView: UIViewRepresentable {
     var scrollMode = false
     /// 맥 커서 위치 (터치 모드에서 큰 포인터로 보여 준다)
     var cursor: CGPoint?
+    /// 특이한 맥 커서 모양 (nil 이면 큰 화살표)
+    var cursorShape: RFBClient.CursorShape?
     weak var input: MouseInput?
 
     func makeUIView(context: Context) -> ZoomingImageView {
@@ -47,6 +49,7 @@ struct ScreenView: UIViewRepresentable {
         if v.mode != mode { v.mode = mode }
         if v.scrollMode != scrollMode { v.scrollMode = scrollMode }
         if v.macCursor != cursor { v.macCursor = cursor }
+        if v.cursorShape?.image !== cursorShape?.image { v.cursorShape = cursorShape }
     }
 }
 
@@ -59,6 +62,14 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         didSet {
             guard mode == .touch, let c = macCursor else { return }
             pointer = c
+            placePointer()
+        }
+    }
+
+    /// 특이한 맥 커서 모양: 큰 화살표 대신 그 모양을 같은 크기로 보여 준다
+    var cursorShape: RFBClient.CursorShape? {
+        didSet {
+            pointerView.setShape(cursorShape)
             placePointer()
         }
     }
@@ -417,7 +428,8 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         guard let p = pointer, pixelSize.width > 0 else { return }
         pointerView.isHidden = false
         let v = viewPoint(ofPixel: p)
-        pointerView.frame.origin = CGPoint(x: v.x - 2, y: v.y - 1) // 화살표 끝이 좌표
+        let hot = pointerView.hotspot
+        pointerView.frame.origin = CGPoint(x: v.x - hot.x, y: v.y - hot.y) // 화살표 끝(특이 커서는 핫스팟)이 좌표
         bringSubviewToFront(pointerView)
     }
 
@@ -519,7 +531,6 @@ final class PointerView: UIView {
         path.addLine(to: CGPoint(x: 10, y: 15))
         path.addLine(to: CGPoint(x: 16, y: 15))
         path.close()
-        let shape = CAShapeLayer()
         shape.path = path.cgPath
         shape.fillColor = UIColor.white.cgColor
         shape.strokeColor = UIColor.black.cgColor
@@ -528,9 +539,43 @@ final class PointerView: UIView {
         shape.shadowRadius = 1.5
         shape.shadowOffset = CGSize(width: 0, height: 1)
         layer.addSublayer(shape)
+        imageLayer.magnificationFilter = .nearest
+        imageLayer.shadowOpacity = 0.4
+        imageLayer.shadowRadius = 1.5
+        imageLayer.shadowOffset = CGSize(width: 0, height: 1)
+        imageLayer.isHidden = true
+        layer.addSublayer(imageLayer)
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    private let shape = CAShapeLayer()
+    private let imageLayer = CALayer()
+    /// 뷰 안에서 가리키는 점 (화살표 끝, 특이 커서는 핫스팟)
+    private(set) var hotspot = CGPoint(x: 2, y: 1)
+    /// 특이 커서의 화면 크기: 긴 쪽을 큰 화살표 높이(26pt)에 맞춘다
+    private static let shapeSize: CGFloat = 26
+
+    /// 특이한 맥 커서 모양을 보여 준다. nil 이면 큰 화살표로 돌아간다
+    func setShape(_ s: RFBClient.CursorShape?) {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        guard let s, s.image.width > 0, s.image.height > 0 else {
+            imageLayer.isHidden = true
+            shape.isHidden = false
+            frame.size = CGSize(width: 18, height: 26)
+            hotspot = CGPoint(x: 2, y: 1)
+            return
+        }
+        let k = Self.shapeSize / CGFloat(max(s.image.width, s.image.height))
+        let size = CGSize(width: CGFloat(s.image.width) * k, height: CGFloat(s.image.height) * k)
+        frame.size = size
+        imageLayer.frame = CGRect(origin: .zero, size: size)
+        imageLayer.contents = s.image
+        imageLayer.isHidden = false
+        shape.isHidden = true
+        hotspot = CGPoint(x: s.hotspot.x * k, y: s.hotspot.y * k)
+    }
 }
 
 /// 렌더러 레이어를 담는 뷰: 크기가 바뀌면 렌더러 레이어를 맞춘다 (확대는 이 뷰의 변환으로)

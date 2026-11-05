@@ -16,11 +16,18 @@ final class RFBClient {
         case stripe(CVPixelBuffer, Int, Int)
         /// 맥 커서 위치가 바뀜 (서버 알림 1100, 또는 우리가 보낸 마우스). 프레임버퍼 픽셀
         case cursor(Int, Int)
+        /// 맥 커서 모양 (RFB Cursor -239). 화살표면 nil (우리 큰 화살표를 쓴다), 글자 입력·크기 조절 같은 특이한 커서면 그 그림과 핫스팟(픽셀)
+        case cursorShape(CursorShape?)
         case failed(String)
         /// 고성능 결과: true 면 가상 디스플레이로 바로 보기, false 면 일반 모드로 바뀌었고 모니터 목록이 뒤따른다
         case highPerformance(Bool)
         /// 같은 접속에서 일반 모드로 못 돌아왔으니 고성능 없이 다시 접속해야 한다
         case reconnectStandard
+    }
+
+    struct CursorShape {
+        let image: CGImage
+        let hotspot: CGPoint
     }
 
     var onEvent: ((Event) -> Void)?
@@ -163,7 +170,7 @@ final class RFBClient {
     }
 
     // 1011 = 애플 MVS (손실 DCT, 애플 앱의 화질 "적응"). 무손실 ZRLE 보다 훨씬 작다
-    private static let standardEncodings: [Int32] = [1011, 16, 6, 1, 0, 1105, 1101, 1100, 1109, -223, -224] // 1100: 커서 위치, 1109: 키보드 입력 상태
+    private static let standardEncodings: [Int32] = [1011, 16, 6, 1, 0, 1105, 1101, 1100, 1109, -223, -224, -239] // 1100: 커서 위치, 1109: 키보드 입력 상태, -239: 커서 모양
 
     private var hpSecrets: HP.Secrets?
     private var hpReceiver: HPUDPReceiver?
@@ -746,8 +753,12 @@ final class RFBClient {
                 framebuffer.resize(width: w, height: h)
             case -224:
                 i = count == 0xFFFF ? Int.max : count
-            case -239:
-                try s.skip(w * h * 4 + (w + 7) / 8 * h)
+            case -239: // 커서 모양: 픽셀(우리 형식 32bpp, 메모리 B G R X) + 비트 마스크(줄마다 (w+7)/8 바이트, 앞 비트가 왼쪽)
+                let pixels = try s.read(w * h * 4)
+                let mask = try s.read((w + 7) / 8 * h)
+                let shape = Self.cursorShape(pixels: pixels, mask: mask, w: w, h: h, hotX: x, hotY: y)
+                DebugLog.write("커서 모양 \(w)x\(h) 핫스팟 \(x),\(y) → \(shape == nil ? "화살표" : "특이 커서")")
+                emit(.cursorShape(shape))
             default:
                 DebugLog.write("알 수 없는 인코딩 \(enc) (\(String(format: "%08x", UInt32(bitPattern: enc)))) 사각형 \(x),\(y) \(w)x\(h). 이 메시지의 앞 사각형 \(encs.dropLast()), 사각형 수 \(count)")
                 let recent = s.recentBytes
@@ -859,6 +870,28 @@ final class RFBClient {
         }
         watchdog = t
         t.resume()
+    }
+
+    // MARK: - 커서 모양
+
+    /// 화살표 계열(핫스팟이 왼쪽 위 1/4 안)은 nil. 나머지(글자 입력 I자, 크기 조절, 십자, 손가락 등)는 그림으로
+    static func cursorShape(pixels: [UInt8], mask: [UInt8], w: Int, h: Int, hotX: Int, hotY: Int) -> CursorShape? {
+        guard w > 0, h > 0 else { return nil }
+        if Double(hotX) <= Double(w) * 0.25 && Double(hotY) <= Double(h) * 0.25 { return nil }
+        let rowBytes = (w + 7) / 8
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        for yy in 0..<h {
+            for xx in 0..<w where mask[yy * rowBytes + xx / 8] & (0x80 >> UInt8(xx % 8)) != 0 {
+                let o = (yy * w + xx) * 4
+                rgba[o] = pixels[o]; rgba[o + 1] = pixels[o + 1]; rgba[o + 2] = pixels[o + 2]; rgba[o + 3] = 255
+            }
+        }
+        let info = CGBitmapInfo(rawValue: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue)
+        guard let provider = CGDataProvider(data: Data(rgba) as CFData),
+              let image = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4,
+                                  space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: info, provider: provider,
+                                  decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { return nil }
+        return CursorShape(image: image, hotspot: CGPoint(x: hotX, y: hotY))
     }
 
     // MARK: - 마우스

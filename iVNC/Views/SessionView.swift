@@ -122,6 +122,8 @@ final class SessionModel: ObservableObject {
             client?.frameConsumed()
         case .cursor(let x, let y):
             cursor = CGPoint(x: x, y: y)
+        case .cursorShape(let shape):
+            cursorShape = shape
         case .stripe(let pb, let stripe, let stripes):
             renderer.presentStripe(pb, stripe: stripe, stripes: stripes, fullHeight: client?.framebuffer.height ?? 0)
             client?.frameConsumed()
@@ -174,6 +176,8 @@ final class SessionModel: ObservableObject {
 
     /// 맥 커서 위치 (프레임버퍼 픽셀). 앱이 큰 포인터로 보여 준다
     @Published private(set) var cursor: CGPoint?
+    /// 특이한 맥 커서 (글자 입력·크기 조절 등). nil 이면 큰 화살표
+    @Published private(set) var cursorShape: RFBClient.CursorShape?
 
     /// 스크롤 모드 (메뉴에서 켜고 끈다)
     @Published var scrollMode = false
@@ -388,7 +392,7 @@ struct SessionView: View {
             }
         case .viewing:
             ZStack {
-                ScreenView(renderer: model.renderer, mode: model.mouseMode, scrollMode: model.scrollMode, cursor: model.cursor, input: model)
+                ScreenView(renderer: model.renderer, mode: model.mouseMode, scrollMode: model.scrollMode, cursor: model.cursor, cursorShape: model.cursorShape, input: model)
                     .ignoresSafeArea()
                 KeyInputField(active: $model.typing, onText: model.sendText, onBackspace: model.sendBackspace, onReturn: model.sendReturn,
                               onPending: { model.composing = $0 }, onKey: model.sendKey, onCombo: model.sendCombo, menu: menu)
