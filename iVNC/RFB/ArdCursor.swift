@@ -1,3 +1,4 @@
+import CoreImage
 import UIKit
 
 /// 애플 커서 모양 (의사 인코딩 1104, noVNC-ARD `_ardHandleCursorAlpha` 를 따름).
@@ -37,7 +38,21 @@ final class ArdCursorDecoder {
               let image = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4,
                                   space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: info, provider: provider,
                                   decode: nil, shouldInterpolate: true, intent: .defaultIntent) else { return nil }
-        return RFBClient.CursorShape(image: image, hotspot: CGPoint(x: hotX, y: hotY))
+        return smooth(RFBClient.CursorShape(image: image, hotspot: CGPoint(x: hotX, y: hotY)))
+    }
+
+    /// 맥이 보내는 커서 그림은 배율 1 이라 작다 (23x22 등). 3배로 부드럽게 키워 두고, 화면에는 원래 픽셀당 1.2pt 로 보인다
+    static let ciContext = CIContext()
+    static func smooth(_ s: RFBClient.CursorShape) -> RFBClient.CursorShape {
+        let up: CGFloat = 3
+        let input = CIImage(cgImage: s.image)
+        guard let f = CIFilter(name: "CILanczosScaleTransform") else { return s }
+        f.setValue(input, forKey: kCIInputImageKey)
+        f.setValue(up, forKey: kCIInputScaleKey)
+        f.setValue(1.0, forKey: kCIInputAspectRatioKey)
+        guard let out = f.outputImage,
+              let cg = ciContext.createCGImage(out, from: CGRect(x: 0, y: 0, width: CGFloat(s.image.width) * up, height: CGFloat(s.image.height) * up)) else { return s }
+        return RFBClient.CursorShape(image: cg, hotspot: CGPoint(x: s.hotspot.x * up, y: s.hotspot.y * up), scale: up / 1.2)
     }
 
     /// 미리 정해진 커서: 화살표 계열은 nil, 나머지는 SF 심볼로 그린다 (핫스팟은 가운데, 손가락은 손끝)
@@ -48,7 +63,8 @@ final class ArdCursorDecoder {
         case 1:
             // SF 심볼 I자에는 글자("가")가 붙어 있어 직접 그린다
             guard let image = ibeam() else { return nil }
-            return RFBClient.CursorShape(image: image, hotspot: CGPoint(x: CGFloat(image.width) / 2, y: CGFloat(image.height) / 2))
+            return RFBClient.CursorShape(image: image, hotspot: CGPoint(x: CGFloat(image.width) / 2, y: CGFloat(image.height) / 2),
+                                         scale: CGFloat(image.height) / 26)
         case 2: symbol = "plus"
         case 3, 4: symbol = "hand.raised"
         case 5: symbol = "hand.point.up.left"; hot = CGPoint(x: 0.3, y: 0.05)
@@ -59,7 +75,8 @@ final class ArdCursorDecoder {
         default: return nil // 0 기본, 6 기다림, 7 도움말 → 큰 화살표
         }
         guard let image = render(symbol) else { return nil }
-        return RFBClient.CursorShape(image: image, hotspot: CGPoint(x: CGFloat(image.width) * hot.x, y: CGFloat(image.height) * hot.y))
+        return RFBClient.CursorShape(image: image, hotspot: CGPoint(x: CGFloat(image.width) * hot.x, y: CGFloat(image.height) * hot.y),
+                                     scale: CGFloat(max(image.width, image.height)) / 26)
     }
 
     /// 맥 글자 입력 커서처럼: 위아래가 살짝 벌어진 세로 막대, 검은 선에 흰 테두리
@@ -68,7 +85,7 @@ final class ArdCursorDecoder {
         if let c = rendered["ibeam"] { return c }
         let size = CGSize(width: 18, height: 40)
         let format = UIGraphicsImageRendererFormat()
-        format.scale = 1
+        format.scale = 3
         let img = UIGraphicsImageRenderer(size: size, format: format).image { ctx in
             let p = UIBezierPath()
             p.move(to: CGPoint(x: 3, y: 3)); p.addQuadCurve(to: CGPoint(x: 9, y: 6), controlPoint: CGPoint(x: 8, y: 3))
@@ -97,7 +114,7 @@ final class ArdCursorDecoder {
         let pad: CGFloat = 4
         let size = CGSize(width: base.size.width + pad * 2, height: base.size.height + pad * 2)
         let format = UIGraphicsImageRendererFormat()
-        format.scale = 1
+        format.scale = 3
         let img = UIGraphicsImageRenderer(size: size, format: format).image { _ in
             let white = base.withTintColor(.white, renderingMode: .alwaysOriginal)
             for dx in [-2.5, 0, 2.5] { for dy in [-2.5, 0, 2.5] where dx != 0 || dy != 0 {

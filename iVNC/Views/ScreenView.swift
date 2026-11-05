@@ -539,7 +539,8 @@ final class PointerView: UIView {
         shape.shadowRadius = 1.5
         shape.shadowOffset = CGSize(width: 0, height: 1)
         layer.addSublayer(shape)
-        imageLayer.magnificationFilter = .nearest
+        imageLayer.magnificationFilter = .linear
+        imageLayer.minificationFilter = .trilinear
         imageLayer.shadowOpacity = 0.4
         imageLayer.shadowRadius = 1.5
         imageLayer.shadowOffset = CGSize(width: 0, height: 1)
@@ -553,8 +554,6 @@ final class PointerView: UIView {
     private let imageLayer = CALayer()
     /// 뷰 안에서 가리키는 점 (화살표 끝, 특이 커서는 핫스팟)
     private(set) var hotspot = CGPoint(x: 2, y: 1)
-    /// 특이 커서의 화면 크기: 긴 쪽을 큰 화살표 높이(26pt)에 맞춘다
-    private static let shapeSize: CGFloat = 26
 
     /// 특이한 맥 커서 모양을 보여 준다. nil 이면 큰 화살표로 돌아간다
     func setShape(_ s: RFBClient.CursorShape?) {
@@ -567,7 +566,8 @@ final class PointerView: UIView {
             hotspot = CGPoint(x: 2, y: 1)
             return
         }
-        let k = Self.shapeSize / CGFloat(max(s.image.width, s.image.height))
+        // 그림 픽셀 → 화면 pt (그림마다 정해진 배율. 맥이 보낸 그림은 원래 크기의 1.2배, 앱이 그린 것은 26pt)
+        let k = 1 / max(s.scale, 0.01)
         let size = CGSize(width: CGFloat(s.image.width) * k, height: CGFloat(s.image.height) * k)
         frame.size = size
         imageLayer.frame = CGRect(origin: .zero, size: size)

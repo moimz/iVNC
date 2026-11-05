@@ -27,7 +27,10 @@ final class RFBClient {
 
     struct CursorShape {
         let image: CGImage
+        /// 그림 픽셀 기준
         let hotspot: CGPoint
+        /// 그림 픽셀 몇 개가 화면 1pt 인지 (높은 해상도로 그려 둔 그림은 크다)
+        var scale: CGFloat = 1
     }
 
     var onEvent: ((Event) -> Void)?
@@ -155,6 +158,19 @@ final class RFBClient {
         DebugLog.write("HP 성공: 영상 \(hpReceiver?.verifiedVideo ?? 0)개 검증됨 → 가상 디스플레이로 바로 보기")
         emit(.highPerformance(true))
         if !hpPendingDisplays.isEmpty { emit(.displays(hpPendingDisplays)) }
+        hpSubscribe()
+    }
+
+    /// 고성능 중 자동 화면 갱신(0x09) 구독을 새로 한다: 서버는 이 구독이 있을 때만 커서 모양(1104)·위치(1100)를 TCP 로 보낸다.
+    /// 화면 요청(0x03)은 계속 안 보낸다 (그림은 UDP 영상). noVNC-ARD 처럼 성공 직후, Tickle 마다, 업데이트 메시지가 끝날 때마다 보낸다
+    /// (안 하면 3초쯤 뒤 구독이 끊겨 커서가 멈췄다고 한다)
+    private var hpSubscribeLogged = false
+    private func hpSubscribe() {
+        guard hpState == .on else { return }
+        let w = framebuffer.width, h = framebuffer.height
+        guard w > 0, h > 0 else { return }
+        socket?.send([9, 0] + [UInt8].be16(1) + [UInt8].be32(0) + [0, 0, 0, 0] + [UInt8].be16(w) + [UInt8].be16(h))
+        if !hpSubscribeLogged { hpSubscribeLogged = true; DebugLog.write("HP 자동 갱신 구독(0x09) \(w)x\(h) — 커서 받기") }
     }
 
     /// 실패: 고성능 없이 다시 접속하라고 알린다.
@@ -646,6 +662,7 @@ final class RFBClient {
             // 4 = Tickle: 보낼 게 없을 때 2초마다 온다. 서버가 화면 보내기를 멈추고 이것만 보내는 경우가 있어서,
             // 받을 때마다 자동 화면 갱신을 다시 켜 준다 (noVNC-ARD 와 같은 방식, 화면이 오는 동안에는 안 온다)
             if body.count >= 4 && body[2] == 0 && body[3] == 4 {
+                hpSubscribe()
                 if autoUpdateAllowed {
                     if Self.useAutoUpdate { setAutoUpdate(true) } else { requestUpdate(incremental: true) }
                 }
@@ -779,6 +796,7 @@ final class RFBClient {
             if i == Int.max { break }
         }
 
+        hpSubscribe()
         if drewPixels { stateLock.lock(); fullRequestAt = nil; stateLock.unlock() }
         if drewPixels && wakeKick {
             wakeKick = false
@@ -900,7 +918,7 @@ final class RFBClient {
               let image = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4,
                                   space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: info, provider: provider,
                                   decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { return nil }
-        return CursorShape(image: image, hotspot: CGPoint(x: hotX, y: hotY))
+        return ArdCursorDecoder.smooth(CursorShape(image: image, hotspot: CGPoint(x: hotX, y: hotY)))
     }
 
     // MARK: - 마우스
