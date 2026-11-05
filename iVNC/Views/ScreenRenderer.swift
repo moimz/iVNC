@@ -48,8 +48,15 @@ final class ScreenRenderer {
         CATransaction.begin(); CATransaction.setDisableActions(true)
         layer.frame = bounds
         let n = stripeLayers.count
+        let full = CGFloat(max(stripeFullHeight, 1)), per = CGFloat(stripeRows)
         for (i, l) in stripeLayers.enumerated() {
-            l.frame = CGRect(x: 0, y: bounds.height * CGFloat(i) / CGFloat(n), width: bounds.width, height: bounds.height / CGFloat(n))
+            if stripeFullHeight > 0 && stripeRows > 0 {
+                // 줄무늬마다 실제 줄 수만큼 (마지막은 남은 만큼)
+                let top = per * CGFloat(i), rows = max(0, min(per, full - top))
+                l.frame = CGRect(x: 0, y: bounds.height * top / full, width: bounds.width, height: bounds.height * rows / full)
+            } else {
+                l.frame = CGRect(x: 0, y: bounds.height * CGFloat(i) / CGFloat(n), width: bounds.width, height: bounds.height / CGFloat(n))
+            }
         }
         CATransaction.commit()
     }
@@ -105,7 +112,20 @@ final class ScreenRenderer {
 
     // MARK: 고성능
 
-    func presentStripe(_ pb: CVPixelBuffer, stripe: Int, stripes: Int) {
+    /// 고성능 화면 전체 높이와 줄무늬 하나의 실제 줄 수.
+    /// 인코더는 줄무늬를 8·16 배수로 채워 보낸다 (1200/4 = 300 줄인데 304 줄): 넘치는 줄은 잘라 낸다
+    private var stripeFullHeight = 0
+    private var stripeRows = 0
+
+    func presentStripe(_ pb: CVPixelBuffer, stripe: Int, stripes: Int, fullHeight: Int) {
+        let bufH = CVPixelBufferGetHeight(pb)
+        let rows = fullHeight > 0 ? min(bufH, (fullHeight + stripes - 1) / max(stripes, 1)) : bufH
+        let full = fullHeight > 0 ? fullHeight : bufH * stripes
+        if rows != stripeRows || full != stripeFullHeight {
+            stripeRows = rows
+            stripeFullHeight = full
+            layout(bounds: layer.frame)
+        }
         if stripeLayers.count != stripes {
             clearStripes()
             layer.contents = nil
@@ -122,10 +142,13 @@ final class ScreenRenderer {
             layout(bounds: layer.frame)
         }
         guard stripe < stripes else { return }
-        setSize(CGSize(width: CVPixelBufferGetWidth(pb), height: CVPixelBufferGetHeight(pb) * stripes))
+        setSize(CGSize(width: CVPixelBufferGetWidth(pb), height: full))
         stripeBuffers[stripe] = pb
         CATransaction.begin(); CATransaction.setDisableActions(true)
         stripeLayers[stripe].contents = CVPixelBufferGetIOSurface(pb)?.takeUnretainedValue()
+        // 위에서부터 실제 줄 수만큼만 보인다 (contentsRect 는 단위 좌표, 위가 0)
+        let shownRows = max(0, min(rows, full - rows * stripe))
+        stripeLayers[stripe].contentsRect = CGRect(x: 0, y: 0, width: 1, height: CGFloat(shownRows) / CGFloat(bufH))
         CATransaction.commit()
         if !loggedStripe && stripe == stripes - 1 {
             loggedStripe = true
@@ -150,9 +173,13 @@ final class ScreenRenderer {
         let n = stripeBuffers.count
         for (i, pb) in stripeBuffers.enumerated() {
             guard let pb else { continue }
-            let h = CGFloat(CVPixelBufferGetHeight(pb))
-            // CIImage 는 아래가 원점: 첫 줄무늬가 맨 위
-            image = CIImage(cvPixelBuffer: pb).transformed(by: CGAffineTransform(translationX: 0, y: h * CGFloat(n - 1 - i))).composited(over: image)
+            let bufH = CGFloat(CVPixelBufferGetHeight(pb))
+            let rows = stripeRows > 0 ? CGFloat(stripeRows) : bufH
+            let full = stripeFullHeight > 0 ? CGFloat(stripeFullHeight) : bufH * CGFloat(n)
+            let shown = max(0, min(rows, full - rows * CGFloat(i)))
+            // CIImage 는 아래가 원점: 줄무늬 윗부분(shown 줄)만 잘라 제자리(위에서 rows*i)에
+            let cropped = CIImage(cvPixelBuffer: pb).cropped(to: CGRect(x: 0, y: bufH - shown, width: CGFloat(CVPixelBufferGetWidth(pb)), height: shown))
+            image = cropped.transformed(by: CGAffineTransform(translationX: 0, y: full - rows * CGFloat(i) - bufH)).composited(over: image)
         }
         return ctx.createCGImage(image, from: CGRect(origin: .zero, size: pixelSize))
     }

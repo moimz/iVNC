@@ -123,7 +123,7 @@ final class SessionModel: ObservableObject {
         case .cursor(let x, let y):
             cursor = CGPoint(x: x, y: y)
         case .stripe(let pb, let stripe, let stripes):
-            renderer.presentStripe(pb, stripe: stripe, stripes: stripes)
+            renderer.presentStripe(pb, stripe: stripe, stripes: stripes, fullHeight: client?.framebuffer.height ?? 0)
             client?.frameConsumed()
         case .failed(let msg):
             // 화면을 보기 전(접속·인증 단계) 실패는 자동으로 3번까지 다시 시도한다.
