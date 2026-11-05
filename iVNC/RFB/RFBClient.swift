@@ -84,13 +84,18 @@ final class RFBClient {
     private var wakeKick = false
 
     /// tryHighPerformance: 서버가 고성능을 지원하면 먼저 가상 디스플레이 고성능을 시도한다
-    init(host: String, port: Int, username: String, password: String, tryHighPerformance: Bool = true) {
+    init(host: String, port: Int, username: String, password: String, tryHighPerformance: Bool = true,
+         virtualDisplay: (width: Int, height: Int) = (1280, 800)) {
         self.host = host
         self.port = port
         self.username = username
         self.password = password
         self.tryHighPerformance = tryHighPerformance
+        self.virtualDisplay = virtualDisplay
     }
+
+    /// 고성능 가상 디스플레이 크기 (포인트, 픽셀은 2배). 맥은 이 크기의 화면으로 앱을 배치한다
+    private let virtualDisplay: (width: Int, height: Int)
 
     // MARK: - 고성능 (가상 디스플레이 + HEVC/UDP)
 
@@ -375,9 +380,9 @@ final class RFBClient {
     }
 
     /// 지금까지 받은 바이트 (TCP + 고성능 UDP) 와 빠진 영상 패킷 수
-    var traffic: (bytes: Int, lost: Int) {
-        let udp = hpReceiver?.traffic ?? (bytes: 0, lost: 0)
-        return ((socket?.received ?? 0) + udp.bytes, udp.lost)
+    var traffic: (bytes: Int, lost: Int, packets: Int) {
+        let udp = hpReceiver?.traffic ?? (bytes: 0, lost: 0, packets: 0)
+        return ((socket?.received ?? 0) + udp.bytes, udp.lost, udp.packets)
     }
 
     func stop() {
@@ -576,8 +581,8 @@ final class RFBClient {
             setup += Self.viewerInfo()
             setup += [0x0A, 0, 0, 1] // SetMode: 조작
             if hpState == .trying {
-                setup += HP.virtualDisplayMessage(width: 1280, height: 800, scale: 2)
-                DebugLog.write("HP 가상 디스플레이 요청 1280x800pt @2")
+                setup += HP.virtualDisplayMessage(width: virtualDisplay.width, height: virtualDisplay.height, scale: 2)
+                DebugLog.write("HP 가상 디스플레이 요청 \(virtualDisplay.width)x\(virtualDisplay.height)pt @2")
                 emit(.status("고성능 연결 시도 중…"))
                 hpSchedule(after: 5) { [weak self] in
                     guard let self, !self.hpAnswered else { return }

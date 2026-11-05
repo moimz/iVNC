@@ -137,6 +137,11 @@ final class SRTPContext {
     }
 
     /// 수신 보고(RR, 보고 블록 1개) + 빈 CNAME SDES. 44바이트 (noVNC-ARD feedback.js)
+    /// 아직 받은 게 없을 때의 보고 블록 (예전 보고와 같은 모양)
+    static func emptyBlock(_ ssrc: UInt32) -> [UInt8] {
+        [UInt8].be32(ssrc) + [UInt8](repeating: 0, count: 20)
+    }
+
     static func receiverReport(ssrc: UInt32, sourceSSRC: UInt32, highestSeq: UInt32) -> [UInt8] {
         var r = [UInt8].be32(0x81C9_0007) + [UInt8].be32(ssrc) + [UInt8].be32(sourceSSRC)
         r += [UInt8].be32(0) + [UInt8].be32(highestSeq) + [UInt8].be32(0) + [UInt8].be32(0) + [UInt8].be32(0)

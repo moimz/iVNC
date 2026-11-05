@@ -245,9 +245,40 @@ final class HPUDPReceiver {
         var payloadTypes: Set<UInt8> = []
         var ssrcs: Set<UInt32> = []
         var naluTypes: [Int: Int] = [:]
-        /// SSRC 별 마지막 순번과, 순번이 건너뛴 만큼 센 빠진 패킷 수 (Wi‑Fi 손실인지 보려고)
-        var lastSeq: [UInt32: UInt16] = [:]
-        var lost = 0
+        /// SSRC 별 순번 통계 (RFC 3550 A.3: 늦게 온 패킷은 빠진 것으로 세지 않는다). 수신 보고에 실제 손실을 실어 서버가 속도를 줄이게 한다
+        var seqStats: [UInt32: SeqStats] = [:]
+        /// 다시 제안으로 사라진 SSRC 들의 손실 합
+        var lostRetired = 0
+        var lost: Int { lostRetired + seqStats.values.reduce(0) { $0 + $1.lost } }
+    }
+
+    struct SeqStats {
+        var base: Int
+        var maxExt: Int
+        var received = 1
+        var expectedPrior = 0
+        var receivedPrior = 0
+        var lastAt: TimeInterval
+        init(seq: UInt16, now: TimeInterval) { base = Int(seq); maxExt = Int(seq); lastAt = now }
+        var expected: Int { maxExt - base + 1 }
+        var lost: Int { max(0, expected - received) }
+        mutating func add(_ seq: UInt16, now: TimeInterval) {
+            let delta = Int(Int16(bitPattern: seq &- UInt16(truncatingIfNeeded: maxExt)))
+            if delta > 3000 || delta < -3000 { self = SeqStats(seq: seq, now: now); return } // 순번이 크게 튀면 새로 센다
+            if delta > 0 { maxExt += delta }
+            received += 1
+            lastAt = now
+        }
+        /// RR 보고 블록 (24바이트): SSRC, 이번 구간 손실 비율, 누적 손실, 가장 큰 확장 순번, 지터·LSR·DLSR 0
+        mutating func reportBlock(ssrc: UInt32) -> [UInt8] {
+            let expInt = expected - expectedPrior, recInt = received - receivedPrior
+            expectedPrior = expected; receivedPrior = received
+            let lostInt = expInt - recInt
+            let fraction = expInt <= 0 || lostInt <= 0 ? 0 : min(255, (lostInt << 8) / expInt)
+            let cum = min(lost, 0x7FFFFF)
+            return [UInt8].be32(ssrc) + [UInt8(fraction), UInt8(cum >> 16 & 0xFF), UInt8(cum >> 8 & 0xFF), UInt8(cum & 0xFF)]
+                + [UInt8].be32(UInt32(truncatingIfNeeded: maxExt)) + [UInt8].be32(0) + [UInt8].be32(0) + [UInt8].be32(0)
+        }
     }
 
     private var streams: [Stream] = []
@@ -357,9 +388,9 @@ final class HPUDPReceiver {
     }
 
     /// 지금까지 받은 UDP 바이트 (소리+영상)와 빠진 영상 패킷 수 (화면 구석 통신량 표시용)
-    var traffic: (bytes: Int, lost: Int) {
+    var traffic: (bytes: Int, lost: Int, packets: Int) {
         lock.lock(); defer { lock.unlock() }
-        return (streams.reduce(0) { $0 + $1.rawBytes }, streams.count > 1 ? streams[1].lost : 0)
+        return (streams.reduce(0) { $0 + $1.rawBytes }, streams.count > 1 ? streams[1].lost : 0, streams.count > 1 ? streams[1].ok : 0)
     }
 
     var videoDiag: String {
@@ -392,9 +423,23 @@ final class HPUDPReceiver {
         lock.lock()
         var packets: [(Int32, UInt16, [UInt8])] = []
         for i in streams.indices {
-            guard let out = streams[i].outbound, let inb = streams[i].inbound else { continue }
-            let highest = inb.highestIndex[streams[i].serverSSRC] ?? 0
-            let rr = SRTPContext.receiverReport(ssrc: streams[i].mySSRC, sourceSSRC: streams[i].serverSSRC, highestSeq: UInt32(truncatingIfNeeded: highest))
+            guard let out = streams[i].outbound else { continue }
+            // 5초 넘게 안 온 SSRC (다시 제안 전 것) 는 보고에서 빼고 손실만 남긴다
+            let now = ProcessInfo.processInfo.systemUptime
+            for (ssrc, st) in streams[i].seqStats where now - st.lastAt > 5 {
+                streams[i].lostRetired += st.lost
+                streams[i].seqStats[ssrc] = nil
+            }
+            var blocks: [UInt8] = []
+            var n = 0
+            for ssrc in streams[i].seqStats.keys.sorted().prefix(31) {
+                blocks += streams[i].seqStats[ssrc]!.reportBlock(ssrc: ssrc)
+                n += 1
+            }
+            if n == 0 { blocks = SRTPContext.emptyBlock(streams[i].serverSSRC); n = 1 }
+            let me = streams[i].mySSRC
+            let rr = [0x80 | UInt8(n), 201] + [UInt8].be16(1 + 6 * n) + [UInt8].be32(me) + blocks
+                + [UInt8].be32(0x81CA_0002) + [UInt8].be32(me) + [UInt8].be32(0x0100_0000)
             packets.append((streams[i].fd, streams[i].remotePort, out.protectRTCP(rr)))
             streams[i].sentReports += 1
         }
@@ -487,14 +532,11 @@ final class HPUDPReceiver {
                         streams[i].ok += 1
                         streams[i].payloadTypes.insert(rtp.payloadType)
                         streams[i].ssrcs.insert(rtp.ssrc)
-                        if let last = streams[i].lastSeq[rtp.ssrc] {
-                            let gap = Int(rtp.seq &- last)
-                            if gap >= 1 && gap < 0x8000 {
-                                if gap < 3000 { streams[i].lost += gap - 1 }
-                                streams[i].lastSeq[rtp.ssrc] = rtp.seq
-                            }
+                        let at = ProcessInfo.processInfo.systemUptime
+                        if streams[i].seqStats[rtp.ssrc] != nil {
+                            streams[i].seqStats[rtp.ssrc]!.add(rtp.seq, now: at)
                         } else {
-                            streams[i].lastSeq[rtp.ssrc] = rtp.seq
+                            streams[i].seqStats[rtp.ssrc] = SeqStats(seq: rtp.seq, now: at)
                         }
                         // HEVC RTP 페이로드 머리 2바이트의 NAL 종류 (48 = 묶음, 49 = 조각)
                         if i == 1, rtp.payload.count >= 2 { streams[i].naluTypes[Int(rtp.payload[0] >> 1) & 0x3F, default: 0] += 1 }

@@ -22,7 +22,7 @@ final class SessionModel: ObservableObject {
     /// 화면 우상단 통신량 (받는 속도, 빠진 패킷)
     @Published private(set) var trafficText = ""
     private var trafficTimer: Timer?
-    private var lastTraffic: (bytes: Int, lost: Int, at: Date)?
+    private var lastTraffic: (bytes: Int, lost: Int, packets: Int, at: Date)?
 
     private func startTrafficMeter() {
         trafficTimer?.invalidate()
@@ -33,13 +33,15 @@ final class SessionModel: ObservableObject {
     private func updateTraffic() {
         guard let c = client else { trafficText = ""; return }
         let now = Date(), t = c.traffic
-        defer { lastTraffic = (t.bytes, t.lost, now) }
+        defer { lastTraffic = (t.bytes, t.lost, t.packets, now) }
         guard let last = lastTraffic, t.bytes >= last.bytes else { return }
         let secs = max(now.timeIntervalSince(last.at), 0.1)
         let mbps = Double(t.bytes - last.bytes) * 8 / secs / 1_000_000
         let rate = mbps >= 10 ? String(format: "%.0f", mbps) : String(format: "%.1f", mbps)
-        let lost = t.lost - last.lost
-        trafficText = "↓ \(rate) Mbps" + (lost > 0 ? " · 손실 \(lost)" : "")
+        // 고성능 영상 패킷 손실 비율 (이번 1초)
+        let lost = max(0, t.lost - last.lost), got = max(0, t.packets - last.packets)
+        let pct = lost + got > 0 ? Double(lost) * 100 / Double(lost + got) : 0
+        trafficText = "↓ \(rate) Mbps" + (lost > 0 ? String(format: " · 손실 %.0f%%", pct) : "")
     }
     /// 고성능을 시도했는지 (Debug 화면 로그를 띄울지)
     @Published private(set) var triedHighPerformance = false
@@ -54,6 +56,17 @@ final class SessionModel: ObservableObject {
         self.computer = computer
         renderer.onFirstImage = { [weak self] in self?.hasImage = true }
         mouseMode = MouseMode(rawValue: UserDefaults.standard.string(forKey: "mouseMode." + computer.id.uuidString) ?? "") ?? .touch
+    }
+
+    /// 고성능 가상 디스플레이 크기 (포인트, 가로로 긴 쪽이 너비).
+    /// 아이패드는 기기 화면 크기 그대로 (맥 앱들이 아이패드 화면에 맞는 크기로 보인다).
+    /// 아이폰은 화면이 너무 작아 맥 화면으로 쓰기 어려우니 1280x800 (확대해서 본다)
+    static var virtualDisplaySize: (width: Int, height: Int) {
+        let b = UIScreen.main.bounds.size
+        guard UIDevice.current.userInterfaceIdiom == .pad else { return (1280, 800) }
+        // 짝수로 (픽셀이 2배라 상관없지만 영상 인코더가 짝수를 좋아한다)
+        let w = Int(max(b.width, b.height)) & ~1, h = Int(min(b.width, b.height)) & ~1
+        return (w, h)
     }
 
     /// 고성능 없이 다시 접속할 때 true
@@ -72,7 +85,8 @@ final class SessionModel: ObservableObject {
             return
         }
         let c = RFBClient(host: computer.host, port: computer.port, username: computer.username, password: pw,
-                          tryHighPerformance: !standardOnly && computer.prefersHighPerformance)
+                          tryHighPerformance: !standardOnly && computer.prefersHighPerformance,
+                          virtualDisplay: Self.virtualDisplaySize)
         isHighPerformance = false
         triedHighPerformance = !standardOnly
         c.onEvent = { [weak self] in self?.handle($0) }
