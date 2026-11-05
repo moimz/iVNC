@@ -19,6 +19,28 @@ final class SessionModel: ObservableObject {
     @Published private(set) var hasImage = false
     /// 고성능(가상 디스플레이) 연결인지
     @Published private(set) var isHighPerformance = false
+    /// 화면 우상단 통신량 (받는 속도, 빠진 패킷)
+    @Published private(set) var trafficText = ""
+    private var trafficTimer: Timer?
+    private var lastTraffic: (bytes: Int, lost: Int, at: Date)?
+
+    private func startTrafficMeter() {
+        trafficTimer?.invalidate()
+        lastTraffic = nil
+        trafficTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.updateTraffic() }
+    }
+
+    private func updateTraffic() {
+        guard let c = client else { trafficText = ""; return }
+        let now = Date(), t = c.traffic
+        defer { lastTraffic = (t.bytes, t.lost, now) }
+        guard let last = lastTraffic, t.bytes >= last.bytes else { return }
+        let secs = max(now.timeIntervalSince(last.at), 0.1)
+        let mbps = Double(t.bytes - last.bytes) * 8 / secs / 1_000_000
+        let rate = mbps >= 10 ? String(format: "%.0f", mbps) : String(format: "%.1f", mbps)
+        let lost = t.lost - last.lost
+        trafficText = "↓ \(rate) Mbps" + (lost > 0 ? " · 손실 \(lost)" : "")
+    }
     /// 고성능을 시도했는지 (Debug 화면 로그를 띄울지)
     @Published private(set) var triedHighPerformance = false
     /// 키보드로 원격 맥에 입력 중인지
@@ -114,6 +136,7 @@ final class SessionModel: ObservableObject {
         saveThumbnail()
         selected = d
         phase = .viewing
+        if trafficTimer == nil { startTrafficMeter() }
         if computer.keepsAliveInBackground { BackgroundKeeper.shared.start() }
         if !guided {
             guided = true
@@ -190,6 +213,7 @@ final class SessionModel: ObservableObject {
 
     func close() {
         closed = true
+        trafficTimer?.invalidate(); trafficTimer = nil
         saveThumbnail()
         BackgroundKeeper.shared.stop()
         client?.stop()
@@ -357,6 +381,19 @@ struct SessionView: View {
                     .frame(width: 1, height: 1)
                     .opacity(0.01)
                 if !model.hasImage { ProgressView().controlSize(.large) }
+                // 우상단 통신량: 느릴 때 맥이 덜 보내는 건지 받는 쪽이 막힌 건지 보려고
+                if !model.trafficText.isEmpty {
+                    Text(model.trafficText)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.white.opacity(0.85))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.black.opacity(0.35), in: .capsule)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                        .padding(.top, 4)
+                        .padding(.trailing, 8)
+                        .allowsHitTesting(false)
+                }
             }
         case .failed(let msg):
             ContentUnavailableView {

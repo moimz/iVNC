@@ -356,6 +356,12 @@ final class HPUDPReceiver {
         for p in packets { Self.send(fd, p, to: to, port: port) }
     }
 
+    /// 지금까지 받은 UDP 바이트 (소리+영상)와 빠진 영상 패킷 수 (화면 구석 통신량 표시용)
+    var traffic: (bytes: Int, lost: Int) {
+        lock.lock(); defer { lock.unlock() }
+        return (streams.reduce(0) { $0 + $1.rawBytes }, streams.count > 1 ? streams[1].lost : 0)
+    }
+
     var videoDiag: String {
         lock.lock(); defer { lock.unlock() }
         return "그림 \(pictures), 조립 \(assembler?.diag ?? "없음")"

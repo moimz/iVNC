@@ -374,6 +374,12 @@ final class RFBClient {
         t.start()
     }
 
+    /// 지금까지 받은 바이트 (TCP + 고성능 UDP) 와 빠진 영상 패킷 수
+    var traffic: (bytes: Int, lost: Int) {
+        let udp = hpReceiver?.traffic ?? (bytes: 0, lost: 0)
+        return ((socket?.received ?? 0) + udp.bytes, udp.lost)
+    }
+
     func stop() {
         stateLock.lock(); stopped = true; let s = socket; stateLock.unlock()
         keepAwakeTimer?.cancel()

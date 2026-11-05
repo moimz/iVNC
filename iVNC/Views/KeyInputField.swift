@@ -51,6 +51,12 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
     var onKey: (UInt32, String) -> Void = { _, _ in }
     var onCombo: ([UInt32], UInt32, String) -> Void = { _, _, _ in }
     private let menuButton = UIButton(type: .system)
+    /// 키보드 숨기기 버튼. 물리 키보드 때문에 화면 키보드가 숨어 특수키 줄만 보일 땐 "화면 키보드 보기" 버튼이 된다
+    private let keyboardButton = UIButton(type: .system)
+    private var keyboardIcon: ((String) -> UIButton.Configuration)?
+    private var accessoryBar: UIView?
+    /// 화면 키보드 없이 특수키 줄만 떠 있다 (물리 키보드가 연결된 아이패드)
+    private var softwareKeyboardHidden = false
     /// 메뉴는 기준 뷰를 덮으며 펼쳐진다: 메뉴 버튼 바로 위의 얇은 띠를 기준으로 띄워 버튼을 가리지 않게 한다
     private let menuAnchor = UIButton(type: .custom)
     /// 조합키 (맥 기호). 누르면 켜져 있다가 다음 키와 함께 보내고 꺼진다. ⌘ 는 Super_L 로 보낸다
@@ -97,7 +103,9 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
         tintColor = .clear
         textColor = .clear
         addTarget(self, action: #selector(changed), for: .editingChanged)
-        inputAccessoryView = makeAccessoryBar()
+        accessoryBar = makeAccessoryBar()
+        inputAccessoryView = accessoryBar
+        NotificationCenter.default.addObserver(self, selector: #selector(keyboardFrameChanged(_:)), name: UIResponder.keyboardDidChangeFrameNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(inputModeChanged), name: UITextInputMode.currentInputModeDidChangeNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(inputModeChanged), name: Self.flushNotification, object: nil)
     }
@@ -119,6 +127,32 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
     }
 
     func setMenu(_ menu: UIMenu?) { menuAnchor.menu = menu }
+
+    // MARK: 물리 키보드
+
+    /// 키보드 높이로 화면 키보드가 떠 있는지 본다. 물리 키보드가 연결되면 iOS 는 화면 키보드를 숨기고 특수키 줄만 띄운다
+    @objc private func keyboardFrameChanged(_ n: Notification) {
+        guard isFirstResponder, let window, let end = n.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+        let visible = max(0, window.bounds.maxY - window.convert(end, from: nil).minY)
+        let barHeight = accessoryBar?.bounds.height ?? 56
+        let hidden = visible < barHeight + 80
+        if !hidden && inputAccessoryView == nil {
+            // 애플 막대로 화면 키보드를 띄웠다: 특수키 줄을 되돌린다
+            inputAccessoryView = accessoryBar
+            reloadInputViews()
+        }
+        guard hidden != softwareKeyboardHidden else { return }
+        softwareKeyboardHidden = hidden
+        keyboardButton.configuration = keyboardIcon?(hidden ? "keyboard" : "keyboard.chevron.compact.down")
+        keyboardButton.accessibilityLabel = hidden ? "화면 키보드 보기" : "키보드 숨기기"
+    }
+
+    /// 앱이 화면 키보드를 직접 띄우는 공개 방법은 없다. 특수키 줄을 잠깐 빼면 iOS 가 자기 막대(화면 키보드 보기 버튼 포함)를 띄운다.
+    /// 화면 키보드가 올라오면 keyboardFrameChanged 가 특수키 줄을 되돌린다
+    private func revealSystemBar() {
+        inputAccessoryView = nil
+        reloadInputViews()
+    }
 
     // MARK: 조합키
 
@@ -213,11 +247,19 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
         menuButton.accessibilityLabel = "메뉴"
         menuAnchor.showsMenuAsPrimaryAction = true
         menuAnchor.isUserInteractionEnabled = false
-        let hide = UIButton(configuration: icon("keyboard.chevron.compact.down"), primaryAction: UIAction { [weak self] _ in
-            // 내리면 textFieldDidEndEditing 이 조합 중인 글자를 먼저 보낸다
-            self?.resignFirstResponder()
-        })
+        let hide = keyboardButton
+        hide.configuration = icon("keyboard.chevron.compact.down")
+        hide.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            if self.softwareKeyboardHidden {
+                self.revealSystemBar()
+            } else {
+                // 내리면 textFieldDidEndEditing 이 조합 중인 글자를 먼저 보낸다
+                self.resignFirstResponder()
+            }
+        }, for: .primaryActionTriggered)
         hide.accessibilityLabel = "키보드 숨기기"
+        keyboardIcon = icon
         let pair = UIStackView(arrangedSubviews: [menuButton, hide])
         pair.axis = .horizontal
         pair.distribution = .fillEqually
@@ -308,6 +350,9 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
     }
 
     func textFieldDidEndEditing(_ textField: UITextField) {
+        if inputAccessoryView == nil { inputAccessoryView = accessoryBar }
+        softwareKeyboardHidden = false
+        keyboardButton.configuration = keyboardIcon?("keyboard.chevron.compact.down")
         sync(final: true)
         reset()
         clearModifiers()
