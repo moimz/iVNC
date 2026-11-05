@@ -113,13 +113,15 @@ final class ScreenRenderer {
     // MARK: 고성능
 
     /// 고성능 화면 전체 높이와 줄무늬 하나의 실제 줄 수.
-    /// 인코더는 줄무늬를 8·16 배수로 채워 보낸다 (1200/4 = 300 줄인데 304 줄): 넘치는 줄은 잘라 낸다
+    /// 인코더는 줄무늬를 16 배수 높이로 보낸다 (1200 을 4 로 나누면 304 줄씩): 화면 높이를 넘는 마지막 줄무늬의 아래는 잘라 낸다
     private var stripeFullHeight = 0
     private var stripeRows = 0
 
     func presentStripe(_ pb: CVPixelBuffer, stripe: Int, stripes: Int, fullHeight: Int) {
         let bufH = CVPixelBufferGetHeight(pb)
-        let rows = fullHeight > 0 ? min(bufH, (fullHeight + stripes - 1) / max(stripes, 1)) : bufH
+        // 줄무늬는 버퍼 높이(304)대로 쌓이고, 마지막 줄무늬만 화면 높이를 넘는 아래 줄이 채움이다
+        // (전체 1200 = 304·3 + 288. 300 씩 자르면 줄무늬마다 4줄이 잘리고 아래에 채움 줄이 남았다)
+        let rows = bufH
         let full = fullHeight > 0 ? fullHeight : bufH * stripes
         if rows != stripeRows || full != stripeFullHeight {
             stripeRows = rows
