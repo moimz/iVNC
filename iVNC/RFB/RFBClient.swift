@@ -94,7 +94,7 @@ final class RFBClient {
         self.virtualDisplay = virtualDisplay
     }
 
-    /// 고성능 가상 디스플레이 크기 (포인트, 픽셀은 2배). 맥은 이 크기의 화면으로 앱을 배치한다
+    /// 고성능 가상 디스플레이 크기 (배율 1 이라 포인트 = 픽셀). 맥은 이 크기의 화면으로 앱을 배치한다
     private let virtualDisplay: (width: Int, height: Int)
 
     // MARK: - 고성능 (가상 디스플레이 + HEVC/UDP)
@@ -581,8 +581,9 @@ final class RFBClient {
             setup += Self.viewerInfo()
             setup += [0x0A, 0, 0, 1] // SetMode: 조작
             if hpState == .trying {
-                setup += HP.virtualDisplayMessage(width: virtualDisplay.width, height: virtualDisplay.height, scale: 2)
-                DebugLog.write("HP 가상 디스플레이 요청 \(virtualDisplay.width)x\(virtualDisplay.height)pt @2")
+                // 배율 1 (레티나 아님): 원격 화면을 레티나로 볼 이유가 없고, 픽셀이 1/4 이라 영상이 훨씬 가볍다
+                setup += HP.virtualDisplayMessage(width: virtualDisplay.width, height: virtualDisplay.height, scale: 1)
+                DebugLog.write("HP 가상 디스플레이 요청 \(virtualDisplay.width)x\(virtualDisplay.height) @1")
                 emit(.status("고성능 연결 시도 중…"))
                 hpSchedule(after: 5) { [weak self] in
                     guard let self, !self.hpAnswered else { return }
