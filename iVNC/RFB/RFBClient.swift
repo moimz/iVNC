@@ -43,6 +43,7 @@ final class RFBClient {
 
     private let zrle = Inflater()
     private let zlibRaw = Inflater()
+    private let ardCursor = ArdCursorDecoder()
     private let mvs = MVSDecoder()
     /// MVS 받은 양과 해독 시간 (속도 비교용, 화면 갱신 기록 때 적고 비운다)
     private var mvsBytes = 0
@@ -170,7 +171,7 @@ final class RFBClient {
     }
 
     // 1011 = 애플 MVS (손실 DCT, 애플 앱의 화질 "적응"). 무손실 ZRLE 보다 훨씬 작다
-    private static let standardEncodings: [Int32] = [1011, 16, 6, 1, 0, 1105, 1101, 1100, 1109, -223, -224, -239] // 1100: 커서 위치, 1109: 키보드 입력 상태, -239: 커서 모양
+    private static let standardEncodings: [Int32] = [1011, 16, 6, 1, 0, 1105, 1101, 1100, 1104, 1109, -223, -224, -239] // 1100: 커서 위치, 1104: 애플 커서 모양, 1109: 키보드 입력 상태, -239: 표준 커서 모양 (애플 서버는 안 보냄)
 
     private var hpSecrets: HP.Secrets?
     private var hpReceiver: HPUDPReceiver?
@@ -753,6 +754,14 @@ final class RFBClient {
                 framebuffer.resize(width: w, height: h)
             case -224:
                 i = count == 0xFFFF ? Int.max : count
+            case 1104: // 애플 커서 모양: [u32 id][u32 크기][zlib] (ArdCursor.swift)
+                let hdr = try s.read(8)
+                let id = UInt32(hdr[0]) << 24 | UInt32(hdr[1]) << 16 | UInt32(hdr[2]) << 8 | UInt32(hdr[3])
+                let size = Int(UInt32(hdr[4]) << 24 | UInt32(hdr[5]) << 16 | UInt32(hdr[6]) << 8 | UInt32(hdr[7]))
+                let data = size > 0 ? try s.read(size) : []
+                let shape = ardCursor.decode(id: id, data: data, x: x, y: y, w: w, h: h)
+                DebugLog.write("애플 커서 \(id) \(w)x\(h) 핫스팟 \(x),\(y) 데이터 \(size) → \(shape == nil ? "화살표" : "특이 커서")")
+                emit(.cursorShape(shape))
             case -239: // 커서 모양: 픽셀(우리 형식 32bpp, 메모리 B G R X) + 비트 마스크(줄마다 (w+7)/8 바이트, 앞 비트가 왼쪽)
                 let pixels = try s.read(w * h * 4)
                 let mask = try s.read((w + 7) / 8 * h)
