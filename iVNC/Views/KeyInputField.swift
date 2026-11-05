@@ -53,10 +53,10 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
     private let menuButton = UIButton(type: .system)
     /// 메뉴는 기준 뷰를 덮으며 펼쳐진다: 메뉴 버튼 바로 위의 얇은 띠를 기준으로 띄워 버튼을 가리지 않게 한다
     private let menuAnchor = UIButton(type: .custom)
-    /// 조합키 (맥 기호). 누르면 켜져 있다가 다음 키와 함께 보내고 꺼진다. ⌘ 는 Meta_L 로 보낸다 (애플 서버 확인 필요)
+    /// 조합키 (맥 기호). 누르면 켜져 있다가 다음 키와 함께 보내고 꺼진다. ⌘ 는 Super_L 로 보낸다
     private static let modifierKeys: [(title: String, keysym: UInt32, name: String)] = [
-        ("⌘", 0xFFE7, "Command"),
-        ("⌥", 0xFFE9, "Option"),
+        ("⌘", 0xFFEB, "Command"), // 애플 서버는 Super_L 을 ⌘, Meta_L 을 ⌥ 로 받는다 (Meta_L 로 ⌘V 를 보내면 붙여넣기가 안 됐다)
+        ("⌥", 0xFFE7, "Option"),
         ("⌃", 0xFFE3, "Control"),
         ("⇧", 0xFFE1, "Shift"),
     ]
