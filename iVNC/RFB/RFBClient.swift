@@ -880,7 +880,15 @@ final class RFBClient {
     func click(x: Int, y: Int, button: UInt8 = 1) {
         pointer(x, y, buttonMask)
         pointer(x, y, buttonMask | button)
-        pointer(x, y, buttonMask)
+        if button == 2 {
+            // 오른쪽은 실제 마우스처럼 잠깐 눌렀다 뗀다: 같은 순간에 떼면 독은 메뉴를 띄우지만 앱들은 문맥 메뉴를 안 띄웠다
+            DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + 0.08) { [weak self] in
+                guard let self else { return }
+                self.pointer(x, y, self.buttonMask)
+            }
+        } else {
+            pointer(x, y, buttonMask)
+        }
         DebugLog.write("\(button == 2 ? "오른쪽 " : "")클릭 \(x),\(y)")
     }
 
