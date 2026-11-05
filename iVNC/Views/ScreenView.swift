@@ -471,6 +471,13 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         return CGSize(width: pixelSize.width / s, height: pixelSize.height / s)
     }
 
+    /// 최대 확대: 화면에 맞춘 크기의 3배, 또는 맥 1픽셀이 아이폰 1pt 가 될 때까지 중 큰 쪽.
+    /// (예전엔 "맥 1픽셀 = 화면 1픽셀"까지라, 배율 1 가상 디스플레이를 3배 화면 아이폰에 맞추면 이미 그 한계라 확대가 안 됐다)
+    private func maxZoom(fit: CGFloat) -> CGFloat {
+        let s = window?.screen.scale ?? traitCollection.displayScale
+        return max(fit * 3, s, 1)
+    }
+
     private func resetZoom() {
         guard pixelSize.width > 0, bounds.width > 0 else { return }
         zoomScale = 1
@@ -478,7 +485,7 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         contentSize = originalSize
         let fit = min(bounds.width / originalSize.width, bounds.height / originalSize.height)
         minimumZoomScale = fit
-        maximumZoomScale = max(1, fit)
+        maximumZoomScale = maxZoom(fit: fit)
         zoomScale = fit
         centerContent()
         if mode == .trackpad {
@@ -498,7 +505,7 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate, UIGestureRecog
             if content.bounds.size != originalSize { resetZoom(); return }
             let fit = min(bounds.width / originalSize.width, bounds.height / originalSize.height)
             minimumZoomScale = fit
-            maximumZoomScale = max(1, fit)
+            maximumZoomScale = maxZoom(fit: fit)
             if wasMin || zoomScale < fit { zoomScale = fit }
         }
         centerContent()
