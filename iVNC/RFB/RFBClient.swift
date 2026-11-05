@@ -863,7 +863,7 @@ final class RFBClient {
 
     // MARK: - 마우스
 
-    /// 지금 눌린 버튼 (1 왼쪽, 4 오른쪽). 이동할 때도 같이 보내야 드래그가 된다
+    /// 지금 눌린 버튼 (1 왼쪽, 2 오른쪽 — 애플 서버는 2 를 오른쪽, 4 를 가운데로 받는다). 이동할 때도 같이 보내야 드래그가 된다
     private var buttonMask: UInt8 = 0
 
     /// 마우스 상태 하나를 보낸다 (RFB PointerEvent). 좌표는 프레임버퍼 픽셀.
@@ -876,12 +876,12 @@ final class RFBClient {
         markLocalInput()
     }
 
-    /// 누르고 뗀다. button 1 = 왼쪽, 4 = 오른쪽
+    /// 누르고 뗀다. button 1 = 왼쪽, 2 = 오른쪽 (애플 서버 기준. 4 는 가운데 버튼으로 들어간다)
     func click(x: Int, y: Int, button: UInt8 = 1) {
         pointer(x, y, buttonMask)
         pointer(x, y, buttonMask | button)
         pointer(x, y, buttonMask)
-        DebugLog.write("\(button == 4 ? "오른쪽 " : "")클릭 \(x),\(y)")
+        DebugLog.write("\(button == 2 ? "오른쪽 " : "")클릭 \(x),\(y)")
     }
 
     func mouseDown(x: Int, y: Int, button: UInt8 = 1) {

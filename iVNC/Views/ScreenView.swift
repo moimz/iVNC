@@ -234,7 +234,7 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate, UIGestureRecog
 
     @objc private func twoFingerTapped(_ g: UITapGestureRecognizer) {
         guard let p = pointer else { return }
-        input?.mouseClick(p, button: 4)
+        input?.mouseClick(p, button: 2)
     }
 
     // MARK: 길게 누르기: 그대로 떼면 오른쪽 클릭, 10pt 넘게 끌면 드래그 (좌표는 처음 누른 자리 기준)
@@ -273,7 +273,7 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate, UIGestureRecog
                 sendMove(p, force: true)
                 input?.mouseUp(p)
             } else {
-                input?.mouseClick(s.pixel, button: 4)
+                input?.mouseClick(s.pixel, button: 2)
             }
             pressStart = nil; mouseDragging = false; lastTap = nil
         default:
