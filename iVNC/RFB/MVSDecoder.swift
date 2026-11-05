@@ -7,7 +7,7 @@ import Foundation
 /// 타일이 이미 그린 화면(복사)과 캐시를 참조하므로 화면 버퍼에 바로 그린다.
 ///
 /// 속도: 아이폰에서 해독이 병목이라(5K 화면에서 CPU 를 다 씀) 배열 대신 미리 잡은 메모리, 64비트씩 모아 읽는 비트스트림,
-/// 16비트 한 번에 찾는 허프만 표를 쓴다. 결과는 처음 옮긴 것과 픽셀까지 같다 (Ai/tmp/iVNC/mvs-bench).
+/// 16비트 한 번에 찾는 허프만 표를 쓴다. 결과는 처음 옮긴 것과 픽셀까지 같다 (Ai/iVNC/mvs-bench).
 final class MVSDecoder {
     private static let cacheSize = 65000
     private static let entryY = 64, entryCr = 15, entryCb = 20
