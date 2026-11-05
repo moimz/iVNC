@@ -165,9 +165,14 @@ final class RFBClient {
     private var hpServerPorts: (audio: UInt16, video: UInt16)?
     private var hpTimer: DispatchSourceTimer?
     private var hpDecoder: HPVideoDecoder?
-    /// 영상이 막혀 다시 제안한 시각들 (30초에 3번까지)
-    private var hpRecoveries: [Date] = []
+    /// 막혔을 때: 먼저 키 그림을 요청하고, 1초 안에 화면이 안 나오면 다시 제안한다.
+    /// 다시 제안 간격은 1초부터 두 배씩 8초까지 (예전엔 30초에 3번 넘으면 30초 동안 포기해 화면이 멈춰 있었다)
     private var hpReoffering = false
+    private var hpKeyRequestedAt: TimeInterval = 0
+    private var hpLastReoffer: TimeInterval = 0
+    private var hpReofferGap: TimeInterval = 1
+    private var hpReofferScheduled = false
+    private let hpRecoverLock = NSLock()
 
     private func hpRect(_ enc: Int32, _ body: [UInt8]) {
         DebugLog.write("HP 사각형 \(enc) \(body.count)바이트: \(body.prefix(24).map { String(format: "%02x", $0) }.joined())")
@@ -205,7 +210,7 @@ final class RFBClient {
                     DebugLog.write("HP 답: 서버 SSRC 오디오 \(String(a.audioSSRC, radix: 16)) 비디오 \(String(a.videoSSRC, radix: 16)), \(a.width)x\(a.height), 줄무늬 \(a.stripes)")
                     if hpState == .on {
                         // 다시 제안한 것의 답: 새 키·SSRC 로 바꾼다
-                        hpReoffering = false
+                        hpRecoverLock.lock(); hpReoffering = false; hpRecoverLock.unlock()
                         hpConfigure(a)
                     } else {
                         hpAnswered = true
@@ -243,19 +248,58 @@ final class RFBClient {
         if a.width > 0 && a.height > 0 { framebuffer.resize(width: a.width, height: a.height) }
     }
 
-    /// 영상이 막혔다 (빠진 그림 뒤에 키 그림이 없거나, 3초 동안 그림이 없음): 다시 제안해 새로 받는다. 30초에 3번까지
+    /// 영상이 막혔다 (빠진 그림 뒤에 키 그림이 없거나, 영상은 오는데 3초 동안 화면에 나온 그림이 없음).
+    /// 키 그림을 요청하고, 1초 뒤에도 화면이 안 나오면 다시 제안한다
     private func hpRecover(_ why: String) {
-        guard hpState == .on, !hpReoffering else { return }
-        hpRecoveries = hpRecoveries.filter { Date().timeIntervalSince($0) < 30 }
-        DebugLog.write("HP 영상 막힘: \(why), \(hpReceiver?.videoDiag ?? "") / \(hpDecoder?.stats ?? "")")
-        guard hpRecoveries.count < 3 else {
-            DebugLog.write("HP 30초에 3번 다시 시작해도 막힘 → 포기")
+        guard hpState == .on else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        hpRecoverLock.lock()
+        let ask = !hpReoffering && now - hpKeyRequestedAt > 1
+        if ask { hpKeyRequestedAt = now }
+        hpRecoverLock.unlock()
+        guard ask else { return }
+        DebugLog.write("HP 영상 막힘: \(why), \(hpReceiver?.videoDiag ?? "") / \(hpDecoder?.stats ?? "") → 키 그림 요청")
+        hpReceiver?.requestKeyPicture()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self, self.hpState == .on, let d = self.hpDecoder else { return }
+            if d.lastOutput > now {
+                DebugLog.write("HP 키 그림 요청으로 다시 나옴")
+            } else {
+                self.hpReoffer()
+            }
+        }
+    }
+
+    /// 새 키로 다시 제안한다. 너무 잦으면 간격이 찰 때까지 미룬다
+    private func hpReoffer() {
+        let now = ProcessInfo.processInfo.systemUptime
+        hpRecoverLock.lock()
+        if hpReoffering || hpReofferScheduled { hpRecoverLock.unlock(); return }
+        let wait = hpLastReoffer + hpReofferGap - now
+        if wait > 0 {
+            hpReofferScheduled = true
+            hpRecoverLock.unlock()
+            DispatchQueue.global().asyncAfter(deadline: .now() + wait) { [weak self] in
+                guard let self else { return }
+                self.hpRecoverLock.lock(); self.hpReofferScheduled = false; self.hpRecoverLock.unlock()
+                // 그사이 다시 나오기 시작했으면 안 한다
+                if let d = self.hpDecoder, ProcessInfo.processInfo.systemUptime - d.lastOutput < 1 { return }
+                self.hpReoffer()
+            }
             return
         }
-        hpRecoveries.append(Date())
+        hpLastReoffer = now
+        hpReofferGap = min(hpReofferGap * 2, 8)
         hpReoffering = true
+        let gap = hpReofferGap
+        hpRecoverLock.unlock()
+        guard hpState == .on else { return }
+        DebugLog.write("HP 다시 제안 (다음 간격 \(Int(gap))초)")
         hpSendOffer()
-        DispatchQueue.global().asyncAfter(deadline: .now() + 5) { [weak self] in self?.hpReoffering = false } // 답이 안 오면 다음 막힘 때 다시
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5) { [weak self] in // 답이 안 오면 다음 막힘 때 다시
+            guard let self else { return }
+            self.hpRecoverLock.lock(); self.hpReoffering = false; self.hpRecoverLock.unlock()
+        }
     }
 
     /// 디코딩된 줄무늬를 복사 없이 화면에 넘긴다 (화면이 줄무늬 레이어에 바로 넣는다)
@@ -289,9 +333,16 @@ final class RFBClient {
             r.sendReports()
             if n % 2 == 0 { DebugLog.write("HP UDP: \(r.summary()) / \(r.videoDiag) / \(d.stats)") }
             // 화면에 실제로 나온 그림 기준 (조립은 되는데 디코더가 버리는 중이면 조립 기준으로는 멈춘 걸 모른다)
-            if let self, self.hpState == .on, ProcessInfo.processInfo.systemUptime - d.lastOutput > 3 {
-                self.hpRecover("3초 동안 화면에 나온 그림 없음")
+            guard let self, self.hpState == .on else { return }
+            let now = ProcessInfo.processInfo.systemUptime
+            // 영상 패킷은 오는데 화면에 나온 그림이 3초 없으면 막힌 것 (맥 화면이 멈춰 있어 안 보내는 것과 가른다)
+            if now - d.lastOutput > 3, let v = r.lastVideoPacketAt, now - v < 1 {
+                self.hpRecover("영상은 오는데 3초 동안 화면에 나온 그림 없음")
             }
+            // 15초 동안 잘 나오면 다시 제안 간격을 처음(1초)으로
+            self.hpRecoverLock.lock()
+            if now - d.lastOutput < 1, now - self.hpLastReoffer > 15 { self.hpReofferGap = 1 }
+            self.hpRecoverLock.unlock()
         }
         hpTimer = t
         t.resume()
@@ -324,13 +375,13 @@ final class RFBClient {
     }
 
     func stop() {
-        stateLock.lock(); stopped = true; stateLock.unlock()
+        stateLock.lock(); stopped = true; let s = socket; stateLock.unlock()
         keepAwakeTimer?.cancel()
         watchdog?.cancel()
         hpTimer?.cancel()
         hpReceiver?.stop()
         hpDecoder?.stop()
-        socket?.close()
+        s?.close()
     }
 
     /// 모니터를 고른다. nil 이면 모든 모니터를 합친 화면.
@@ -425,7 +476,9 @@ final class RFBClient {
             DebugLog.reset()
             DebugLog.write("접속 \(host):\(port)")
             let s = try RFBSocket(host: host, port: port)
-            socket = s
+            // 연결 중(소켓이 아직 없을 때) stop 이 불렸으면 여기서 닫는다. 안 그러면 맥에 연결이 남는다
+            stateLock.lock(); let stoppedEarly = stopped; if !stoppedEarly { socket = s }; stateLock.unlock()
+            if stoppedEarly { s.close(); DebugLog.write("연결 중 종료됨 → 바로 닫음"); return }
             // 접속 직후 다시 붙으면 서버가 ServerInit 전에 멈춰 있을 때가 있다. 고성능 정리 뒤 첫 응답이 8초쯤 걸리니 넉넉히 15초
             s.setReadTimeout(15)
             try handshake(s)

@@ -41,6 +41,7 @@ final class SessionModel: ObservableObject {
     private static let maxRetries = 3
 
     func connect(store: ComputerStore, keepStatus: Bool = false) {
+        guard !closed else { return }
         self.store = store
         client?.stop()
         if !keepStatus { phase = .connecting("접속하는 중…"); retries = 0 }
@@ -184,7 +185,11 @@ final class SessionModel: ObservableObject {
         client?.sendCombo(modifiers: modifiers, key: key, name: name)
     }
 
+    /// 닫은 뒤에는 다시 시도(2초 뒤 예약된 것 포함)로 새로 접속하지 않는다
+    private var closed = false
+
     func close() {
+        closed = true
         saveThumbnail()
         BackgroundKeeper.shared.stop()
         client?.stop()

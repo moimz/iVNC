@@ -245,6 +245,9 @@ final class HPUDPReceiver {
         var payloadTypes: Set<UInt8> = []
         var ssrcs: Set<UInt32> = []
         var naluTypes: [Int: Int] = [:]
+        /// SSRC 별 마지막 순번과, 순번이 건너뛴 만큼 센 빠진 패킷 수 (Wi‑Fi 손실인지 보려고)
+        var lastSeq: [UInt32: UInt16] = [:]
+        var lost = 0
     }
 
     private var streams: [Stream] = []
@@ -269,8 +272,14 @@ final class HPUDPReceiver {
         for p in ports {
             // IPv6 이중 스택: IPv4(::ffff:…)와 IPv6(LTE NAT64)를 함께 받는다
             let fd = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP)
-            var rcv: Int32 = 8 << 20
-            setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcv, socklen_t(MemoryLayout<Int32>.size))
+            // 받는 버퍼는 되는 만큼 크게 (키 그림이 한꺼번에 몰려온다). 너무 크면 거절되므로 줄여 가며
+            for mb: Int32 in [8, 6, 4, 2, 1] {
+                var rcv = mb << 20
+                if setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcv, socklen_t(MemoryLayout<Int32>.size)) == 0 { break }
+            }
+            var got: Int32 = 0, gotLen = socklen_t(MemoryLayout<Int32>.size)
+            getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &got, &gotLen)
+            DebugLog.write("HP UDP \(p) 받는 버퍼 \(got / 1024)KB")
             var off: Int32 = 0
             setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &off, socklen_t(MemoryLayout<Int32>.size))
             var addr = sockaddr_in6()
@@ -308,11 +317,43 @@ final class HPUDPReceiver {
     /// 새 답의 영상 SSRC·줄무늬 수로 조립기를 새로 만든다 (다시 제안한 뒤에도)
     func startVideo(baseSSRC: UInt32, stripes: Int) {
         lock.lock(); defer { lock.unlock() }
+        videoBase = baseSSRC
+        videoStripes = max(stripes, 1)
         let a = HPVideoAssembler(baseSSRC: baseSSRC, stripes: stripes)
         a.onPicture = { [unowned self] in self.readyPictures.append($0) }
         a.onStall = { [unowned self] in self.assemblerStalled = true }
         assembler = a
         lastPictureAt = ProcessInfo.processInfo.systemUptime
+    }
+
+    private var videoBase: UInt32 = 0
+    private var videoStripes = 1
+    private var firSeq: UInt8 = 0
+
+    /// 마지막 영상 패킷을 받은 시각 (영상이 오는데 화면에 안 나오는지 가르려고)
+    var lastVideoPacketAt: TimeInterval? {
+        lock.lock(); defer { lock.unlock() }
+        return lastVideoAt
+    }
+
+    /// 키 그림을 달라고 서버에 RTCP 로 요청한다 (줄무늬 SSRC 마다 PLI + FIR, RFC 4585·5104).
+    /// 서버가 따르는지는 확인 안 됨: 안 따르면 다시 제안으로 넘어간다
+    func requestKeyPicture() {
+        lock.lock()
+        guard streams.count > 1, let out = streams[1].outbound else { lock.unlock(); return }
+        let me = streams[1].mySSRC, fd = streams[1].fd, port = streams[1].remotePort, to = server
+        var packets: [[UInt8]] = []
+        firSeq &+= 1
+        for i in 0..<videoStripes {
+            let media = videoBase &+ UInt32(i)
+            // RR(보고 블록 없음) 를 앞에 붙인 복합 RTCP
+            let rr = [UInt8].be32(0x80C9_0001) + [UInt8].be32(me)
+            let pli = [0x81, 206, 0x00, 0x02] + [UInt8].be32(me) + [UInt8].be32(media)
+            let fir = [0x84, 206, 0x00, 0x04] + [UInt8].be32(me) + [UInt8].be32(0) + [UInt8].be32(media) + [firSeq, 0, 0, 0]
+            packets.append(out.protectRTCP(rr + pli + fir))
+        }
+        lock.unlock()
+        for p in packets { Self.send(fd, p, to: to, port: port) }
     }
 
     var videoDiag: String {
@@ -366,7 +407,7 @@ final class HPUDPReceiver {
         lock.lock(); defer { lock.unlock() }
         return streams.enumerated().map { i, s in
             let name = i == 0 ? "소리" : "영상"
-            return "\(name)(\(s.localPort)) 받음 \(s.raw)개 \(s.rawBytes / 1000)KB, 검증 성공 \(s.ok) 실패 \(s.bad), RTCP \(s.rtcpIn), 보고 보냄 \(s.sentReports), PT \(s.payloadTypes.sorted()), SSRC \(s.ssrcs.count)개"
+            return "\(name)(\(s.localPort)) 받음 \(s.raw)개 \(s.rawBytes / 1000)KB, 검증 성공 \(s.ok) 실패 \(s.bad), 빠짐 \(s.lost), RTCP \(s.rtcpIn), 보고 보냄 \(s.sentReports), PT \(s.payloadTypes.sorted()), SSRC \(s.ssrcs.count)개"
                 + (i == 1 && !s.naluTypes.isEmpty ? ", NAL 종류 \(s.naluTypes.sorted { $0.key < $1.key }.map { "\($0.key):\($0.value)" }.joined(separator: " "))" : "")
         }.joined(separator: " / ")
     }
@@ -440,6 +481,15 @@ final class HPUDPReceiver {
                         streams[i].ok += 1
                         streams[i].payloadTypes.insert(rtp.payloadType)
                         streams[i].ssrcs.insert(rtp.ssrc)
+                        if let last = streams[i].lastSeq[rtp.ssrc] {
+                            let gap = Int(rtp.seq &- last)
+                            if gap >= 1 && gap < 0x8000 {
+                                if gap < 3000 { streams[i].lost += gap - 1 }
+                                streams[i].lastSeq[rtp.ssrc] = rtp.seq
+                            }
+                        } else {
+                            streams[i].lastSeq[rtp.ssrc] = rtp.seq
+                        }
                         // HEVC RTP 페이로드 머리 2바이트의 NAL 종류 (48 = 묶음, 49 = 조각)
                         if i == 1, rtp.payload.count >= 2 { streams[i].naluTypes[Int(rtp.payload[0] >> 1) & 0x3F, default: 0] += 1 }
                         if i == 1, rtp.payloadType == 100 {

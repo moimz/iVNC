@@ -11,7 +11,7 @@ import VideoToolbox
 ///
 /// 그림의 패킷을 도착 순서와 상관없이 모아 NAL 들로 되살리고, 첫 키 그림부터 DON 순서대로 내보낸다.
 /// 재전송이 없으므로, 빠진 그림 때문에 막히면 가장 가까운 완성된 키 그림으로 건너뛴다.
-/// 키 그림도 없으면 onStall 을 부른다 (다시 제안해야 한다).
+/// 키 그림도 없으면 버퍼를 비우고 다음 키 그림을 기다리며 onStall 을 부른다 (키 그림을 요청하거나 다시 제안해야 한다).
 final class HPVideoAssembler {
     struct Picture {
         let don: Int
@@ -49,14 +49,14 @@ final class HPVideoAssembler {
     private var next: Int?
     private(set) var stalled = false
 
-    private(set) var emitted = 0, skipped = 0, malformed = 0, ignored = 0
+    private(set) var emitted = 0, skipped = 0, malformed = 0, ignored = 0, keyWaits = 0
 
     init(baseSSRC: UInt32, stripes: Int) {
         self.baseSSRC = baseSSRC
         self.stripes = max(stripes, 1)
     }
 
-    var diag: String { "모으는 중 \(pictures.count), 다음 \(next.map(String.init) ?? "-"), 내보냄 \(emitted), 건너뜀 \(skipped), 잘못됨 \(malformed), 무시 \(ignored)\(stalled ? ", 멈춤" : "")" }
+    var diag: String { "모으는 중 \(pictures.count), 다음 \(next.map(String.init) ?? "-"), 내보냄 \(emitted), 건너뜀 \(skipped), 잘못됨 \(malformed), 무시 \(ignored), 키 기다림 \(keyWaits)번\(stalled ? ", 멈춤" : "")" }
 
     private static func delta(_ to: Int, _ from: Int) -> Int {
         ((to - from) % 0x10000 + 0x10000 + 0x8000) % 0x10000 - 0x8000
@@ -191,8 +191,12 @@ final class HPVideoAssembler {
             emit()
             return
         }
-        stalled = true
+        // 멈추지 않고 키 그림을 기다린다: 다음 완성된 키 그림부터 다시 내보낸다 (키 그림 요청·다시 제안은 onStall 쪽에서)
         pictures.removeAll()
+        next = nil
+        first = nil
+        ref = nil
+        keyWaits += 1
         onStall?()
     }
 }
