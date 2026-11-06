@@ -169,7 +169,8 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
         // iOS 는 입력을 놓지 않아 특수키 줄만 화면 아래에 남고, 물리 키보드가 있으면 다시 열어도 화면 키보드가 안 뜬다.
         // 우리 숨기기 버튼처럼 입력을 놓는다. 물리 키보드를 치면 iOS 가 화면 키보드를 스스로 내리는데, 그때는 놓지 않는다
         let typedOnHardware = Date().timeIntervalSince(lastHardwarePress) < 1
-        if hidden && (softwareKeyboardShown || !hasHardwareKeyboard) && !typedOnHardware {
+        // 애플 막대를 띄운 동안(특수키 줄을 뺀 동안)은 막대만 남는 게 정상이라 놓지 않는다
+        if hidden && inputAccessoryView != nil && (softwareKeyboardShown || !hasHardwareKeyboard) && !typedOnHardware {
             DebugLog.write("키보드 내리기 키로 닫음 → 입력 놓음 (물리 키보드 \(hasHardwareKeyboard))")
             softwareKeyboardShown = false
             resignFirstResponder()
@@ -178,8 +179,7 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
         if !hidden { softwareKeyboardShown = true }
         if barHidden == nil && !hidden && inputAccessoryView == nil {
             // 애플 막대로 화면 키보드를 띄웠다: 특수키 줄을 되돌린다
-            inputAccessoryView = accessoryBar
-            reloadInputViews()
+            restoreAccessoryBar()
         }
         setKeyboardHidden(barHidden ?? hidden)
         // 알림 뒤에 자리가 바뀌기도 해서 조금 뒤 다시 본다 (버튼 모양만 맞춘다)
@@ -212,9 +212,27 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
         keyboardButton.accessibilityLabel = hidden ? "화면 키보드 보기" : "키보드 숨기기"
     }
 
+    private var savedTrailingGroups: [UIBarButtonItemGroup]?
+
+    /// 애플 막대 대신 특수키 줄을 다시 붙인다
+    private func restoreAccessoryBar(reload: Bool = true) {
+        if let g = savedTrailingGroups { inputAssistantItem.trailingBarButtonGroups = g; savedTrailingGroups = nil }
+        guard inputAccessoryView == nil else { return }
+        inputAccessoryView = accessoryBar
+        if reload { reloadInputViews() }
+    }
+
     /// 앱이 화면 키보드를 직접 띄우는 공개 방법은 없다. 특수키 줄을 잠깐 빼면 iOS 가 자기 막대(화면 키보드 보기 버튼 포함)를 띄운다.
     /// 화면 키보드가 올라오면 keyboardFrameChanged 가 특수키 줄을 되돌린다
     private func revealSystemBar() {
+        // 우리 입력창은 자동 고침·추천을 꺼 둬서 애플 막대에 보일 게 없으면 막대 자체가 안 뜬다(2026-11-06 실기기: 자리만 비고 아무것도 없음).
+        // 막대에 "특수키 줄로 돌아가기" 버튼을 하나 넣어 막대가 뜨게 한다. 애플은 그 막대 왼쪽에 키보드 메뉴(키보드 보기 포함)를 붙인다
+        if savedTrailingGroups == nil { savedTrailingGroups = inputAssistantItem.trailingBarButtonGroups }
+        let back = UIBarButtonItem(image: UIImage(systemName: "command"), primaryAction: UIAction { [weak self] _ in self?.restoreAccessoryBar() })
+        back.accessibilityLabel = "특수키 줄"
+        inputAssistantItem.trailingBarButtonGroups = [UIBarButtonItemGroup(barButtonItems: [back], representativeItem: nil)]
+        DebugLog.write("애플 막대 띄우기 (특수키 줄 빼고 막대에 버튼 넣음)")
+        softwareKeyboardShown = false
         inputAccessoryView = nil
         reloadInputViews()
     }
@@ -423,7 +441,7 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
     }
 
     func textFieldDidEndEditing(_ textField: UITextField) {
-        if inputAccessoryView == nil { inputAccessoryView = accessoryBar }
+        restoreAccessoryBar(reload: false)
         softwareKeyboardHidden = false
         softwareKeyboardShown = false
         keyboardButton.configuration = keyboardIcon?("keyboard.chevron.compact.down")
