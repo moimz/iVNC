@@ -197,6 +197,7 @@ final class RFBClient {
     /// 막혔을 때: 먼저 키 그림을 요청하고, 1초 안에 화면이 안 나오면 다시 제안한다.
     /// 다시 제안 간격은 1초부터 두 배씩 8초까지 (예전엔 30초에 3번 넘으면 30초 동안 포기해 화면이 멈춰 있었다)
     private var hpReoffering = false
+    private var hpPausedAt: Date?
     private var hpKeyRequestedAt: TimeInterval = 0
     private var hpLastReoffer: TimeInterval = 0
     private var hpReofferGap: TimeInterval = 1
@@ -362,7 +363,7 @@ final class RFBClient {
             r.sendReports()
             if n % 2 == 0 { DebugLog.write("HP UDP: \(r.summary()) / \(r.videoDiag) / \(d.stats)") }
             // 화면에 실제로 나온 그림 기준 (조립은 되는데 디코더가 버리는 중이면 조립 기준으로는 멈춘 걸 모른다)
-            guard let self, self.hpState == .on else { return }
+            guard let self, self.hpState == .on, !r.paused else { return }
             let now = ProcessInfo.processInfo.systemUptime
             // 영상 패킷은 오는데 화면에 나온 그림이 3초 없으면 막힌 것 (맥 화면이 멈춰 있어 안 보내는 것과 가른다)
             if now - d.lastOutput > 3, let v = r.lastVideoPacketAt, now - v < 1 {
@@ -429,13 +430,29 @@ final class RFBClient {
         let already = serverDisplayID == target
         awaitingSwitch = !already
         stateLock.unlock()
-        if hpState == .on { return } // 고성능은 가상 디스플레이 하나뿐, 모니터 선택도 요청도 없다
+        if hpState == .on {
+            // 고성능은 가상 디스플레이 하나뿐, 모니터 선택도 요청도 없다. 백그라운드에서 멈췄으면 다시 제안해 새로 받는다
+            // (멈춘 동안 SRTP 순번을 안 따라가 옛 키로는 해독이 어긋날 수 있다)
+            if let r = hpReceiver, r.paused {
+                r.paused = false
+                DebugLog.write("HP 받기 다시 (\(Int(Date().timeIntervalSince(hpPausedAt ?? Date())))초 멈췄음) → 다시 제안")
+                hpRecoverLock.lock(); hpLastReoffer = 0; hpReofferGap = 1; hpRecoverLock.unlock()
+                hpReoffer()
+            }
+            return
+        }
         if already { requestUpdate(incremental: false) } else { socket?.send(Self.setDisplay(id)) }
     }
 
     /// 모니터 고르기 화면으로 돌아갈 때: 화면 요청을 멈춘다.
     func pause() {
         stateLock.lock(); streaming = false; stateLock.unlock()
+        // 고성능: 영상·소리 해독과 보고를 멈춘다 (백그라운드에서 밤새 받아 배터리를 쓰던 것)
+        if hpState == .on, let r = hpReceiver, !r.paused {
+            r.paused = true
+            hpPausedAt = Date()
+            DebugLog.write("HP 받기 멈춤 (백그라운드)")
+        }
         // 켜져 있을 때만 끈다 (끄라는 메시지 뒤 모니터를 바꾸면 서버가 화면 요청에 답하지 않은 적이 있다, 2026-11-02)
         if isAutoUpdateOn { setAutoUpdate(false) }
     }

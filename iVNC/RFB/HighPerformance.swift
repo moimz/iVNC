@@ -419,8 +419,17 @@ final class HPUDPReceiver {
     }
 
     /// 1초마다 부른다: 스트림마다 SRTCP 수신 보고를 서버로 보낸다
+    /// 앱이 백그라운드일 때 true: 해독·조립·보고(수신 보고, 그림 받음 확인, 속도 조절)를 모두 멈춘다.
+    /// 보고가 끊기면 서버가 보내기를 줄이거나 멈추기를 기대한다 (실기기 로그로 확인할 것)
+    var paused: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return _paused }
+        set { lock.lock(); _paused = newValue; lock.unlock() }
+    }
+    private var _paused = false
+
     func sendReports() {
         lock.lock()
+        if _paused { lock.unlock(); return }
         var packets: [(Int32, UInt16, [UInt8])] = []
         for i in streams.indices {
             guard let out = streams[i].outbound else { continue }
@@ -472,6 +481,7 @@ final class HPUDPReceiver {
     private func afterPackets() {
         let now = ProcessInfo.processInfo.systemUptime
         lock.lock()
+        if _paused { lock.unlock(); return }
         assembler?.tick(now: now)
         let pics = readyPictures
         readyPictures.removeAll()
@@ -524,6 +534,8 @@ final class HPUDPReceiver {
                 lock.lock()
                 let first = streams[i].raw == 0
                 streams[i].raw += 1; streams[i].rawBytes += n
+                // 앱이 백그라운드: 받은 양만 세고 해독·조립은 안 한다 (돌아오면 다시 제안해 새로 받는다)
+                if _paused { lock.unlock(); continue }
                 // RTP/RTCP 구분 (RFC 5761): 두 번째 바이트가 192~223 이면 RTCP
                 if n >= 2, (192...223).contains(pkt[1]) {
                     if let inb = streams[i].inbound, inb.unprotectRTCP(pkt) != nil { streams[i].rtcpIn += 1 }
