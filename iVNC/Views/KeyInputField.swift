@@ -117,7 +117,7 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
             NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] n in
                 guard let self else { return }
                 let end = (n.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect) ?? .null
-                DebugLog.write("키보드 \(n.name.rawValue.replacingOccurrences(of: "UIKeyboard", with: "").replacingOccurrences(of: "Notification", with: "")) 끝 \(Int(end.minX)),\(Int(end.minY)) \(Int(end.width))x\(Int(end.height)) 창 \(Int(self.window?.bounds.height ?? -1)) 입력잡음 \(self.isFirstResponder) 물리 \(self.hasHardwareKeyboard) 줄 \(self.inputAccessoryView != nil)")
+                DebugLog.write("키보드 \(n.name.rawValue.replacingOccurrences(of: "UIKeyboard", with: "").replacingOccurrences(of: "Notification", with: "")) 끝 \(Int(end.minX)),\(Int(end.minY)) \(Int(end.width))x\(Int(end.height)) 창 \(Int(self.window?.bounds.height ?? -1)) 입력잡음 \(self.isFirstResponder) 물리 \(self.hasHardwareKeyboard) 줄 \(self.inputAccessoryView != nil) 줄자리 \(self.barPlace())")
             }
         }
         NotificationCenter.default.addObserver(self, selector: #selector(inputModeChanged), name: Self.flushNotification, object: nil)
@@ -160,7 +160,11 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
         guard isFirstResponder, let window, let end = n.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
         let visible = max(0, window.bounds.maxY - window.convert(end, from: nil).minY)
         let barHeight = accessoryBar?.bounds.height ?? 56
-        let hidden = visible < barHeight + 80
+        // 물리 키보드가 있는 아이패드는 화면 키보드가 떠 있어도 높이 0 으로 알려 줄 때가 있다(2026-11-06 실측 "0,1217 1600x0").
+        // 그래서 특수키 줄이 실제로 그려진 자리도 본다. 다만 키보드가 움직이는 도중엔 줄이 화면 밖에 있기도 해서
+        // 입력을 놓는 건 알림의 높이와 줄 자리가 둘 다 "화면 키보드 없음" 일 때만 한다
+        let barHidden = barShowsKeyboardHidden()
+        let hidden = (visible < barHeight + 80) && (barHidden ?? true)
         // 떠 있던 화면 키보드가 특수키 줄만 남기고 내려갔다 = 아이패드 키보드의 '키보드 내리기' 키.
         // iOS 는 입력을 놓지 않아 특수키 줄만 화면 아래에 남고, 물리 키보드가 있으면 다시 열어도 화면 키보드가 안 뜬다.
         // 우리 숨기기 버튼처럼 입력을 놓는다. 물리 키보드를 치면 iOS 가 화면 키보드를 스스로 내리는데, 그때는 놓지 않는다
@@ -172,11 +176,36 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
             return
         }
         if !hidden { softwareKeyboardShown = true }
-        if !hidden && inputAccessoryView == nil {
+        if barHidden == nil && !hidden && inputAccessoryView == nil {
             // 애플 막대로 화면 키보드를 띄웠다: 특수키 줄을 되돌린다
             inputAccessoryView = accessoryBar
             reloadInputViews()
         }
+        setKeyboardHidden(barHidden ?? hidden)
+        // 알림 뒤에 자리가 바뀌기도 해서 조금 뒤 다시 본다 (버튼 모양만 맞춘다)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.refreshKeyboardButton() }
+    }
+
+    /// 특수키 줄이 화면 아래 끝에 붙어 있으면 화면 키보드가 없는 것이다. 줄이 안 붙어 있으면 nil
+    private func barShowsKeyboardHidden() -> Bool? {
+        guard let bar = accessoryBar, inputAccessoryView === bar, let w = bar.window, bar.bounds.height > 0 else { return nil }
+        let r = bar.convert(bar.bounds, to: w)
+        return r.maxY > w.bounds.height - 80
+    }
+
+    /// 로그용: 특수키 줄 아래 끝 / 그 창 높이
+    private func barPlace() -> String {
+        guard let bar = accessoryBar, let w = bar.window else { return "-" }
+        return "\(Int(bar.convert(bar.bounds, to: w).maxY))/\(Int(w.bounds.height))"
+    }
+
+    private func refreshKeyboardButton() {
+        guard isFirstResponder, let hidden = barShowsKeyboardHidden() else { return }
+        if !hidden { softwareKeyboardShown = true }
+        setKeyboardHidden(hidden)
+    }
+
+    private func setKeyboardHidden(_ hidden: Bool) {
         guard hidden != softwareKeyboardHidden else { return }
         softwareKeyboardHidden = hidden
         keyboardButton.configuration = keyboardIcon?(hidden ? "keyboard" : "keyboard.chevron.compact.down")
@@ -292,6 +321,9 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
         hide.configuration = icon("keyboard.chevron.compact.down")
         hide.addAction(UIAction { [weak self] _ in
             guard let self else { return }
+            // 누를 때 특수키 줄의 실제 자리로 다시 본다 (버튼 모양이 늦게 바뀌었어도 화면 키보드가 보이면 숨긴다)
+            self.refreshKeyboardButton()
+            DebugLog.write("키보드 버튼: 화면 키보드 \(self.softwareKeyboardHidden ? "없음 → 애플 막대 띄움" : "있음 → 숨김") (물리 \(self.hasHardwareKeyboard))")
             if self.softwareKeyboardHidden && self.hasHardwareKeyboard {
                 self.revealSystemBar()
             } else {
