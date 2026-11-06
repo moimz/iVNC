@@ -58,6 +58,10 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
     private var accessoryBar: UIView?
     /// 화면 키보드 없이 특수키 줄만 떠 있다 (물리 키보드가 연결된 아이패드)
     private var softwareKeyboardHidden = false
+    /// 이번 입력 동안 화면 키보드가 한 번이라도 떠 있었다
+    private var softwareKeyboardShown = false
+    /// 마지막으로 물리 키보드 키를 누른 때
+    private var lastHardwarePress = Date.distantPast
     /// 메뉴는 기준 뷰를 덮으며 펼쳐진다: 메뉴 버튼 바로 위의 얇은 띠를 기준으로 띄워 버튼을 가리지 않게 한다
     private let menuAnchor = UIButton(type: .custom)
     /// 조합키 (맥 기호). 누르면 켜져 있다가 다음 키와 함께 보내고 꺼진다. ⌘ 는 Super_L 로 보낸다
@@ -108,6 +112,14 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
         inputAccessoryView = accessoryBar
         NotificationCenter.default.addObserver(self, selector: #selector(keyboardFrameChanged(_:)), name: UIResponder.keyboardDidChangeFrameNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(inputModeChanged), name: UITextInputMode.currentInputModeDidChangeNotification, object: nil)
+        for name in [UIResponder.keyboardWillShowNotification, UIResponder.keyboardDidShowNotification, UIResponder.keyboardWillHideNotification,
+                     UIResponder.keyboardDidHideNotification, UIResponder.keyboardDidChangeFrameNotification] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] n in
+                guard let self else { return }
+                let end = (n.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect) ?? .null
+                DebugLog.write("키보드 \(n.name.rawValue.replacingOccurrences(of: "UIKeyboard", with: "").replacingOccurrences(of: "Notification", with: "")) 끝 \(Int(end.minX)),\(Int(end.minY)) \(Int(end.width))x\(Int(end.height)) 창 \(Int(self.window?.bounds.height ?? -1)) 입력잡음 \(self.isFirstResponder) 물리 \(self.hasHardwareKeyboard) 줄 \(self.inputAccessoryView != nil)")
+            }
+        }
         NotificationCenter.default.addObserver(self, selector: #selector(inputModeChanged), name: Self.flushNotification, object: nil)
     }
 
@@ -149,12 +161,17 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
         let visible = max(0, window.bounds.maxY - window.convert(end, from: nil).minY)
         let barHeight = accessoryBar?.bounds.height ?? 56
         let hidden = visible < barHeight + 80
-        if hidden && !hasHardwareKeyboard {
-            // 물리 키보드 없이 화면 키보드만 내려갔다: 아이패드 키보드의 '키보드 내리기' 키를 누른 것.
-            // iOS 는 입력을 놓지 않아 특수키 줄만 화면 아래에 남고, 다음에 키보드 버튼을 눌러도 안 뜬다. 우리 숨기기 버튼처럼 입력을 놓는다
+        // 떠 있던 화면 키보드가 특수키 줄만 남기고 내려갔다 = 아이패드 키보드의 '키보드 내리기' 키.
+        // iOS 는 입력을 놓지 않아 특수키 줄만 화면 아래에 남고, 물리 키보드가 있으면 다시 열어도 화면 키보드가 안 뜬다.
+        // 우리 숨기기 버튼처럼 입력을 놓는다. 물리 키보드를 치면 iOS 가 화면 키보드를 스스로 내리는데, 그때는 놓지 않는다
+        let typedOnHardware = Date().timeIntervalSince(lastHardwarePress) < 1
+        if hidden && (softwareKeyboardShown || !hasHardwareKeyboard) && !typedOnHardware {
+            DebugLog.write("키보드 내리기 키로 닫음 → 입력 놓음 (물리 키보드 \(hasHardwareKeyboard))")
+            softwareKeyboardShown = false
             resignFirstResponder()
             return
         }
+        if !hidden { softwareKeyboardShown = true }
         if !hidden && inputAccessoryView == nil {
             // 애플 막대로 화면 키보드를 띄웠다: 특수키 줄을 되돌린다
             inputAccessoryView = accessoryBar
@@ -171,6 +188,11 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
     private func revealSystemBar() {
         inputAccessoryView = nil
         reloadInputViews()
+    }
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        lastHardwarePress = Date()
+        super.pressesBegan(presses, with: event)
     }
 
     // MARK: 조합키
@@ -371,6 +393,7 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
     func textFieldDidEndEditing(_ textField: UITextField) {
         if inputAccessoryView == nil { inputAccessoryView = accessoryBar }
         softwareKeyboardHidden = false
+        softwareKeyboardShown = false
         keyboardButton.configuration = keyboardIcon?("keyboard.chevron.compact.down")
         sync(final: true)
         reset()
