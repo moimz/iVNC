@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import GameController
 
 /// 화면에 안 보이는 입력창. 아이폰 키보드로 친 글자를 원격 맥으로 보낸다.
 ///
@@ -34,8 +35,8 @@ struct KeyInputField: UIViewRepresentable {
         f.onKey = onKey
         f.onCombo = onCombo
         f.setMenu(menu)
-        if active && !f.isFirstResponder {
-            DispatchQueue.main.async { f.becomeFirstResponder() }
+        if active && (!f.isFirstResponder || f.keyboardStuck) {
+            DispatchQueue.main.async { f.showKeyboard() }
         } else if !active && f.isFirstResponder {
             DispatchQueue.main.async { f.resignFirstResponder() }
         }
@@ -128,6 +129,18 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
 
     func setMenu(_ menu: UIMenu?) { menuAnchor.menu = menu }
 
+    /// 물리 키보드가 연결돼 있다 (아이패드 매직 키보드·블루투스 키보드)
+    private var hasHardwareKeyboard: Bool { GCKeyboard.coalesced != nil }
+
+    /// 입력은 잡고 있는데 물리 키보드도 없이 화면 키보드만 숨은 상태 (이 상태에선 다시 잡아도 키보드가 안 뜬다)
+    var keyboardStuck: Bool { isFirstResponder && softwareKeyboardHidden && !hasHardwareKeyboard }
+
+    /// 키보드를 띄운다. 숨은 채 입력을 잡고 있으면 놓았다가 다시 잡아 키보드를 올린다
+    func showKeyboard() {
+        if keyboardStuck { resignFirstResponder() }
+        if !isFirstResponder { becomeFirstResponder() }
+    }
+
     // MARK: 물리 키보드
 
     /// 키보드 높이로 화면 키보드가 떠 있는지 본다. 물리 키보드가 연결되면 iOS 는 화면 키보드를 숨기고 특수키 줄만 띄운다
@@ -136,6 +149,12 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
         let visible = max(0, window.bounds.maxY - window.convert(end, from: nil).minY)
         let barHeight = accessoryBar?.bounds.height ?? 56
         let hidden = visible < barHeight + 80
+        if hidden && !hasHardwareKeyboard {
+            // 물리 키보드 없이 화면 키보드만 내려갔다: 아이패드 키보드의 '키보드 내리기' 키를 누른 것.
+            // iOS 는 입력을 놓지 않아 특수키 줄만 화면 아래에 남고, 다음에 키보드 버튼을 눌러도 안 뜬다. 우리 숨기기 버튼처럼 입력을 놓는다
+            resignFirstResponder()
+            return
+        }
         if !hidden && inputAccessoryView == nil {
             // 애플 막대로 화면 키보드를 띄웠다: 특수키 줄을 되돌린다
             inputAccessoryView = accessoryBar
@@ -251,7 +270,7 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
         hide.configuration = icon("keyboard.chevron.compact.down")
         hide.addAction(UIAction { [weak self] _ in
             guard let self else { return }
-            if self.softwareKeyboardHidden {
+            if self.softwareKeyboardHidden && self.hasHardwareKeyboard {
                 self.revealSystemBar()
             } else {
                 // 내리면 textFieldDidEndEditing 이 조합 중인 글자를 먼저 보낸다
