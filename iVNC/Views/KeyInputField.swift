@@ -164,7 +164,8 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
         // 그래서 특수키 줄이 실제로 그려진 자리도 본다. 다만 키보드가 움직이는 도중엔 줄이 화면 밖에 있기도 해서
         // 입력을 놓는 건 알림의 높이와 줄 자리가 둘 다 "화면 키보드 없음" 일 때만 한다
         let barHidden = barShowsKeyboardHidden()
-        let hidden = (visible < barHeight + 80) && (barHidden ?? true)
+        // 물리 키보드가 있으면 내린 뒤에도 애플 막대 자리(약 80)를 비워 둔다(실측 줄자리 1119/1200, 높이 137). 진짜 화면 키보드는 200 이 넘으니 150 으로 가른다
+        let hidden = (visible < barHeight + 150) && (barHidden ?? true)
         // 떠 있던 화면 키보드가 특수키 줄만 남기고 내려갔다 = 아이패드 키보드의 '키보드 내리기' 키.
         // iOS 는 입력을 놓지 않아 특수키 줄만 화면 아래에 남고, 물리 키보드가 있으면 다시 열어도 화면 키보드가 안 뜬다.
         // 우리 숨기기 버튼처럼 입력을 놓는다. 물리 키보드를 치면 iOS 가 화면 키보드를 스스로 내리는데, 그때는 놓지 않는다
@@ -190,7 +191,7 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
     private func barShowsKeyboardHidden() -> Bool? {
         guard let bar = accessoryBar, inputAccessoryView === bar, let w = bar.window, bar.bounds.height > 0 else { return nil }
         let r = bar.convert(bar.bounds, to: w)
-        return r.maxY > w.bounds.height - 80
+        return r.maxY > w.bounds.height - 150
     }
 
     /// 로그용: 특수키 줄 아래 끝 / 그 창 높이
