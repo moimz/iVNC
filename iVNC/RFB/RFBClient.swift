@@ -62,13 +62,8 @@ final class RFBClient {
     /// 화면 쪽이 아직 앞 그림을 가져가지 않았으면 알림을 또 보내지 않는다
     private var framePending = false
 
-    /// 화면 보호기 막기: 화면을 받는 동안 커서가 멈춰 있으면, 그 자리에 그대로 마우스 이동을 보내 맥의 유휴 시간을 되돌린다.
-    /// Debug 빌드는 Darwin 알림으로 켜고 끈다 (`KeepAwake`).
+    /// 맥 커서 위치 (서버가 알려 주거나 앱이 보낸 마지막 좌표)
     private var cursor: (x: Int, y: Int)?
-    private var cursorChangedAt = Date.distantPast
-    /// 앱에서 직접 조작한 마지막 시각 (제어 기능이 들어가면 갱신한다)
-    private var lastLocalInput = Date.distantPast
-    private var keepAwakeTimer: DispatchSourceTimer?
     /// 애플 인증에서 얻은 AES 키. 있으면 키 입력을 EncryptedEvent(0x10)로 보낸다 (noVNC-ARD 와 같은 방식)
     private var ardKey: [UInt8]?
     /// 전체 화면(비증분) 요청을 보내고 아직 화면을 못 받았으면 그 시각과 그때까지 받은 바이트 수.
@@ -412,7 +407,6 @@ final class RFBClient {
 
     func stop() {
         stateLock.lock(); stopped = true; let s = socket; stateLock.unlock()
-        keepAwakeTimer?.cancel()
         watchdog?.cancel()
         hpTimer?.cancel()
         hpReceiver?.stop()
@@ -535,7 +529,6 @@ final class RFBClient {
             s.setReadTimeout(15)
             try handshake(s)
             s.setReadTimeout(0)
-            startKeepAwake()
             startWatchdog()
             while true {
                 try readMessage(s)
@@ -781,7 +774,7 @@ final class RFBClient {
             case 1100: // 애플: 커서 위치
                 stateLock.lock()
                 let moved = cursor?.x != x || cursor?.y != y
-                if moved { cursor = (x, y); cursorChangedAt = Date() }
+                if moved { cursor = (x, y) }
                 stateLock.unlock()
                 if moved { DebugLog.write("커서 위치 \(x),\(y)"); emit(.cursor(x, y)) }
             case -223:
@@ -948,9 +941,8 @@ final class RFBClient {
     private func pointer(_ x: Int, _ y: Int, _ mask: UInt8) {
         let x = max(0, min(x, framebuffer.width - 1)), y = max(0, min(y, framebuffer.height - 1))
         socket?.send([5, mask] + [UInt8].be16(x) + [UInt8].be16(y))
-        stateLock.lock(); let moved = cursor?.x != x || cursor?.y != y; cursor = (x, y); cursorChangedAt = Date(); stateLock.unlock()
+        stateLock.lock(); let moved = cursor?.x != x || cursor?.y != y; cursor = (x, y); stateLock.unlock()
         if moved { emit(.cursor(x, y)) }
-        markLocalInput()
     }
 
     /// 누르고 뗀다. button 1 = 왼쪽, 2 = 오른쪽 (애플 서버 기준. 4 는 가운데 버튼으로 들어간다)
@@ -1034,7 +1026,6 @@ final class RFBClient {
         m += [UInt8].be32(phase.rawValue) + [UInt8].be32(momentum.rawValue) + [UInt8].be32(0) + [UInt8].be16(0) + [UInt8].be16(0)
         m += [UInt8].be16(Int(x)) + [UInt8].be16(Int(y))
         socket?.send(m)
-        markLocalInput()
         if phase != .changed && momentum != .continue {
             DebugLog.write("스크롤 \(String(format: "%.1f", dx)),\(String(format: "%.1f", dy)) 단계 \(phase) 관성 \(momentum) @\(x),\(y)")
         }
@@ -1062,7 +1053,6 @@ final class RFBClient {
             sendKeyEvent(keysym, down: true)
             sendKeyEvent(keysym, down: false)
         }
-        markLocalInput()
         DebugLog.write("글자 보냄 \"\(text)\" 시각 \(DebugLog.wallClock())")
     }
 
@@ -1071,7 +1061,6 @@ final class RFBClient {
         holdUpdatesForTyping()
         sendKeyEvent(keysym, down: true)
         sendKeyEvent(keysym, down: false)
-        markLocalInput()
         DebugLog.write("키 보냄 \(name) 시각 \(DebugLog.wallClock())")
     }
 
@@ -1082,12 +1071,7 @@ final class RFBClient {
         sendKeyEvent(key, down: true)
         sendKeyEvent(key, down: false)
         for m in modifiers.reversed() { sendKeyEvent(m, down: false) }
-        markLocalInput()
         DebugLog.write("조합 보냄 \(modifiers.map { String(format: "%04x", $0) }) + \(name) 시각 \(DebugLog.wallClock())")
-    }
-
-    private func markLocalInput() {
-        stateLock.lock(); lastLocalInput = Date(); stateLock.unlock()
     }
 
     private func sendKeyEvent(_ keysym: UInt32, down: Bool) {
@@ -1101,44 +1085,6 @@ final class RFBClient {
             socket?.send([0x10, 0] + RFBCrypto.ecbEncrypt(algorithm: CCAlgorithm(kCCAlgorithmAES128), key: key, data: p))
         } else {
             socket?.send([4, down ? 1 : 0, 0, 0] + [UInt8].be32(keysym))
-        }
-    }
-
-    // MARK: - 화면 보호기 막기
-
-    /// 앱이 백그라운드에서 연결만 유지하는 동안: 화면은 안 받아도 맥이 잠들지 않게 계속 깨운다
-    var keepAwakeWhilePaused = false
-
-    private func startKeepAwake() {
-        let t = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
-        t.schedule(deadline: .now() + 20, repeating: 20)
-        t.setEventHandler { [weak self] in self?.keepAwakeTick() }
-        keepAwakeTimer = t
-        t.resume()
-    }
-
-    private func keepAwakeTick() {
-        guard KeepAwake.enabled else { DebugLog.write("화면 보호기 막기: 꺼짐"); return }
-        stateLock.lock()
-        let now = Date()
-        let pos = cursor, still = now.timeIntervalSince(cursorChangedAt), idle = now.timeIntervalSince(lastLocalInput)
-        let active = (streaming && !awaitingSwitch) || keepAwakeWhilePaused
-        stateLock.unlock()
-        // 맥 앞에서 마우스를 움직이는 중(5초 안)이거나 앱에서 조작 중(30초 안)이면 보내지 않는다.
-        guard active, still >= 5, idle >= 30 else {
-            DebugLog.write("화면 보호기 막기: 건너뜀 (화면 받는 중 \(active), 커서 멈춘 지 \(Int(min(still, 9999)))초)")
-            return
-        }
-        if let pos {
-            // 커서가 지금 있는 자리에 그대로 이동: 화면에는 아무 변화가 없다
-            socket?.send([5, 0] + [UInt8].be16(pos.x) + [UInt8].be16(pos.y))
-            DebugLog.write("화면 보호기 막기: 제자리 마우스 이동 \(pos.x),\(pos.y)")
-        } else {
-            // 커서 위치를 모르면(서버는 커서가 움직일 때만 알려 준다) 기능이 없는 F19 키를 눌렀다 뗀다
-            let f19: UInt32 = 0xFFD0
-            sendKeyEvent(f19, down: true)
-            sendKeyEvent(f19, down: false)
-            DebugLog.write("화면 보호기 막기: F19 키 (커서 위치 모름)")
         }
     }
 

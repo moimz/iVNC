@@ -254,7 +254,6 @@ final class SessionModel: ObservableObject {
         guard phase == .viewing, !backgrounded else { return }
         backgrounded = true
         saveThumbnail()
-        client?.keepAwakeWhilePaused = true
         client?.pause()
         DebugLog.write("백그라운드: 화면 받기 멈춤")
     }
@@ -262,7 +261,6 @@ final class SessionModel: ObservableObject {
     func enterForeground() {
         guard backgrounded else { return }
         backgrounded = false
-        client?.keepAwakeWhilePaused = false
         if phase == .viewing, let d = selected { client?.select(display: d.id) }
         DebugLog.write("포그라운드: 화면 다시 받음")
     }
