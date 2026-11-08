@@ -128,6 +128,13 @@ final class SessionModel: ObservableObject {
             renderer.presentStripe(pb, stripe: stripe, stripes: stripes, fullHeight: client?.framebuffer.height ?? 0)
             client?.frameConsumed()
         case .failed(let msg):
+            // 앱을 나가 있는 동안 맥이 연결을 끊으면(화면 공유 끔·접속 끊기·살아 있음 확인 실패): 위치 사용을 끄고 목록으로 돌아간다
+            if backgrounded || UIApplication.shared.applicationState == .background {
+                DebugLog.write("백그라운드: 연결 끊김 (\(msg)) → 위치 끄고 목록으로")
+                close()
+                ended = true
+                return
+            }
             // 화면을 보기 전(접속·인증 단계) 실패는 자동으로 3번까지 다시 시도한다.
             // 서버는 접속 직후 다시 붙으면 끊거나 멈출 때가 있다
             if case .connecting = phase, retries < Self.maxRetries, let store {

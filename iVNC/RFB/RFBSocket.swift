@@ -51,6 +51,13 @@ final class RFBSocket {
                 var on: Int32 = 1
                 setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
                 setsockopt(s, IPPROTO_TCP, TCP_NODELAY, &on, socklen_t(MemoryLayout<Int32>.size))
+                // 살아 있음 확인: 5분 동안 오간 게 없으면 빈 확인 패킷을 보내고, 30초 간격 3번 답이 없으면 끊긴 것으로 본다.
+                // 맥 커널이 대신 답하므로 화면 공유 쪽에는 아무 일도 없다. 맥이 사라지면(잠듦·전원·네트워크) 약 6분 반 안에 안다
+                setsockopt(s, SOL_SOCKET, SO_KEEPALIVE, &on, socklen_t(MemoryLayout<Int32>.size))
+                var idle: Int32 = 300, interval: Int32 = 30, count: Int32 = 3
+                setsockopt(s, IPPROTO_TCP, TCP_KEEPALIVE, &idle, socklen_t(MemoryLayout<Int32>.size))
+                setsockopt(s, IPPROTO_TCP, TCP_KEEPINTVL, &interval, socklen_t(MemoryLayout<Int32>.size))
+                setsockopt(s, IPPROTO_TCP, TCP_KEEPCNT, &count, socklen_t(MemoryLayout<Int32>.size))
                 var rcv: Int32 = 1 << 20 // 크게 잡으면 앱이 못 따라갈 때 화면이 수 초~수십 초 밀려 쌓인다
                 setsockopt(s, SOL_SOCKET, SO_RCVBUF, &rcv, socklen_t(MemoryLayout<Int32>.size))
                 if Self.connect(s, a.pointee.ai_addr, a.pointee.ai_addrlen, timeout: 10) { fd = s; return }
