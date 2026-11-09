@@ -317,7 +317,7 @@ struct SessionView: View {
                 // 떠 있는 버튼: 누르면 버튼 옆에 메뉴가 뜬다. 이 버튼의 터치는 맥에 안 보낸다
                 // 키보드가 떠 있는 동안은 키보드 위 줄에 같은 메뉴 버튼이 있어 숨긴다
                 if !model.typing {
-                    FloatingMenuButton(scroll: model.scrollMode, menu: menu)
+                    FloatingMenuButton(scroll: model.scrollMode, menu: menu, endScroll: { model.scrollMode = false })
                         .ignoresSafeArea(.container) // 키보드가 뜨면 그 위로 올라가게 (키보드 영역은 피한다)
                 }
             }
@@ -483,11 +483,14 @@ struct SessionView: View {
 struct FloatingMenuButton: UIViewRepresentable {
     var scroll = false
     let menu: UIMenu
+    /// 스크롤 모드일 때 버튼을 누르면 메뉴 대신 이걸 부른다 (스크롤 모드 끄기)
+    var endScroll: () -> Void = {}
 
     func makeUIView(context: Context) -> FloatingButtonHost { FloatingButtonHost() }
 
     func updateUIView(_ v: FloatingButtonHost, context: Context) {
         v.setMenu(menu)
+        v.endScroll = endScroll
         v.setScroll(scroll)
     }
 }
@@ -503,6 +506,7 @@ final class FloatingButtonHost: UIView {
     private let flickDistance: CGFloat = 24
     private let flickSpeed: CGFloat = 250
     private var scroll = false
+    var endScroll: () -> Void = {}
     /// 첫 배치를 마쳤는지
     private var placed = false
     /// 길게 눌러 끄는 중: 누른 자리, 던진 속도를 재려는 최근 위치
@@ -543,7 +547,10 @@ final class FloatingButtonHost: UIView {
         menuButton.frame = CGRect(x: c.x - size / 2, y: y, width: size, height: 1)
     }
 
-    @objc private func tapped() { menuButton.performPrimaryAction() }
+    /// 스크롤 모드면 바로 끈다 (노란 화살표 버튼 = 스크롤 모드 끄기). 아니면 메뉴
+    @objc private func tapped() {
+        if scroll { endScroll() } else { menuButton.performPrimaryAction() }
+    }
 
     /// 스크롤 모드면 위아래 화살표(노란색), 아니면 기본 아이콘
     func setScroll(_ scroll: Bool, force: Bool = false) {

@@ -301,13 +301,18 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate, UIGestureRecog
             return clampPixel(CGPoint(x: s.pixel.x + (v.x - s.view.x) * pixelsPerPoint, y: s.pixel.y + (v.y - s.view.y) * pixelsPerPoint))
         }
         let base = pressPointerStart ?? s.pixel
-        return clampPixel(CGPoint(x: base.x + (v.x - s.view.x) * pixelsPerPoint, y: base.y + (v.y - s.view.y) * pixelsPerPoint))
+        return clampExact(CGPoint(x: base.x + (v.x - s.view.x) * pixelsPerPoint, y: base.y + (v.y - s.view.y) * pixelsPerPoint))
     }
 
     /// 화면 1pt 가 프레임버퍼 몇 픽셀인지 (지금 확대 기준)
     private var pixelsPerPoint: CGFloat {
         guard content.bounds.width > 0 else { return 1 }
         return pixelSize.width / content.bounds.width / zoomScale
+    }
+
+    /// 화면 안으로만 자른다 (내림 없음). 트랙패드 포인터는 소수점을 유지하고 보낼 때만 정수로 바꾼다
+    private func clampExact(_ p: CGPoint) -> CGPoint {
+        CGPoint(x: min(max(p.x, 0), pixelSize.width - 1), y: min(max(p.y, 0), pixelSize.height - 1))
     }
 
     private func clampPixel(_ p: CGPoint) -> CGPoint {
@@ -401,7 +406,8 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate, UIGestureRecog
             let speed = hypot(v.x, v.y)
             let gain = min(max(0.9 + speed / 900, 0.9), 3) // 느리면 손가락만큼, 빠르면 최대 3배
             let p = pointer ?? .zero
-            pointer = clampPixel(CGPoint(x: p.x + dx * gain * pixelsPerPoint, y: p.y + dy * gain * pixelsPerPoint))
+            // 소수점까지 쌓는다: 매번 픽셀로 내림하면 천천히 움직일 때(한 번에 1픽셀 미만) 오른쪽·아래로는 안 가고 왼쪽·위로는 더 간다
+            pointer = clampExact(CGPoint(x: p.x + dx * gain * pixelsPerPoint, y: p.y + dy * gain * pixelsPerPoint))
             placePointer()
             followPointer()
             sendMove(pointer!, force: false)
