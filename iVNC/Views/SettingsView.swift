@@ -25,7 +25,7 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("설정")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineTitle()
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("완료") { dismiss() }

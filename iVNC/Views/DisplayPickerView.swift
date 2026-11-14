@@ -62,7 +62,7 @@ private struct MonitorTile: View {
     var body: some View {
         ZStack {
             if let img = Thumbnails.load(computer: computer.id, display: display.stableKey) {
-                Color.clear.overlay(Image(uiImage: img).resizable().scaledToFill())
+                Color.clear.overlay(Image(decorative: img, scale: 1).resizable().scaledToFill())
             } else {
                 LinearGradient(colors: [Color(red: 0.25, green: 0.36, blue: 0.55), Color(red: 0.12, green: 0.16, blue: 0.28)],
                                startPoint: .top, endPoint: .bottom)

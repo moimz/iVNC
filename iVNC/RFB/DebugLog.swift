@@ -2,7 +2,7 @@ import Foundation
 
 /// Caches/debug.log 에 서버 메시지를 시간과 함께 남긴다. Release 에서도 남겨 문제가 생기면 기기에서 꺼내 본다 (접속할 때 2MB 를 넘으면 비운다).
 enum DebugLog {
-    private static let url = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("debug.log")
+    private static let url = AppDirectories.caches.appendingPathComponent("debug.log")
     private static let queue = DispatchQueue(label: "DebugLog")
     private static var start = Date()
 

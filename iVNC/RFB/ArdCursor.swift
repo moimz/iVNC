@@ -1,6 +1,10 @@
 import CoreImage
 import CryptoKit
+import ImageIO
+import UniformTypeIdentifiers
+#if canImport(UIKit)
 import UIKit
+#endif
 
 /// 애플 커서 모양 (의사 인코딩 1104, noVNC-ARD `_ardHandleCursorAlpha` 를 따름).
 ///
@@ -66,8 +70,8 @@ final class ArdCursorDecoder {
               let cg = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4,
                                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: info, provider: provider,
                                decode: nil, shouldInterpolate: false, intent: .defaultIntent),
-              let png = UIImage(cgImage: cg).pngData() else { return }
-        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("cursors")
+              let png = pngData(cg) else { return }
+        let dir = AppDirectories.caches.appendingPathComponent("cursors")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try? png.write(to: dir.appendingPathComponent("\(fingerprint).png"))
     }
@@ -138,6 +142,16 @@ final class ArdCursorDecoder {
                                      scale: CGFloat(max(image.width, image.height)) / 26)
     }
 
+
+    /// CGImage → PNG (UIKit·AppKit 없이)
+    private static func pngData(_ image: CGImage) -> Data? {
+        let data = NSMutableData()
+        guard let dst = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(dst, image, nil)
+        return CGImageDestinationFinalize(dst) ? data as Data : nil
+    }
+
+#if canImport(UIKit)
     /// 맥 크기 조절 커서처럼: 떨어진 검은 삼각형 두 개에 흰 테두리. angle 0 = 위아래, π/2 = 좌우, ±π/4 = 대각선
     private static func resize(angle: CGFloat, key: String) -> CGImage? {
         lock.lock(); defer { lock.unlock() }
@@ -226,4 +240,11 @@ final class ArdCursorDecoder {
         rendered[name] = img.cgImage
         return img.cgImage
     }
+#else
+    // 맥 앱: 미리 정해진 커서 그림은 아직 없다 (맥 기본 커서로 바꿔 보여 줄 예정)
+    private static func resize(angle: CGFloat, key: String) -> CGImage? { nil }
+    private static func hand() -> CGImage? { nil }
+    private static func ibeam() -> CGImage? { nil }
+    private static func render(_ name: String) -> CGImage? { nil }
+#endif
 }

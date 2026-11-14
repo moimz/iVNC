@@ -8,18 +8,49 @@
 
 /* Begin PBXFileReference section */
 		B10000000000000000000001 /* iVNC.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = iVNC.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B10000000000000000000101 /* iVNC.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = iVNC.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		B10000000000000000000201 /* Exceptions for "iVNC" folder in "iVNCMac" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				App/BackgroundKeeper.swift,
+				App/iVNCApp.swift,
+				Views/HomeView.swift,
+				Views/KeyInputField.swift,
+				Views/ScreenView.swift,
+				Views/SessionView.swift,
+			);
+			target = B10000000000000000000106 /* iVNCMac */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		B10000000000000000000002 /* iVNC */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				B10000000000000000000201 /* Exceptions for "iVNC" folder in "iVNCMac" target */,
+			);
 			path = iVNC;
+			sourceTree = "<group>";
+		};
+		B10000000000000000000102 /* iVNCMac */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = iVNCMac;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		B10000000000000000000003 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B10000000000000000000103 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -33,6 +64,7 @@
 			isa = PBXGroup;
 			children = (
 				B10000000000000000000002 /* iVNC */,
+				B10000000000000000000102 /* iVNCMac */,
 				B10000000000000000000005 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +73,7 @@
 			isa = PBXGroup;
 			children = (
 				B10000000000000000000001 /* iVNC.app */,
+				B10000000000000000000101 /* iVNC.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -68,6 +101,27 @@
 			productReference = B10000000000000000000001 /* iVNC.app */;
 			productType = "com.apple.product-type.application";
 		};
+		B10000000000000000000106 /* iVNCMac */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B10000000000000000000107 /* Build configuration list for PBXNativeTarget "iVNCMac" */;
+			buildPhases = (
+				B10000000000000000000108 /* Sources */,
+				B10000000000000000000103 /* Frameworks */,
+				B10000000000000000000109 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				B10000000000000000000002 /* iVNC */,
+				B10000000000000000000102 /* iVNCMac */,
+			);
+			name = iVNCMac;
+			productName = iVNCMac;
+			productReference = B10000000000000000000101 /* iVNC.app */;
+			productType = "com.apple.product-type.application";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -80,6 +134,9 @@
 				TargetAttributes = {
 					B10000000000000000000006 = {
 						CreatedOnToolsVersion = 27.1;
+					};
+					B10000000000000000000106 = {
+						CreatedOnToolsVersion = 27.2;
 					};
 				};
 			};
@@ -99,6 +156,7 @@
 			projectRoot = "";
 			targets = (
 				B10000000000000000000006 /* iVNC */,
+				B10000000000000000000106 /* iVNCMac */,
 			);
 		};
 /* End PBXProject section */
@@ -111,10 +169,24 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B10000000000000000000109 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		B10000000000000000000008 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B10000000000000000000108 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -238,6 +310,70 @@
 			};
 			name = Release;
 		};
+		B1000000000000000000010E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = iVNCMac.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = XSDBV8D2XL;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = iVNC;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "같은 네트워크에 있는 컴퓨터의 화면에 접속하려면 로컬 네트워크 접근이 필요합니다.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.moimz.iVNC;
+				PRODUCT_MODULE_NAME = iVNCMac;
+				PRODUCT_NAME = iVNC;
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		B1000000000000000000010F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = iVNCMac.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = XSDBV8D2XL;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = iVNC;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "같은 네트워크에 있는 컴퓨터의 화면에 접속하려면 로컬 네트워크 접근이 필요합니다.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.moimz.iVNC;
+				PRODUCT_MODULE_NAME = iVNCMac;
+				PRODUCT_NAME = iVNC;
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -255,6 +391,15 @@
 			buildConfigurations = (
 				B1000000000000000000000C /* Debug */,
 				B1000000000000000000000D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B10000000000000000000107 /* Build configuration list for PBXNativeTarget "iVNCMac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B1000000000000000000010E /* Debug */,
+				B1000000000000000000010F /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

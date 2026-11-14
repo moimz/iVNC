@@ -1,6 +1,8 @@
 import Foundation
 import Security
-import UIKit
+import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
 
 /// 등록한 컴퓨터 하나. 암호는 키체인에 따로 둔다.
 struct Computer: Identifiable, Codable, Hashable {
@@ -32,7 +34,7 @@ final class ComputerStore: ObservableObject {
     @Published private(set) var thumbnailVersion = 0
 
     private let url: URL = {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let dir = AppDirectories.support
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("computers.json")
     }()
@@ -222,7 +224,7 @@ enum Keychain {
 /// 마지막 접속 화면 그림 (Caches/Thumbnails). 컴퓨터 카드용 하나와, 모니터 배치 화면용 모니터별 그림.
 enum Thumbnails {
     private static let dir: URL = {
-        let d = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("Thumbnails")
+        let d = AppDirectories.caches.appendingPathComponent("Thumbnails")
         try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
         return d
     }()
@@ -231,8 +233,9 @@ enum Thumbnails {
         dir.appendingPathComponent(computer.uuidString + (display.map { "-" + $0 } ?? "") + ".jpg")
     }
 
-    static func load(computer: UUID, display: String? = nil) -> UIImage? {
-        UIImage(contentsOfFile: url(computer: computer, display: display).path)
+    static func load(computer: UUID, display: String? = nil) -> CGImage? {
+        guard let src = CGImageSourceCreateWithURL(url(computer: computer, display: display) as CFURL, nil) else { return nil }
+        return CGImageSourceCreateImageAtIndex(src, 0, nil)
     }
 
     /// 긴 쪽 1200px 로 줄여 저장
@@ -241,14 +244,21 @@ enum Thumbnails {
         let w = CGFloat(image.width), h = CGFloat(image.height)
         let s = min(1, maxSide / max(w, h))
         let size = CGSize(width: (w * s).rounded(), height: (h * s).rounded())
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1
-        let small = UIGraphicsImageRenderer(size: size, format: format).image { _ in
-            UIImage(cgImage: image).draw(in: CGRect(origin: .zero, size: size))
-        }
-        guard let data = small.jpegData(compressionQuality: 0.8) else { return }
+        guard let ctx = CGContext(data: nil, width: Int(size.width), height: Int(size.height), bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue) else { return }
+        ctx.interpolationQuality = .high
+        ctx.draw(image, in: CGRect(origin: .zero, size: size))
+        guard let small = ctx.makeImage(), let data = jpegData(small, quality: 0.8) else { return }
         try? data.write(to: url(computer: computer), options: .atomic)
         if let display { try? data.write(to: url(computer: computer, display: display), options: .atomic) }
+    }
+
+    /// CGImage → JPEG (UIKit·AppKit 없이)
+    static func jpegData(_ image: CGImage, quality: Double) -> Data? {
+        let data = NSMutableData()
+        guard let dst = CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(dst, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
+        return CGImageDestinationFinalize(dst) ? data as Data : nil
     }
 
     static func delete(computer: UUID) {

@@ -1,7 +1,6 @@
 import CoreImage
 import CoreVideo
 import QuartzCore
-import UIKit
 
 /// 원격 화면을 SwiftUI 를 거치지 않고 레이어에 바로 그린다 (속도 우선).
 /// - 일반: IOSurface 버퍼 둘을 번갈아 쓰며 바뀐 영역만 복사한다 (같은 버퍼를 다시 넣으면 레이어가 새로 안 그린다).
@@ -28,9 +27,12 @@ final class ScreenRenderer {
 
     init() {
         layer.isOpaque = true
-        layer.backgroundColor = UIColor.black.cgColor
+        layer.backgroundColor = CGColor(gray: 0, alpha: 1)
         layer.magnificationFilter = .nearest // 원본 근처에서 글자가 또렷하게
         layer.minificationFilter = .trilinear
+        #if os(macOS)
+        layer.isGeometryFlipped = true // 줄무늬를 위에서부터 쌓는다 (iOS 와 같은 좌표)
+        #endif
     }
 
     private func setSize(_ size: CGSize) {

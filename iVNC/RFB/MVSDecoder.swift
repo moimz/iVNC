@@ -799,7 +799,7 @@ enum MVSIDCT {
 enum MVSDump {
     private static var count = 0
     private static var buf = [UInt8]()
-    private static let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+    private static let dir = AppDirectories.caches
 
     static func add(_ data: [UInt8], x: Int, y: Int, w: Int, h: Int, pixels: UnsafeMutablePointer<UInt32>, fbWidth: Int, fbHeight: Int) {
         guard count < 60 else { return }
