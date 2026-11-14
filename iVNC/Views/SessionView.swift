@@ -58,10 +58,11 @@ final class SessionModel: ObservableObject {
         mouseMode = MouseMode(rawValue: UserDefaults.standard.string(forKey: "mouseMode." + computer.id.uuidString) ?? "") ?? .touch
     }
 
-    /// 고성능 가상 디스플레이 크기 (포인트, 가로로 긴 쪽이 너비).
-    /// 아이패드는 기기 화면 크기 그대로 (맥 앱들이 아이패드 화면에 맞는 크기로 보인다).
+    /// 고성능 가상 디스플레이 크기 (배율 1 픽셀, 가로로 긴 쪽이 너비). 설정에서 해상도를 골랐으면 그것.
+    /// "기기에 맞춤"이면: 아이패드는 기기 화면 크기 그대로 (맥 앱들이 아이패드 화면에 맞는 크기로 보인다).
     /// 아이폰은 화면이 너무 작아 맥 화면으로 쓰기 어려우니 1280x800 (확대해서 본다)
     static var virtualDisplaySize: (width: Int, height: Int) {
+        if let r = AppSettings.resolution { return (r.width, r.height) }
         let b = UIScreen.main.bounds.size
         guard UIDevice.current.userInterfaceIdiom == .pad else { return (1280, 800) }
         // 짝수로 (픽셀이 2배라 상관없지만 영상 인코더가 짝수를 좋아한다)

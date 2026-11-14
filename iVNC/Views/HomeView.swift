@@ -5,6 +5,7 @@ struct HomeView: View {
     @EnvironmentObject private var store: ComputerStore
     @State private var editing: Computer?
     @State private var adding = false
+    @State private var settings = false
     @State private var connecting: Computer?
     private let columns = [GridItem(.adaptive(minimum: 170, maximum: 320), spacing: 16)]
 
@@ -34,11 +35,15 @@ struct HomeView: View {
             }
             .navigationTitle("컴퓨터")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("설정", systemImage: "gearshape") { settings = true }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("추가", systemImage: "plus") { adding = true }
                 }
             }
             .sheet(isPresented: $adding) { ComputerEditView(computer: nil) }
+            .sheet(isPresented: $settings) { SettingsView() }
             .sheet(item: $editing) { ComputerEditView(computer: $0) }
             .fullScreenCover(item: $connecting) { SessionView(computer: $0) }
         }
