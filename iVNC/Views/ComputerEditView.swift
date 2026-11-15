@@ -22,8 +22,11 @@ struct ComputerEditView: View {
                     // 포트를 안 바꿨으면 종류의 기본 포트로
                     if port == String(old.defaultPort) || port.isEmpty { port = String(new.defaultPort) }
                 }
+                #if !os(macOS)
+                // 맥은 시트 위 제목 없이 (탭과 버튼만)
                 .navigationTitle(computer == nil ? "컴퓨터 추가" : "컴퓨터 편집")
                 .inlineTitle()
+                #endif
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("취소") { dismiss() } }
                     ToolbarItem(placement: .confirmationAction) {
@@ -48,11 +51,12 @@ struct ComputerEditView: View {
                 Form { fields }
                     .formStyle(.grouped)
                     .scrollContentBackground(.hidden)
-                    // 탭 칸은 같은 폭으로 나뉘어 가장 짧은 "맥" 에 맞춰지면 "윈도우" 가 잘린다 → 맥 양옆에 넓은 공백
-                    .tabItem { Text(k == .mac ? "\u{2003}맥\u{2003}" : k.title) }
+                    .tabItem { Text(k.title) }
                     .tag(k)
             }
         }
+        // 기본 모양은 탭을 도구 막대에 좁은 고정 폭으로 붙여 글자가 잘린다 → 표준 탭 상자(글자 폭대로)
+        .tabViewStyle(.grouped)
         .padding()
         #else
         Form {
