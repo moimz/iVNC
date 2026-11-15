@@ -52,7 +52,8 @@ struct SettingsForm: View {
     /// "버전 0.1 (235, fa0e978)" — 빌드 번호는 git 커밋 수, 뒤는 커밋 해시 ("+" 는 커밋 전 변경 포함). Scripts/stamp-build-number.sh
     static var versionText: String {
         let info = Bundle.main.infoDictionary ?? [:]
-        let version = info["CFBundleShortVersionString"] as? String ?? "-"
+        // b 로 끝나는 브랜치(시험판) 빌드는 "2.0b"
+        let version = (info["CFBundleShortVersionString"] as? String ?? "-") + (info["iVNCBeta"] as? Bool == true ? "b" : "")
         let build = info["CFBundleVersion"] as? String ?? "-"
         let commit = info["iVNCCommit"] as? String
         return "버전 \(version) (\(build)\(commit.map { ", \($0)" } ?? ""))"

@@ -10,3 +10,8 @@ plist="$TARGET_BUILD_DIR/$INFOPLIST_PATH"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $count" "$plist"
 /usr/libexec/PlistBuddy -c "Delete :iVNCCommit" "$plist" >/dev/null 2>&1
 /usr/libexec/PlistBuddy -c "Add :iVNCCommit string $hash" "$plist"
+# 2.0b 처럼 이름이 b 로 끝나는 브랜치(다음 버전 시험판)는 설정에 "2.0b" 로 보이게 표시만 남긴다 (inPlayer 와 같은 방식)
+/usr/libexec/PlistBuddy -c "Delete :iVNCBeta" "$plist" >/dev/null 2>&1
+case "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" in
+    *b) /usr/libexec/PlistBuddy -c "Add :iVNCBeta bool true" "$plist" ;;
+esac
