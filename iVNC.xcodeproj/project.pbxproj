@@ -420,7 +420,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				EXCLUDED_ARCHS = x86_64;
+				ARCHS = arm64;
 				MARKETING_VERSION = 2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.moimz.iVNC;
 				PRODUCT_MODULE_NAME = iVNCMac;
@@ -469,7 +469,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				EXCLUDED_ARCHS = x86_64;
+				ARCHS = arm64;
 				MARKETING_VERSION = 2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.moimz.iVNC;
 				PRODUCT_MODULE_NAME = iVNCMac;
