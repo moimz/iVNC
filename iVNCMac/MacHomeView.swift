@@ -44,18 +44,17 @@ struct MacHomeView: View {
                 }
             }
         }
-        // 설정 패널: 목록 위에 떠서 덮는다 (목록 크기는 그대로)
+        // 설정 패널: 오른쪽 끝에 붙은 사이드바 모양 그대로, 목록 위에 덮는다 (목록 크기는 그대로)
         .overlay(alignment: .trailing) {
             if showSettings {
-                SettingsForm()
-                    .scrollContentBackground(.hidden)
-                    .frame(width: 300)
-                    .frame(maxHeight: .infinity)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
-                    .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.separator))
-                    .shadow(color: .black.opacity(0.25), radius: 16, x: -4)
-                    .padding(10)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                HStack(spacing: 0) {
+                    Divider()
+                    SettingsForm()
+                        .frame(width: 280)
+                        .frame(maxHeight: .infinity)
+                        .background(.background)
+                }
+                .transition(.move(edge: .trailing))
             }
         }
         .sheet(isPresented: $adding) { ComputerEditView(computer: nil).frame(minWidth: 460, minHeight: 520) }
