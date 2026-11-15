@@ -1,3 +1,9 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Derived from noVNC-ARD (https://github.com/peetinc/noVNC-ARD), MPL-2.0.
+
 import Foundation
 
 /// 애플 MVS(인코딩 1011) 해독기. 8x8 타일 DCT 손실 압축으로, 애플 화면 공유 앱이 화질 "적응"에서 쓴다.
