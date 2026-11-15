@@ -32,7 +32,6 @@ struct iVNCMacApp: App {
 struct SessionCommands: Commands {
     @AppStorage(MacScreenNSView.KeyMode.defaultsKey) private var keyMode = MacScreenNSView.KeyMode.remote.rawValue
     @AppStorage(MacClipboard.defaultsKey) private var clipboardSharing = true
-    @AppStorage(MacScreenNSView.hpCursorKey) private var hpCursorInVideo = true
 
     var body: some Commands {
         // 한글 조합을 어디서 할지
@@ -43,7 +42,6 @@ struct SessionCommands: Commands {
             .pickerStyle(.inline)
             Divider()
             Toggle("클립보드 공유 (다음 접속부터)", isOn: $clipboardSharing)
-            Toggle("고성능: 원격 커서를 영상으로 보기 (다음 접속부터)", isOn: $hpCursorInVideo)
         }
         CommandGroup(after: .toolbar) {
             Button("실제 크기") { NotificationCenter.default.post(name: MacScreenNSView.actualSizeNotification, object: nil) }

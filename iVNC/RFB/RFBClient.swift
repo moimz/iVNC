@@ -41,10 +41,6 @@ final class RFBClient {
         var summary: String { [text.map { "글자 \($0.count)자" }, png.map { "png \($0.count / 1000)KB" }, tiff.map { "tiff \($0.count / 1000)KB" }].compactMap { $0 }.joined(separator: ", ") }
     }
 
-    /// 시험: 고성능에서 자동 갱신 구독(0x09)을 안 보내 원격이 커서를 영상에 그리게 한다 (맥 앱이 이 맥 커서를 숨김).
-    /// 구독하면 커서 모양을 TCP 로 주는 대신 영상에서 커서가 빠져, 스크린샷 십자 커서처럼 모양 알림이 없는 커서가 안 보였다
-    var hpCursorInVideo = false
-
     /// 애플 클립보드 공유를 쓸지 (start 전에 정한다. 맥 앱만 켬)
     var clipboardSharing = false
     /// 서버가 알려 준 클립보드 세션 번호 (보낼 때 그대로 돌려준다)
@@ -191,7 +187,7 @@ final class RFBClient {
     /// (안 하면 3초쯤 뒤 구독이 끊겨 커서가 멈췄다고 한다)
     private var hpSubscribeLogged = false
     private func hpSubscribe() {
-        guard hpState == .on, !hpCursorInVideo else { return }
+        guard hpState == .on else { return }
         let w = framebuffer.width, h = framebuffer.height
         guard w > 0, h > 0 else { return }
         socket?.send([9, 0] + [UInt8].be16(1) + [UInt8].be32(0) + [0, 0, 0, 0] + [UInt8].be16(w) + [UInt8].be16(h))

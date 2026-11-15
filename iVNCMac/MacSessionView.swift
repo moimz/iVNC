@@ -105,7 +105,6 @@ struct MacSessionView: View {
         }
         .onAppear {
             model.clipboardSharing = MacClipboard.enabled
-            model.hpCursorInVideo = MacScreenNSView.hpCursorInVideo
             model.onRemoteClipboard = { MacClipboard.setFromRemote($0) }
             model.connect(store: store)
             if systemKeysToRemote && !SystemKeyCapture.shared.setEnabled(true) { systemKeysToRemote = false }

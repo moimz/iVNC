@@ -284,20 +284,8 @@ final class MacScreenNSView: NSView, NSTextInputClient {
 
     // MARK: 커서 모양 (원격이 알려 준 모양을 내 커서로)
 
-    /// 시험: 고성능에서 원격 커서를 영상으로 보기 (이 맥 커서는 원격 화면 위에서 숨김). 다음 접속부터
-    static let hpCursorKey = "mac.hpCursorInVideo"
-    static var hpCursorInVideo: Bool { UserDefaults.standard.object(forKey: hpCursorKey) as? Bool ?? true }
-
-    /// 보이지 않는 커서 (영상에 원격 커서가 그려질 때)
-    private static let invisibleCursor: NSCursor = {
-        let img = NSImage(size: NSSize(width: 1, height: 1))
-        return NSCursor(image: img, hotSpot: .zero)
-    }()
-
     func updateCursor(_ shape: RFBClient.CursorShape?) {
-        if model.isHighPerformance && model.hpCursorInVideo {
-            cursor = Self.invisibleCursor
-        } else if let k = shape?.kind {
+        if let k = shape?.kind {
             cursor = Self.systemCursor(k)
         } else if let shape {
             let size = NSSize(width: CGFloat(shape.image.width) / shape.scale, height: CGFloat(shape.image.height) / shape.scale)
