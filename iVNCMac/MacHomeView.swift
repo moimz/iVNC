@@ -29,10 +29,13 @@ struct MacHomeView: View {
                             .onTapGesture(count: 2) { openWindow(id: "session", value: c.id) }
                             .simultaneousGesture(TapGesture().onEnded { selected = c.id })
                             .contextMenu {
-                                Button("접속") { openWindow(id: "session", value: c.id) }
-                                Button("편집") { editing = c }
+                                Button("접속", systemImage: "play.display") { openWindow(id: "session", value: c.id) }
+                                    .keyboardShortcut(.return, modifiers: [])
+                                Button("편집…", systemImage: "pencil") { editing = c }
+                                    .keyboardShortcut("e")
                                 Divider()
-                                Button("삭제", role: .destructive) { store.delete(c) }
+                                Button("삭제", systemImage: "trash", role: .destructive) { store.delete(c) }
+                                    .keyboardShortcut(.delete)
                             }
                     }
                 }
