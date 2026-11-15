@@ -5,6 +5,8 @@ struct MacSessionView: View {
     @EnvironmentObject private var store: ComputerStore
     @Environment(\.dismissWindow) private var dismissWindow
     @StateObject private var model: SessionModel
+    /// 화면을 보다가 모니터 바꾸기를 눌렀을 때 (처음 고를 때는 phase == .picking)
+    @State private var changingDisplay = false
 
     init(computer: Computer) {
         _model = StateObject(wrappedValue: SessionModel(computer: computer))
@@ -19,18 +21,37 @@ struct MacSessionView: View {
         .navigationTitle(title)
         .toolbar {
             if model.phase == .viewing {
+                // 속도는 버튼 묶음 밖에 글자만
                 ToolbarItem(placement: .automatic) {
                     Text(model.trafficText).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 }
+                .sharedBackgroundVisibility(.hidden)
                 if model.displays.count > 1 && !model.isHighPerformance {
                     ToolbarItem(placement: .automatic) {
-                        Button("모니터 바꾸기", systemImage: "display.2") { model.backToPicker() }
+                        Button("모니터 바꾸기", systemImage: "display.2") { changingDisplay = true }
                     }
                 }
             }
-            ToolbarItem(placement: .automatic) {
-                Button("연결 끊기", systemImage: "xmark.circle") { dismissWindow() }
+        }
+        // 모니터 고르기: 제목 막대 아래에 붙어 내려오는 시트
+        .sheet(isPresented: pickerShown) {
+            VStack(spacing: 0) {
+                DisplayPickerView(computer: model.computer, displays: model.displays,
+                                  title: model.phase == .picking ? "볼 모니터를 고르세요" : "모니터 바꾸기",
+                                  current: model.phase == .viewing ? model.selected : nil, compact: true) { d in
+                    changingDisplay = false
+                    model.select(d)
+                }
+                HStack {
+                    Spacer()
+                    Button(model.phase == .picking ? "접속 취소" : "취소") {
+                        if model.phase == .picking { dismissWindow() } else { changingDisplay = false }
+                    }
+                    .keyboardShortcut(.cancelAction)
+                }
+                .padding([.horizontal, .bottom], 20)
             }
+            .frame(width: 560)
         }
         // 한글 조합 중인 글자 (맥에 아직 안 간 것)
         .overlay(alignment: .bottom) {
@@ -45,6 +66,11 @@ struct MacSessionView: View {
         }
         .onAppear { model.connect(store: store) }
         .onDisappear { model.close() }
+    }
+
+    private var pickerShown: Binding<Bool> {
+        Binding(get: { model.phase == .picking || (changingDisplay && model.phase == .viewing) },
+                set: { if !$0 { changingDisplay = false } })
     }
 
     private var title: String {
@@ -63,9 +89,7 @@ struct MacSessionView: View {
                 Text(status).foregroundStyle(.white)
             }
         case .picking:
-            DisplayPickerView(computer: model.computer, displays: model.displays) { model.select($0) }
-                .foregroundStyle(.white)
-                .padding(40)
+            Color.clear // 모니터 고르기는 시트로
         case .viewing:
             ZStack {
                 MacScreenView(model: model)

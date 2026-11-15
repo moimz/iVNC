@@ -4,9 +4,10 @@ import SwiftUI
 struct MacHomeView: View {
     @EnvironmentObject private var store: ComputerStore
     @Environment(\.openWindow) private var openWindow
-    @Environment(\.openSettings) private var openSettings
     @State private var editing: Computer?
     @State private var adding = false
+    /// 오른쪽 설정 패널
+    @State private var showSettings = false
     private let columns = [GridItem(.adaptive(minimum: 180, maximum: 280), spacing: 18)]
 
     var body: some View {
@@ -36,12 +37,14 @@ struct MacHomeView: View {
         }
         .navigationTitle("컴퓨터")
         .toolbar {
-            ToolbarItem(placement: .navigation) {
-                Button("설정", systemImage: "gearshape") { openSettings() }
-            }
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .primaryAction) {
                 Button("추가", systemImage: "plus") { adding = true }
+                Button("설정", systemImage: "slider.horizontal.3") { showSettings.toggle() }
             }
+        }
+        .inspector(isPresented: $showSettings) {
+            SettingsForm()
+                .inspectorColumnWidth(min: 240, ideal: 280, max: 360)
         }
         .sheet(isPresented: $adding) { ComputerEditView(computer: nil).frame(minWidth: 460, minHeight: 520) }
         .sheet(item: $editing) { ComputerEditView(computer: $0).frame(minWidth: 460, minHeight: 520) }

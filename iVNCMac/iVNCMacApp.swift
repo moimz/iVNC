@@ -23,7 +23,7 @@ struct iVNCMacApp: App {
         .commands { SessionCommands() }
 
         Settings {
-            SettingsView()
+            SettingsForm().frame(width: 360, height: 420)
         }
     }
 }
