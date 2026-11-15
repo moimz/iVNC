@@ -194,11 +194,8 @@ final class MacScreenNSView: NSView, NSTextInputClient {
         guard Date().timeIntervalSince(lastSwitchAt) > 0.8, switchTries < 3 else { return }
         switchTries += 1
         lastSwitchAt = Date()
-        DebugLog.write("한/영 맞추기(\(reason)): 이 맥 \(local), 원격 \(remote) → 원격에 ⌃Space (\(switchTries)번째)")
-        model.sendRawKey(0xFFE3, keycode: 59, down: true, name: "Control")
-        model.sendRawKey(0x20, keycode: 49, down: true, name: "Space")
-        model.sendRawKey(0x20, keycode: 49, down: false, name: "Space")
-        model.sendRawKey(0xFFE3, keycode: 59, down: false, name: "Control")
+        DebugLog.write("한/영 맞추기(\(reason)): 이 맥 \(local), 원격 \(remote) → 원격 한/영 바꿈 (\(switchTries)번째)")
+        model.toggleRemoteInputSource()
         // 원격 알림이 안 오면(이미 같거나 단축키가 꺼짐) 1초 뒤 한 번 더 본다
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.syncInputSource(reason: "다시 확인") }
     }

@@ -117,7 +117,10 @@ static BOOL desktop_resize(rdpContext *context) {
 static BOOL play_sound(rdpContext *context, const PLAY_SOUND_UPDATE *s) { (void)context; (void)s; return TRUE; }
 static BOOL set_indicators(rdpContext *context, UINT16 flags) { (void)context; (void)flags; return TRUE; }
 static BOOL set_ime_status(rdpContext *context, UINT16 id, UINT32 state, UINT32 mode) {
-    say(owner_of(context), "원격 입력기 상태 id=%u state=%u mode=0x%x", id, state, mode);
+    ivnc_rdp *r = owner_of(context);
+    say(r, "원격 입력기 상태 id=%u state=%u mode=0x%x", id, state, mode);
+    // IME_CMODE_NATIVE(1) = 한글
+    if (r && r->cb.ime && state) r->cb.ime(r->cb.owner, (mode & 1) ? 1 : 0);
     return TRUE;
 }
 
@@ -302,8 +305,11 @@ int ivnc_rdp_run(ivnc_rdp *r, const char *host, int port, const char *username, 
         && freerdp_settings_set_bool(s, FreeRDP_AudioPlayback, FALSE)
         && freerdp_settings_set_bool(s, FreeRDP_RedirectClipboard, FALSE)
         && freerdp_settings_set_bool(s, FreeRDP_AutoReconnectionEnabled, FALSE)
-        // 한국어 자판 (키 자리는 미국 자판과 같다)
-        && freerdp_settings_set_uint32(s, FreeRDP_KeyboardLayout, 0x00000412);
+        // 한국어 자판 (키 자리는 미국 자판과 같다). 103/106 키 한국 자판이라야 스캔코드 0x72 가 한/영 키
+        && freerdp_settings_set_uint32(s, FreeRDP_KeyboardLayout, 0x00000412)
+        && freerdp_settings_set_uint32(s, FreeRDP_KeyboardType, 8)
+        && freerdp_settings_set_uint32(s, FreeRDP_KeyboardSubType, 3)
+        && freerdp_settings_set_uint32(s, FreeRDP_KeyboardFunctionKey, 12);
     if (!ok) {
         if (message) snprintf(message, (size_t)len, "설정 실패");
         return IVNC_RDP_OTHER;

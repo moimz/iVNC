@@ -297,6 +297,8 @@ final class SessionModel: ObservableObject {
     func sendRawKey(_ keysym: UInt32, keycode: UInt16, down: Bool, name: String) {
         client?.sendRawKey(keysym, keycode: keycode, down: down, name: name)
     }
+    /// 원격 한/영을 한 번 바꾼다 (맥 ⌃Space, 윈도우 한/영 키)
+    func toggleRemoteInputSource() { client?.toggleInputSource() }
     func sendKey(_ keysym: UInt32, name: String) {
         client?.sendSpecialKey(keysym, name: name)
     }

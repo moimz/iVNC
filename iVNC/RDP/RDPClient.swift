@@ -23,6 +23,8 @@ protocol RemoteClient: AnyObject {
     func sendCombo(modifiers: [UInt32], key: UInt32, name: String)
     func sendRawKey(_ keysym: UInt32, keycode: UInt16, down: Bool, name: String)
     func sendClipboard(_ content: RFBClient.ClipContent)
+    /// 원격 한/영을 한 번 바꾼다 (맥: ⌃Space, 윈도우: 한/영 키)
+    func toggleInputSource()
 }
 
 extension RemoteClient {
@@ -30,7 +32,14 @@ extension RemoteClient {
     func mouseDown(x: Int, y: Int) { mouseDown(x: x, y: y, button: 1) }
 }
 
-extension RFBClient: RemoteClient {}
+extension RFBClient: RemoteClient {
+    func toggleInputSource() {
+        sendRawKey(0xFFE3, keycode: 59, down: true, name: "Control")
+        sendRawKey(0x20, keycode: 49, down: true, name: "Space")
+        sendRawKey(0x20, keycode: 49, down: false, name: "Space")
+        sendRawKey(0xFFE3, keycode: 59, down: false, name: "Control")
+    }
+}
 
 /// 윈도우 원격 데스크톱 (FreeRDP). 접속 스레드 하나가 FreeRDP 를 돌리고, 바뀐 그림을 Framebuffer 에 옮겨 담는다.
 /// 모니터 고르기는 없다: 원격 화면 하나(우리가 정한 크기)를 "모니터 하나"로 알린다
@@ -110,6 +119,10 @@ final class RDPClient: RemoteClient {
             guard let owner else { return }
             Unmanaged<RDPClient>.fromOpaque(owner).takeUnretainedValue().resized(Int(width), Int(height))
         }
+        cb.ime = { owner, korean in
+            guard let owner else { return }
+            Unmanaged<RDPClient>.fromOpaque(owner).takeUnretainedValue().remoteIME(korean: korean != 0, reason: "윈도우 알림")
+        }
         cb.log = { _, message in
             guard let message else { return }
             DebugLog.write("RDP: " + String(cString: message))
@@ -149,6 +162,9 @@ final class RDPClient: RemoteClient {
 
     /// 접속 완료·화면 크기 바뀜 (접속 스레드)
     private func resized(_ width: Int, _ height: Int) {
+        // 처음 접속: 윈도우 입력기는 영문으로 시작한다고 본다 (윈도우는 한/영 상태를 대개 알려 주지 않는다)
+        lock.lock(); let first = koreanIME == nil; lock.unlock()
+        if first { remoteIME(korean: false, reason: "접속 처음") }
         framebuffer.resize(width: width, height: height)
         let d = RemoteDisplay(id: 1, isMain: true, scale: 1,
                               desktop: CGRect(x: 0, y: 0, width: width, height: height),
@@ -246,12 +262,14 @@ final class RDPClient: RemoteClient {
     func mouseMove(x: Int, y: Int) { send(Self.ptrMove, x, y) }
 
     func click(x: Int, y: Int, button: UInt8 = 1) {
+        commandJoined()
         send(Self.ptrMove, x, y)
         send(Self.buttonFlag(button) | Self.ptrDown, x, y)
         send(Self.buttonFlag(button), x, y)
     }
 
     func mouseDown(x: Int, y: Int, button: UInt8 = 1) {
+        commandJoined() // ⌘클릭 = Ctrl+클릭
         send(Self.ptrMove, x, y)
         lock.lock(); buttons |= button; lock.unlock()
         send(Self.buttonFlag(button) | Self.ptrDown, x, y)
@@ -291,7 +309,41 @@ final class RDPClient: RemoteClient {
         sendWheel(&vx, horizontal: true)
     }
 
+    // MARK: 한/영
+
+    /// 원격 입력기가 한글인지 (알림이 없으면 우리가 보낸 한/영 키로 따라간다)
+    private var koreanIME: Bool?
+
+    private func remoteIME(korean: Bool, reason: String) {
+        lock.lock(); let changed = koreanIME != korean; koreanIME = korean; lock.unlock()
+        guard changed else { return }
+        DebugLog.write("RDP: 원격 입력기 \(korean ? "한글" : "영문") (\(reason))")
+        // 맥 앱의 한/영 맞추기는 입력 소스 이름에 Korean 이 있는지로 비교한다
+        emit(.inputSource(korean ? "RDP.Korean" : "RDP.Roman", secure: false))
+    }
+
+    func toggleInputSource() {
+        key(Self.hangulKey, true); key(Self.hangulKey, false)
+        lock.lock(); let now = !(koreanIME ?? false); lock.unlock()
+        remoteIME(korean: now, reason: "한/영 키 보냄")
+    }
+
     // MARK: 키보드 (스캔코드. 확장 키는 0x100)
+
+    /// ⌘ 를 누른 채 다른 키·클릭: 그때 Ctrl 을 누른다
+    private func commandJoined() {
+        lock.lock(); let pressCtrl = commandAlone; if pressCtrl { commandAlone = false; commandAsCtrl = true }; lock.unlock()
+        if pressCtrl { key(Self.ctrlKey, true) }
+    }
+
+    static let hangulKey: UInt32 = 0x72
+    static let windowsKey: UInt32 = 0x15B
+    static let ctrlKey: UInt32 = 0x1D
+
+    /// ⌘ 를 누르고 아직 다른 키를 안 누름 (그대로 떼면 윈도우 키)
+    private var commandAlone = false
+    /// ⌘ 와 함께 다른 키를 눌러 Ctrl 을 눌러 둠
+    private var commandAsCtrl = false
 
     /// 맥 키 코드 → PC 스캔코드. ⌘ 는 Ctrl 로 (⌘C·⌘V 가 윈도우 Ctrl+C·Ctrl+V 로)
     static let scancodes: [UInt16: UInt32] = [
@@ -300,7 +352,7 @@ final class RDPClient: RemoteClient {
         23: 0x06, 24: 0x0D, 25: 0x0A, 26: 0x08, 27: 0x0C, 28: 0x09, 29: 0x0B, 30: 0x1B, 31: 0x18, 32: 0x16, 33: 0x1A,
         34: 0x17, 35: 0x19, 36: 0x1C, 37: 0x26, 38: 0x24, 39: 0x28, 40: 0x25, 41: 0x27, 42: 0x2B, 43: 0x33, 44: 0x35,
         45: 0x31, 46: 0x32, 47: 0x34, 48: 0x0F, 49: 0x39, 50: 0x29, 51: 0x0E, 53: 0x01,
-        55: 0x1D, 54: 0x11D,            // ⌘ → Ctrl
+        55: 0x1D, 54: 0x1D,             // ⌘ → Ctrl (혼자 누르면 윈도우 키, sendRawKey)
         56: 0x2A, 60: 0x36,             // ⇧
         58: 0x38, 61: 0x138,            // ⌥ → Alt
         59: 0x1D, 62: 0x11D,            // ⌃ → Ctrl
@@ -375,8 +427,21 @@ final class RDPClient: RemoteClient {
         for m in mods.reversed() { key(m, false) }
     }
 
-    /// 맥 앱: 키 자리 그대로 (맥 키 코드 → 스캔코드). 표에 없으면 글자로
+    /// 맥 앱: 키 자리 그대로 (맥 키 코드 → 스캔코드). 표에 없으면 글자로.
+    /// ⌘ 는 맥 단축키처럼: 다른 키와 함께면 Ctrl (⌘C → Ctrl+C), 혼자 눌렀다 떼면 윈도우 키
     func sendRawKey(_ keysym: UInt32, keycode: UInt16, down: Bool, name: String) {
+        if keycode == 55 || keycode == 54 {
+            lock.lock()
+            let asCtrl = commandAsCtrl, alone = commandAlone
+            if down { commandAlone = true; commandAsCtrl = false } else { commandAlone = false; commandAsCtrl = false }
+            lock.unlock()
+            if !down {
+                // 창을 떠나며 뗀 것(⌘Tab 으로 다른 앱 등)은 윈도우 키로 치지 않는다
+                if asCtrl { key(Self.ctrlKey, false) } else if alone, name != "떠나며 뗌" { key(Self.windowsKey, true); key(Self.windowsKey, false) }
+            }
+            return
+        }
+        if down { commandJoined() }
         if let sc = Self.scancodes[keycode] ?? Self.scancode(keysym: keysym) {
             key(sc, down)
         } else if down, keysym < 0x1_0000 || keysym & 0xFF00_0000 == 0x0100_0000 {

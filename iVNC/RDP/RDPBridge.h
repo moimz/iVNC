@@ -21,6 +21,8 @@ typedef struct {
     void (*resized)(void *owner, int width, int height);
     /// 진행 상황·로그 한 줄 (UTF-8)
     void (*log)(void *owner, const char *message);
+    /// 원격 입력기가 한글(1)·영문(0)으로 바뀌었다고 알려 옴 (윈도우가 보낼 때만)
+    void (*ime)(void *owner, int korean);
 } ivnc_rdp_callbacks;
 
 /// 실패 종류 (Swift 가 한국어 문구로 바꾼다)
@@ -48,7 +50,7 @@ void ivnc_rdp_free(ivnc_rdp *r);
 
 /// 마우스 (FreeRDP PTR_FLAGS_*). 접속 전이면 무시
 void ivnc_rdp_mouse(ivnc_rdp *r, uint16_t flags, int x, int y);
-/// 키 (스캔코드, 확장 키는 0x100 을 더함)
+/// 키 (스캔코드, 확장 키는 0x100 을 더함. 한/영 0x72, 왼쪽 윈도우 키 0x15B)
 void ivnc_rdp_key(ivnc_rdp *r, int down, uint32_t scancode);
 /// 글자 하나 (UTF-16 코드 단위)
 void ivnc_rdp_unicode(ivnc_rdp *r, int down, uint16_t code);
