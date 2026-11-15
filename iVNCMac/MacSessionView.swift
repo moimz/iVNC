@@ -29,7 +29,10 @@ struct MacSessionView: View {
             }
             .sharedBackgroundVisibility(.hidden)
             ToolbarItem(placement: .automatic) {
-                Button("모니터 바꾸기", systemImage: "display.2") { changingDisplay = true }
+                // display.2 는 옆으로 넓어 버튼이 뚱뚱해져서 작게
+                Button { changingDisplay = true } label: {
+                    Label("모니터 바꾸기", systemImage: "display.2").font(.system(size: 12, weight: .medium))
+                }
                     .disabled(!(model.phase == .viewing && model.displays.count > 1 && !model.isHighPerformance))
                     .help(model.isHighPerformance ? "고성능 모드는 가상 디스플레이 하나만 봅니다" : "모니터 바꾸기")
             }
