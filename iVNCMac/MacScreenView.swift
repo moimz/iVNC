@@ -137,6 +137,10 @@ final class MacScreenNSView: NSView, NSTextInputClient {
         case keys
         /// 키 그대로를 암호화 없이 표준 KeyEvent(4) 로 (키 코드만 보내기는 키가 무시돼 바꿈)
         case keycodes
+        /// 원격이 한글이면 두벌식 자리의 자모를 유니코드 keysym(0x0100_3141 등)으로 (서버가 그 글자를 만드는 키를 찾아 누르길 기대)
+        case jamoUnicode
+        /// 같은 자모를 X 한글 keysym(0x0eb1 등)으로
+        case jamoX
 
         static let defaultsKey = "mac.keyMode"
         static var current: KeyMode { KeyMode(rawValue: UserDefaults.standard.string(forKey: defaultsKey) ?? "") ?? .local }
@@ -145,6 +149,8 @@ final class MacScreenNSView: NSView, NSTextInputClient {
             case .local: return "이 맥에서 한글 조합"
             case .keys: return "키 그대로 (원격이 조합)"
             case .keycodes: return "키 그대로, 평문 (원격이 조합)"
+            case .jamoUnicode: return "한글 자모, 유니코드 (원격이 조합)"
+            case .jamoX: return "한글 자모, X 키심 (원격이 조합)"
             }
         }
     }
@@ -371,8 +377,24 @@ final class MacScreenNSView: NSView, NSTextInputClient {
             return e.charactersIgnoringModifiers?.unicodeScalars.first.map { $0.value < 0x100 ? $0.value : 0x0100_0000 | $0.value }
         }
         let ch = e.modifierFlags.contains(.shift) ? Self.usShifted(c) : c
+        // 원격이 한글 입력이면 두벌식 그 자리의 자모로 (시험)
+        let mode = KeyMode.current
+        if mode == .jamoUnicode || mode == .jamoX, model.remoteInputSource?.contains("Korean") == true,
+           let j = Self.dubeolsik[ch]?.unicodeScalars.first?.value {
+            return mode == .jamoUnicode ? 0x0100_0000 | j : 0x0EA1 + (j - 0x3131) // X 한글 keysym 은 ㄱ(U+3131)=0xea1 부터 같은 차례
+        }
         return ch.unicodeScalars.first!.value
     }
+
+    /// 두벌식: 미국 자판 글자 → 한글 자모 (⇧ 쌍자음·ㅒㅖ)
+    static let dubeolsik: [String: String] = [
+        "q": "ㅂ", "w": "ㅈ", "e": "ㄷ", "r": "ㄱ", "t": "ㅅ", "y": "ㅛ", "u": "ㅕ", "i": "ㅑ", "o": "ㅐ", "p": "ㅔ",
+        "a": "ㅁ", "s": "ㄴ", "d": "ㅇ", "f": "ㄹ", "g": "ㅎ", "h": "ㅗ", "j": "ㅓ", "k": "ㅏ", "l": "ㅣ",
+        "z": "ㅋ", "x": "ㅌ", "c": "ㅊ", "v": "ㅍ", "b": "ㅠ", "n": "ㅜ", "m": "ㅡ",
+        "Q": "ㅃ", "W": "ㅉ", "E": "ㄸ", "R": "ㄲ", "T": "ㅆ", "O": "ㅒ", "P": "ㅖ",
+        "Y": "ㅛ", "U": "ㅕ", "I": "ㅑ", "A": "ㅁ", "S": "ㄴ", "D": "ㅇ", "F": "ㄹ", "G": "ㅎ", "H": "ㅗ", "J": "ㅓ", "K": "ㅏ", "L": "ㅣ",
+        "Z": "ㅋ", "X": "ㅌ", "C": "ㅊ", "V": "ㅍ", "B": "ㅠ", "N": "ㅜ", "M": "ㅡ",
+    ]
 
     /// 미국 자판 ⇧ 윗글자
     static func usShifted(_ c: String) -> String {
