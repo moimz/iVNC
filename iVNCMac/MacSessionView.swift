@@ -19,18 +19,19 @@ struct MacSessionView: View {
         }
         .frame(minWidth: 480, minHeight: 300)
         .navigationTitle(title)
+        // 도구 막대는 늘 같은 모양으로 둔다 (단계마다 버튼이 없어지면 제목 막대 높이가 바뀌어 창 크기 계산이 어긋난다)
         .toolbar {
-            if model.phase == .viewing {
-                // 속도는 버튼 묶음 밖에 글자만
-                ToolbarItem(placement: .automatic) {
-                    Text(model.trafficText).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                }
-                .sharedBackgroundVisibility(.hidden)
-                if model.displays.count > 1 && !model.isHighPerformance {
-                    ToolbarItem(placement: .automatic) {
-                        Button("모니터 바꾸기", systemImage: "display.2") { changingDisplay = true }
-                    }
-                }
+            // 속도는 버튼 묶음 밖에 글자만
+            ToolbarItem(placement: .automatic) {
+                Text(model.phase == .viewing ? model.trafficText : "")
+                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    .frame(minWidth: 70, alignment: .trailing)
+            }
+            .sharedBackgroundVisibility(.hidden)
+            ToolbarItem(placement: .automatic) {
+                Button("모니터 바꾸기", systemImage: "display.2") { changingDisplay = true }
+                    .disabled(!(model.phase == .viewing && model.displays.count > 1 && !model.isHighPerformance))
+                    .help(model.isHighPerformance ? "고성능 모드는 가상 디스플레이 하나만 봅니다" : "모니터 바꾸기")
             }
         }
         // 모니터 고르기: 제목 막대 아래에 붙어 내려오는 시트
