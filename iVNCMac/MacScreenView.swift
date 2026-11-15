@@ -241,13 +241,27 @@ final class MacScreenNSView: NSView, NSTextInputClient {
         let key: UInt32
         if let keysym { key = keysym }
         else if let s = Self.specialKeysym(e.keyCode) { key = s }
+        // 조합은 키 자리(미국 자판)로: 한글 입력 중이면 글자가 "ㅂ"으로 나와 ⌘Q·⌘C 가 원격에서 안 들었다
+        else if let c = Self.usKey(e.keyCode) { key = c.unicodeScalars.first!.value }
         else if let c = e.charactersIgnoringModifiers?.lowercased().unicodeScalars.first { key = c.value < 0x100 ? c.value : 0x0100_0000 | c.value }
         else { return }
+        let name = Self.usKey(e.keyCode) ?? e.charactersIgnoringModifiers ?? ""
         if mods.isEmpty {
-            model.sendKey(key, name: String(format: "%04x", key))
+            model.sendKey(key, name: name)
         } else {
-            model.sendCombo(mods, key, name: e.charactersIgnoringModifiers ?? "")
+            model.sendCombo(mods, key, name: name)
         }
+    }
+
+    /// 맥 키 코드 → 미국 자판 글자 (조합키와 함께 보낼 때. 입력 소스와 상관없이 키 자리 기준)
+    static func usKey(_ code: UInt16) -> String? {
+        let map: [UInt16: String] = [
+            0: "a", 1: "s", 2: "d", 3: "f", 4: "h", 5: "g", 6: "z", 7: "x", 8: "c", 9: "v", 11: "b", 12: "q", 13: "w", 14: "e", 15: "r",
+            16: "y", 17: "t", 18: "1", 19: "2", 20: "3", 21: "4", 22: "6", 23: "5", 24: "=", 25: "9", 26: "7", 27: "-", 28: "8", 29: "0",
+            30: "]", 31: "o", 32: "u", 33: "[", 34: "i", 35: "p", 37: "l", 38: "j", 39: "'", 40: "k", 41: ";", 42: "\\", 43: ",", 44: "/",
+            45: "n", 46: "m", 47: ".", 49: " ", 50: "`",
+        ]
+        return map[code]
     }
 
     /// 맥 키 코드 → X keysym (글자가 아닌 키)

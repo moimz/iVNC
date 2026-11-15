@@ -76,6 +76,8 @@ struct MacSessionView: View {
         })
         .onAppear { model.connect(store: store) }
         .onDisappear { model.close() }
+        // 앱을 끌 때도 접속을 정리하고 끊는다 (창 닫힘이 오기 전에 프로세스가 끝날 수 있다)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in model.close() }
     }
 
     private var pickerShown: Binding<Bool> {
