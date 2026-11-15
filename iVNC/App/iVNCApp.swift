@@ -6,6 +6,7 @@ struct iVNCApp: App {
 
     init() {
         KeepAwake.installDebugSwitch()
+        DebugLog.write("FreeRDP \(String(cString: ivnc_freerdp_version())) 링크됨")
     }
 
     var body: some Scene {

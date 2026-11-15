@@ -5,6 +5,10 @@ import SwiftUI
 struct iVNCMacApp: App {
     @StateObject private var store = ComputerStore()
 
+    init() {
+        DebugLog.write("FreeRDP \(String(cString: ivnc_freerdp_version())) 링크됨")
+    }
+
     var body: some Scene {
         Window("iVNC", id: "home") {
             MacHomeView()
