@@ -8,6 +8,8 @@ struct MacHomeView: View {
     @State private var adding = false
     /// 오른쪽 설정 패널
     @State private var showSettings = false
+    /// 한 번 눌러 고른 컴퓨터 (두 번 누르거나 엔터로 접속)
+    @State private var selected: UUID?
     private let columns = [GridItem(.adaptive(minimum: 180, maximum: 280), spacing: 18)]
 
     var body: some View {
@@ -22,8 +24,10 @@ struct MacHomeView: View {
             } else {
                 LazyVGrid(columns: columns, spacing: 22) {
                     ForEach(store.computers) { c in
-                        Button { openWindow(id: "session", value: c.id) } label: { ComputerCard(computer: c) }
-                            .buttonStyle(.plain)
+                        ComputerCard(computer: c, selected: selected == c.id)
+                            // 한 번 = 고르기(바로), 두 번 = 접속
+                            .onTapGesture(count: 2) { openWindow(id: "session", value: c.id) }
+                            .simultaneousGesture(TapGesture().onEnded { selected = c.id })
                             .contextMenu {
                                 Button("접속") { openWindow(id: "session", value: c.id) }
                                 Button("편집") { editing = c }
@@ -34,6 +38,16 @@ struct MacHomeView: View {
                 }
                 .padding(20)
             }
+        }
+        // 빈 곳을 누르면 고르기 풀기, 엔터로 고른 컴퓨터 접속
+        .contentShape(Rectangle())
+        .onTapGesture { selected = nil }
+        .focusable()
+        .focusEffectDisabled()
+        .onKeyPress(.return) {
+            guard let id = selected else { return .ignored }
+            openWindow(id: "session", value: id)
+            return .handled
         }
         .navigationTitle("컴퓨터")
         .toolbar {
