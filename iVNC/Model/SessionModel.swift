@@ -160,7 +160,8 @@ final class SessionModel: ObservableObject {
             presentFrame()
         case .cursor(let x, let y):
             cursor = CGPoint(x: x, y: y)
-        case .inputSource(let id):
+        case .inputSource(let id, let secure):
+            remoteSecureInput = secure
             remoteInputSource = id
         case .clipboard(let content):
             onRemoteClipboard?(content)
@@ -267,6 +268,8 @@ final class SessionModel: ObservableObject {
 
     /// 원격 맥의 지금 입력 소스 (1109). 맥 앱이 이 맥 입력 소스와 한/영을 맞출 때 쓴다
     @Published private(set) var remoteInputSource: String?
+    /// 원격이 암호 입력 상태 (1109 flags 1): 입력 소스가 영문으로 고정돼 한/영 맞추기를 쉰다
+    private(set) var remoteSecureInput = false
 
     func sendText(_ t: String) {
         client?.sendText(t)

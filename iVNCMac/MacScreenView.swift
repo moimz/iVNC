@@ -188,6 +188,8 @@ final class MacScreenNSView: NSView, NSTextInputClient {
         guard let w = window, w.isKeyWindow, w.firstResponder === self,
               let local = Self.currentInputSourceID(), let remote = model.remoteInputSource else { return }
         guard Self.isKorean(local) != Self.isKorean(remote) else { switchTries = 0; return }
+        // 원격이 암호 입력 상태면 입력 소스가 영문으로 고정돼 ⌃Space 가 안 먹는다 (잠금 화면 등)
+        guard !model.remoteSecureInput else { return }
         // 원격이 바뀌었다는 알림을 기다린다. 입력 소스가 셋 이상이면 한 번에 안 맞을 수 있어 세 번까지
         guard Date().timeIntervalSince(lastSwitchAt) > 0.8, switchTries < 3 else { return }
         switchTries += 1

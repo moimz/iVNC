@@ -25,7 +25,7 @@ final class RFBClient {
         /// 같은 접속에서 일반 모드로 못 돌아왔으니 고성능 없이 다시 접속해야 한다
         case reconnectStandard
         /// 원격 맥의 지금 입력 소스 (애플 1109, 예: com.apple.keylayout.ABC, com.apple.inputmethod.Korean.2SetKorean)
-        case inputSource(String)
+        case inputSource(String, secure: Bool)
         /// 원격 맥에서 복사한 것 (클립보드 공유: 글자·그림)
         case clipboard(ClipContent)
     }
@@ -842,7 +842,9 @@ final class RFBClient {
                     source = String(decoding: body.dropFirst(8).prefix(n), as: UTF8.self)
                 }
                 DebugLog.write("키보드 입력 상태(1109) 사각형 \(x),\(y) \(w)x\(h) 내용 \(body.prefix(8).map { String(format: "%02x", $0) }.joined()) 입력 소스 \(source)")
-                if !source.isEmpty { emit(.inputSource(source)) }
+                // flags(4~7번째 바이트) 1 = 원격이 암호 입력 상태로 보임 (잠금 화면 등: 입력 소스가 영문으로 고정, ⌃Space 안 먹음)
+                let secure = body.count >= 6 && (UInt32(body[2]) << 24 | UInt32(body[3]) << 16 | UInt32(body[4]) << 8 | UInt32(body[5])) & 1 != 0
+                if !source.isEmpty { emit(.inputSource(source, secure: secure)) }
             case 1100: // 애플: 커서 위치
                 stateLock.lock()
                 let moved = cursor?.x != x || cursor?.y != y
@@ -1193,7 +1195,9 @@ final class RFBClient {
             p[1] = down ? 1 : 0
             p.replaceSubrange(2..<6, with: [UInt8].be32(keysym))
             p.replaceSubrange(6..<10, with: [UInt8].be32(UInt32(truncatingIfNeeded: Int64(Date().timeIntervalSince1970 * 1_000_000))))
-            p[12] = UInt8(keycode >> 8); p[13] = UInt8(keycode & 0xFF)
+            // 키코드 자리는 0 으로 둔다 (noVNC-ARD 와 같게). 맥 키 코드를 실으면 원격이 암호 입력 상태(잠금 화면 등)일 때
+            // 글자가 안 들어갔다 (2026-11-15). 서버는 keysym 만 보고 키를 찾는다 (자모 방식도 keysym 으로 동작)
+            _ = keycode
             socket?.send([0x10, 0] + RFBCrypto.ecbEncrypt(algorithm: CCAlgorithm(kCCAlgorithmAES128), key: key, data: p))
         } else {
             socket?.send([4, down ? 1 : 0, 0, 0] + [UInt8].be32(keysym))
