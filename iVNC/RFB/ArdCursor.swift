@@ -113,6 +113,11 @@ final class ArdCursorDecoder {
 
     /// 미리 정해진 커서: 화살표 계열은 nil, 나머지는 앱이 맥 모양을 본떠 높은 해상도로 그린다 (핫스팟은 가운데, 손가락은 손끝)
     private static func predefined(_ id: UInt32) -> RFBClient.CursorShape? {
+        #if os(macOS)
+        // 맥 앱은 그림을 그리지 않고 번호만 넘겨 맥 기본 커서(NSCursor)로 바꾼다
+        guard [1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 13].contains(id) else { return nil } // 0 기본, 6 기다림, 7 도움말 → 화살표
+        return RFBClient.CursorShape(image: placeholder, hotspot: .zero, kind: id)
+        #endif
         let symbol: String
         var hot = CGPoint(x: 0.5, y: 0.5)
         switch id {
@@ -142,6 +147,13 @@ final class ArdCursorDecoder {
                                      scale: CGFloat(max(image.width, image.height)) / 26)
     }
 
+
+    /// 맥 앱에서 번호만 넘길 때 쓰는 1x1 투명 그림
+    private static let placeholder: CGImage = {
+        let ctx = CGContext(data: nil, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 0,
+                            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        return ctx.makeImage()!
+    }()
 
     /// CGImage → PNG (UIKit·AppKit 없이)
     private static func pngData(_ image: CGImage) -> Data? {

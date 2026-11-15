@@ -33,6 +33,8 @@ final class RFBClient {
         let hotspot: CGPoint
         /// 그림 픽셀 몇 개가 화면 1pt 인지 (높은 해상도로 그려 둔 그림은 크다)
         var scale: CGFloat = 1
+        /// 맥 앱: 미리 정해진 맥 커서 번호 (1 글자 입력, 5 손가락, 10 위아래 …). 있으면 그림 대신 맥 기본 커서로 바꾼다
+        var kind: UInt32? = nil
     }
 
     var onEvent: ((Event) -> Void)?

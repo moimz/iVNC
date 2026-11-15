@@ -278,7 +278,9 @@ final class MacScreenNSView: NSView, NSTextInputClient {
     // MARK: 커서 모양 (원격이 알려 준 모양을 내 커서로)
 
     func updateCursor(_ shape: RFBClient.CursorShape?) {
-        if let shape {
+        if let k = shape?.kind {
+            cursor = Self.systemCursor(k)
+        } else if let shape {
             let size = NSSize(width: CGFloat(shape.image.width) / shape.scale, height: CGFloat(shape.image.height) / shape.scale)
             let img = NSImage(cgImage: shape.image, size: size)
             cursor = NSCursor(image: img, hotSpot: NSPoint(x: shape.hotspot.x / shape.scale, y: shape.hotspot.y / shape.scale))
@@ -288,6 +290,24 @@ final class MacScreenNSView: NSView, NSTextInputClient {
         window?.invalidateCursorRects(for: self)
         if let w = window, w.isKeyWindow, let p = w.mouseLocationOutsideOfEventStream as NSPoint?, bounds.contains(convert(p, from: nil)) {
             cursor.set()
+        }
+    }
+
+    /// 원격이 알려 준 미리 정해진 커서 번호 → 맥 기본 커서
+    static func systemCursor(_ kind: UInt32) -> NSCursor {
+        switch kind {
+        case 1: return .iBeam
+        case 2: return .crosshair
+        case 3: return .openHand
+        case 4: return .closedHand
+        case 5: return .pointingHand
+        case 8: return .operationNotAllowed
+        case 9: return .closedHand // 이동 (맥에 따로 없음)
+        case 10: return .resizeUpDown
+        case 11: return .resizeLeftRight
+        case 12: return .frameResize(position: .topRight, directions: .all)  // ⤢ 대각선 (앱 그림은 세로를 45° 돌린 것)
+        case 13: return .frameResize(position: .topLeft, directions: .all)   // ⤡ 대각선
+        default: return .arrow
         }
     }
 
