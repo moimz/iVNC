@@ -22,6 +22,7 @@ struct SettingsView: View {
 struct SettingsForm: View {
     /// "" = 기기에 맞춤
     @AppStorage(AppSettings.resolutionKey) private var resolution = ""
+    @State private var showLicenses = false
 
     var body: some View {
         Form {
@@ -40,10 +41,12 @@ struct SettingsForm: View {
                 Text("맥 고성능 모드와 윈도우 접속에 쓰입니다. 다음 접속부터 적용됩니다. 맥 일반 모드는 맥의 실제 해상도로 보입니다.")
             }
             Section {
+                Button("오픈 소스 라이선스") { showLicenses = true }
             } footer: {
                 Text(Self.versionText).frame(maxWidth: .infinity, alignment: .center)
             }
         }
+        .sheet(isPresented: $showLicenses) { LicensesView() }
         #if os(macOS)
         .formStyle(.grouped)
         #endif
@@ -57,5 +60,35 @@ struct SettingsForm: View {
         let build = info["CFBundleVersion"] as? String ?? "-"
         let commit = info["iVNCCommit"] as? String
         return "버전 \(version) (\(build)\(commit.map { ", \($0)" } ?? ""))"
+    }
+}
+
+/// 오픈 소스 라이선스 (FreeRDP·OpenSSL, Apache 2.0). 앱에 넣은 OpenSourceLicenses.txt 를 그대로 보여 준다
+struct LicensesView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    private var text: String {
+        Bundle.main.url(forResource: "OpenSourceLicenses", withExtension: "txt")
+            .flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                Text(text)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+            }
+            .navigationTitle("오픈 소스 라이선스")
+            .inlineTitle()
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("완료") { dismiss() } }
+            }
+        }
+        #if os(macOS)
+        .frame(minWidth: 560, minHeight: 520)
+        #endif
     }
 }
