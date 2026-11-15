@@ -118,6 +118,7 @@ final class SessionModel: ObservableObject {
         isHighPerformance = false
         triedHighPerformance = !standardOnly
         c.clipboardSharing = clipboardSharing
+        c.hpCursorInVideo = hpCursorInVideo
         c.onEvent = { [weak self] in self?.handle($0) }
         client = c
         c.start()
@@ -267,6 +268,8 @@ final class SessionModel: ObservableObject {
     @Published var composing = ""
     /// 클립보드 공유 (맥 앱이 접속 전에 켠다). 원격에서 복사하면 onRemoteClipboard, 보낼 땐 sendClipboard
     var clipboardSharing = false
+    /// 시험(맥 앱): 고성능에서 원격 커서를 영상에 그리게 한다
+    var hpCursorInVideo = false
     var onRemoteClipboard: ((RFBClient.ClipContent) -> Void)?
     func sendClipboard(_ content: RFBClient.ClipContent) { client?.sendClipboard(content) }
 
