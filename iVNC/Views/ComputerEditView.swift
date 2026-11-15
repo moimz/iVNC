@@ -66,6 +66,9 @@ struct ComputerEditView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
+                // 목록 상자 밖에 떠 있게 (배경·여백 없이)
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets())
             }
             fields
         }
