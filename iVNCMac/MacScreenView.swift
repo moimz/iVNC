@@ -18,6 +18,8 @@ struct MacScreenView: NSViewRepresentable {
 final class MacScreenNSView: NSView, NSTextInputClient {
     /// 보기 > 실제 크기 (앞에 있는 접속 창이 받는다)
     static let actualSizeNotification = Notification.Name("iVNC.actualSize")
+    /// 한영 시험 메뉴
+    static let inputSwitchTestNotification = Notification.Name("iVNC.inputSwitchTest")
 
     private let model: SessionModel
     private var renderer: ScreenRenderer { model.renderer }
@@ -39,6 +41,7 @@ final class MacScreenNSView: NSView, NSTextInputClient {
         if renderer.pixelSize != .zero { pixelSize = renderer.pixelSize }
         NotificationCenter.default.addObserver(self, selector: #selector(flushComposition), name: SessionModel.flushCompositionNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(actualSize), name: Self.actualSizeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(inputSwitchTest(_:)), name: Self.inputSwitchTestNotification, object: nil)
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -90,6 +93,28 @@ final class MacScreenNSView: NSView, NSTextInputClient {
         guard let w = window, pixelSize.width > 0 else { return }
         refits = 0
         SessionWindowSizer.of(w).fit(pixel: pixelSize, measuring: self)
+    }
+
+    /// 한영 시험: 앞에 있는 접속 창만
+    @objc private func inputSwitchTest(_ n: Notification) {
+        guard let w = window, w.isKeyWindow || w.isMainWindow, let t = n.object as? InputSwitchTest else { return }
+        DebugLog.write("한영 시험: \(t.title)")
+        func tap(_ ks: UInt32, _ code: UInt16, _ name: String, hold: Double = 0.08, mods: [(UInt32, UInt16)] = []) {
+            for m in mods { model.sendRawKey(m.0, keycode: m.1, down: true, name: "조합") }
+            model.sendRawKey(ks, keycode: code, down: true, name: name)
+            DispatchQueue.main.asyncAfter(deadline: .now() + hold) { [model] in
+                model.sendRawKey(ks, keycode: code, down: false, name: name)
+                for m in mods.reversed() { model.sendRawKey(m.0, keycode: m.1, down: false, name: "조합") }
+            }
+        }
+        switch t {
+        case .hangulKeysym: tap(0xFF31, 0, "Hangul")
+        case .ctrlSpace: tap(0x20, 49, "Space", mods: [(0xFFE3, 59)])
+        case .ctrlOptSpace: tap(0x20, 49, "Space", mods: [(0xFFE3, 59), (0xFFE7, 58)])
+        case .capsTap: tap(0xFFE5, 57, "Caps_Lock")
+        case .capsLong: tap(0xFFE5, 57, "Caps_Lock", hold: 1)
+        case .fnGlobe: tap(0xFF2B, 63, "fn") // 0xFF2B 는 자리만 (fn 은 X keysym 이 없다)
+        }
     }
 
     /// 보기 > 실제 크기: 원격 1픽셀 = 화면 1포인트 (화면에 안 들어가면 들어가는 만큼)
