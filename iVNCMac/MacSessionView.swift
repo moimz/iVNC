@@ -65,10 +65,10 @@ struct MacSessionView: View {
             }
         }
         // 고성능을 시도하면 설정 해상도로 창을 먼저 연다 (실패하면 모니터를 고른 뒤 그 크기로)
-        .background(WindowReader { w in
+        .background(WindowReader { w, view in
             if model.computer.prefersHighPerformance {
                 let v = SessionModel.virtualDisplaySize
-                SessionWindowSizer.of(w).fit(pixel: CGSize(width: v.width, height: v.height))
+                SessionWindowSizer.of(w).fit(pixel: CGSize(width: v.width, height: v.height), measuring: view)
             } else {
                 _ = SessionWindowSizer.of(w)
             }

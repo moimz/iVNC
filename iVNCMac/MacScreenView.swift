@@ -66,7 +66,17 @@ final class MacScreenNSView: NSView, NSTextInputClient {
     override func layout() {
         super.layout()
         renderer.layout(bounds: imageRect)
+        // 창이 원격 비율과 다르면(막대 높이를 잘못 잰 경우) 이 뷰 높이로 다시 맞춘다. 같은 크기에 두 번까지
+        if let w = window, pixelSize.width > 0, bounds.height > 0, refits < 2, !inLiveResize,
+           abs(bounds.width / bounds.height - pixelSize.width / pixelSize.height) > 0.01 {
+            refits += 1
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                SessionWindowSizer.of(w).fit(pixel: self.pixelSize, measuring: self)
+            }
+        }
     }
+    private var refits = 0
 
     /// 원격 크기가 바뀌면(처음·모니터 바꿈) 창을 그 크기(1:1)와 비율로 맞춘다
     private func sizeChanged(_ size: CGSize) {
@@ -78,7 +88,8 @@ final class MacScreenNSView: NSView, NSTextInputClient {
 
     private func fitWindow() {
         guard let w = window, pixelSize.width > 0 else { return }
-        SessionWindowSizer.of(w).fit(pixel: pixelSize)
+        refits = 0
+        SessionWindowSizer.of(w).fit(pixel: pixelSize, measuring: self)
     }
 
     /// 보기 > 실제 크기: 원격 1픽셀 = 화면 1포인트 (화면에 안 들어가면 들어가는 만큼)
@@ -181,15 +192,24 @@ final class MacScreenNSView: NSView, NSTextInputClient {
 
     // MARK: 키보드
 
-    /// ⌘ 조합은 메뉴보다 먼저 받아 원격으로 보낸다 (⌘Q 만 이 앱을 끈다)
+    /// ⌘ 조합은 메뉴보다 먼저 받아 모두 원격으로 보낸다 (⌘Q 도. 이 앱 끄기는 메뉴로)
     override func performKeyEquivalent(with e: NSEvent) -> Bool {
         guard window?.firstResponder === self, e.type == .keyDown else { return super.performKeyEquivalent(with: e) }
-        if e.modifierFlags.contains(.command), e.charactersIgnoringModifiers?.lowercased() == "q" { return super.performKeyEquivalent(with: e) }
         if e.modifierFlags.contains(.command) || e.modifierFlags.contains(.control) {
             sendCombo(e)
             return true
         }
         return super.performKeyEquivalent(with: e)
+    }
+
+    /// 한영 전환(Caps Lock): 이 맥의 입력 소스가 바뀌는 것과 함께 원격에도 Caps Lock 을 눌렀다 뗀다
+    /// (원격 맥도 Caps Lock 으로 입력 소스를 바꾸게 설정돼 있으면 같이 바뀐다)
+    override func flagsChanged(with e: NSEvent) {
+        if e.keyCode == 57 {
+            DebugLog.write("Caps Lock (한영) → 원격, 이 맥 상태 \(e.modifierFlags.contains(.capsLock) ? "켬" : "끔")")
+            model.sendKey(0xFFE5, name: "Caps_Lock")
+        }
+        super.flagsChanged(with: e)
     }
 
     override func keyDown(with e: NSEvent) {

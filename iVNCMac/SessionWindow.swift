@@ -28,16 +28,24 @@ final class SessionWindowSizer: NSObject, NSWindowDelegate {
         w.delegate = self
     }
 
-    /// 제목·도구 막대 높이
+    /// 원격 화면이 실제로 그려지는 뷰 (막대 높이를 이걸로 잰다)
+    private weak var measureView: NSView?
+
+    /// 제목·도구 막대 높이. contentLayoutRect 는 macOS 26 도구 막대를 빼지 않을 때가 있어 화면 뷰 높이로 잰다
     private var chrome: CGFloat {
         guard let w = window else { return 0 }
+        if let v = measureView, v.window === w, v.bounds.height > 0 {
+            return w.frame.height - v.bounds.height
+        }
         return w.frame.height - w.contentLayoutRect.height
     }
 
     /// 원격 크기(1픽셀 = 1포인트)로 창을 맞춘다. 화면보다 크면 비율대로 줄인다
-    func fit(pixel size: CGSize) {
+    func fit(pixel size: CGSize, measuring view: NSView? = nil) {
         guard let w = window, size.width > 0, size.height > 0 else { return }
+        if let view { measureView = view }
         pixel = size
+        DebugLog.write("창 맞춤: 원격 \(Int(size.width))x\(Int(size.height)), 창 \(w.frame.size), 막대 \(chrome), 잰 뷰 \(measureView?.bounds.size ?? .zero)")
         let visible = (w.screen ?? NSScreen.main)?.visibleFrame ?? CGRect(origin: .zero, size: size)
         let c = chrome
         let s = min(1, visible.width / size.width, (visible.height - c) / size.height)
@@ -77,18 +85,20 @@ final class SessionWindowSizer: NSObject, NSWindowDelegate {
 
 /// SwiftUI 뷰가 올라간 창을 알려 준다
 struct WindowReader: NSViewRepresentable {
-    let onWindow: (NSWindow) -> Void
+    /// 창과, 내용 영역 크기를 잴 수 있는 이 뷰
+    let onWindow: (NSWindow, NSView) -> Void
 
     func makeNSView(context: Context) -> NSView { Reader(onWindow: onWindow) }
     func updateNSView(_ nsView: NSView, context: Context) {}
 
     private final class Reader: NSView {
-        let onWindow: (NSWindow) -> Void
-        init(onWindow: @escaping (NSWindow) -> Void) { self.onWindow = onWindow; super.init(frame: .zero) }
+        let onWindow: (NSWindow, NSView) -> Void
+        init(onWindow: @escaping (NSWindow, NSView) -> Void) { self.onWindow = onWindow; super.init(frame: .zero) }
         required init?(coder: NSCoder) { fatalError() }
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            if let w = window { DispatchQueue.main.async { self.onWindow(w) } }
+            // 내용 크기가 정해진 뒤에 알린다
+            if let w = window { DispatchQueue.main.async { self.onWindow(w, self) } }
         }
     }
 }
