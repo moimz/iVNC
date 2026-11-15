@@ -37,6 +37,8 @@ struct MacSessionView: View {
             ToolbarItem(placement: .automatic) {
                 KeyModeSegments(mode: $keyMode)
             }
+            // 토글끼리 한 묶음으로 붙지 않게 띄운다
+            ToolbarSpacer(.fixed)
             // 시스템 단축키: [⌘ 원격으로 | 💻 이 맥에서] (⌘Q 는 어느 쪽이든 원격으로)
             ToolbarItem(placement: .automatic) {
                 SystemKeySegments(toRemote: Binding(get: { systemKeysToRemote }, set: { setSystemKeys($0) }))
