@@ -20,17 +20,3 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
---------------------------------------------------------------------------------
-
-Exception: the following files are derived from noVNC-ARD
-(https://github.com/peetinc/noVNC-ARD) and are licensed under the
-Mozilla Public License, v. 2.0 (https://mozilla.org/MPL/2.0/), not MIT:
-
-  iVNC/RFB/ArdCursor.swift
-  iVNC/RFB/HPVideo.swift
-  iVNC/RFB/HighPerformance.swift
-  iVNC/RFB/MVSDecoder.swift
-  iVNC/RFB/SRTP.swift
-
-Third-party libraries built into the app (FreeRDP, OpenSSL; Apache License 2.0)
-are listed in iVNC/App/OpenSourceLicenses.txt.
