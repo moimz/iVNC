@@ -30,21 +30,9 @@ struct MacSessionView: View {
                     .frame(minWidth: 70, alignment: .trailing)
             }
             .sharedBackgroundVisibility(.hidden)
-            // 한글 조합 위치: 분할 단추 [원격 맥 | 이 맥]
+            // 한글 조합 위치: 분할 단추 [⌨︎ 키 바로 전송 | 가 조합 후 전송] (칸마다 툴팁)
             ToolbarItem(placement: .automatic) {
-                Picker("한글 조합", selection: $keyMode) {
-                    Label("원격 맥에서 한글 조합", systemImage: "desktopcomputer")
-                        .labelStyle(.iconOnly)
-                        .help("원격 맥에서 한글 조합")
-                        .tag(MacScreenNSView.KeyMode.remote.rawValue)
-                    Label("이 맥에서 한글 조합", systemImage: "laptopcomputer")
-                        .labelStyle(.iconOnly)
-                        .help("이 맥에서 한글 조합")
-                        .tag(MacScreenNSView.KeyMode.local.rawValue)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .help("한글 조합을 원격 맥에서 할지 이 맥에서 할지")
+                KeyModeSegments(mode: $keyMode)
             }
             // 모니터 버튼은 따로 떨어진 묶음으로
             ToolbarSpacer(.fixed)

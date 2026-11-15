@@ -146,8 +146,8 @@ final class MacScreenNSView: NSView, NSTextInputClient {
         static var current: KeyMode { KeyMode(rawValue: UserDefaults.standard.string(forKey: defaultsKey) ?? "") ?? .remote }
         var title: String {
             switch self {
-            case .remote: return "원격 맥에서 한글 조합"
-            case .local: return "이 맥에서 한글 조합"
+            case .remote: return "키 입력을 원격 맥으로 바로 전송"
+            case .local: return "키 조합 후 원격 맥으로 전송"
             }
         }
     }

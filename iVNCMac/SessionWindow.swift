@@ -102,3 +102,50 @@ struct WindowReader: NSViewRepresentable {
         }
     }
 }
+
+/// 한글 조합 위치 분할 단추 [⌨︎ | 가]. 칸마다 툴팁을 따로 달려고 NSSegmentedControl 로 만든다 (SwiftUI 분할 단추는 칸별 툴팁이 안 된다)
+struct KeyModeSegments: NSViewRepresentable {
+    @Binding var mode: String
+
+    private static let modes = [MacScreenNSView.KeyMode.remote, .local]
+
+    func makeNSView(context: Context) -> NSSegmentedControl {
+        let keyboard = NSImage(systemSymbolName: "keyboard", accessibilityDescription: "키 입력을 원격 맥으로 바로 전송")!
+        let c = NSSegmentedControl(images: [keyboard, Self.textImage("가")], trackingMode: .selectOne,
+                                   target: context.coordinator, action: #selector(Coordinator.changed(_:)))
+        c.setToolTip("키 입력을 원격 맥으로 바로 전송", forSegment: 0)
+        c.setToolTip("키 조합 후 원격 맥으로 전송", forSegment: 1)
+        c.setWidth(34, forSegment: 0)
+        c.setWidth(34, forSegment: 1)
+        return c
+    }
+
+    func updateNSView(_ c: NSSegmentedControl, context: Context) {
+        context.coordinator.parent = self
+        c.selectedSegment = Self.modes.firstIndex { $0.rawValue == mode } ?? 0
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    final class Coordinator: NSObject {
+        var parent: KeyModeSegments
+        init(parent: KeyModeSegments) { self.parent = parent }
+        @objc func changed(_ c: NSSegmentedControl) {
+            parent.mode = KeyModeSegments.modes[max(0, c.selectedSegment)].rawValue
+        }
+    }
+
+    /// 글자 하나를 템플릿 그림으로 (선택·어두운 모드에서 색이 맞게)
+    private static func textImage(_ s: String) -> NSImage {
+        let font = NSFont.systemFont(ofSize: 14, weight: .medium)
+        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.black]
+        let size = (s as NSString).size(withAttributes: attrs)
+        let img = NSImage(size: NSSize(width: ceil(size.width), height: ceil(size.height)), flipped: false) { r in
+            (s as NSString).draw(in: r, withAttributes: attrs)
+            return true
+        }
+        img.isTemplate = true
+        img.accessibilityDescription = "키 조합 후 원격 맥으로 전송"
+        return img
+    }
+}
