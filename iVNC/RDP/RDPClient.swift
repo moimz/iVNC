@@ -76,7 +76,16 @@ final class RDPClient: RemoteClient {
 
     // MARK: 접속
 
+    /// FreeRDP 로그를 앱 로그로 (한 번)
+    private static let logOnce: Void = {
+        ivnc_rdp_set_log { line in
+            guard let line else { return }
+            DebugLog.write("FreeRDP " + String(cString: line))
+        }
+    }()
+
     func start() {
+        _ = Self.logOnce
         let t = Thread { [weak self] in self?.run() }
         t.name = "RDPClient"
         t.qualityOfService = .userInitiated

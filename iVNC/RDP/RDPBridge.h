@@ -9,6 +9,9 @@ const char *ivnc_freerdp_version(void);
 
 typedef struct ivnc_rdp ivnc_rdp;
 
+/// FreeRDP 자체 경고·오류 로그를 받을 함수 (한 번만, 접속 전에)
+void ivnc_rdp_set_log(void (*sink)(const char *line));
+
 /// 접속 한 번의 알림. 모두 접속 스레드(ivnc_rdp_run 을 부른 스레드)에서 불린다
 typedef struct {
     void *owner;

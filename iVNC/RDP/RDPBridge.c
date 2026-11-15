@@ -13,9 +13,37 @@
 #include <freerdp/gdi/gdi.h>
 #include <freerdp/error.h>
 #include <winpr/synch.h>
+#include <winpr/wlog.h>
 
 const char *ivnc_freerdp_version(void) {
     return freerdp_get_version_string();
+}
+
+// MARK: FreeRDP 로그 → 앱 로그
+
+static void (*log_sink)(const char *line);
+
+static BOOL log_message(const wLogMessage *msg) {
+    if (!log_sink || !msg || !msg->TextString) return TRUE;
+    // 빌드 옵션 안내(시작할 때마다 나옴)는 뺀다
+    if (msg->FunctionName && strncmp(msg->FunctionName, "log_build", 9) == 0) return TRUE;
+    char buf[768];
+    snprintf(buf, sizeof buf, "%s %s: %s", msg->Level >= WLOG_ERROR ? "오류" : "경고",
+             msg->FunctionName ? msg->FunctionName : "", msg->TextString);
+    log_sink(buf);
+    return TRUE;
+}
+
+void ivnc_rdp_set_log(void (*sink)(const char *line)) {
+    log_sink = sink;
+    wLog *root = WLog_GetRoot();
+    if (!root) return;
+    if (!WLog_SetLogAppenderType(root, WLOG_APPENDER_CALLBACK)) return;
+    wLogAppender *appender = WLog_GetLogAppender(root);
+    static wLogCallbacks callbacks;
+    callbacks.message = log_message;
+    if (appender) (void)WLog_ConfigureAppender(appender, "callbacks", &callbacks);
+    (void)WLog_SetLogLevel(root, WLOG_WARN);
 }
 
 struct ivnc_rdp {
