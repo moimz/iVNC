@@ -150,6 +150,8 @@ final class SessionModel: ObservableObject {
             client?.frameConsumed()
         case .cursor(let x, let y):
             cursor = CGPoint(x: x, y: y)
+        case .inputSource(let id):
+            remoteInputSource = id
         case .cursorShape(let shape):
             cursorShape = shape
         case .stripe(let pb, let stripe, let stripes):
@@ -246,6 +248,8 @@ final class SessionModel: ObservableObject {
     }
     /// 조합 중이라 아직 안 보낸 글자 (키보드 위에 보여 준다)
     @Published var composing = ""
+    /// 원격 맥의 지금 입력 소스 (1109). 맥 앱이 이 맥 입력 소스와 한/영을 맞출 때 쓴다
+    @Published private(set) var remoteInputSource: String?
 
     func sendText(_ t: String) {
         client?.sendText(t)

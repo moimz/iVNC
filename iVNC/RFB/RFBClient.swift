@@ -23,6 +23,8 @@ final class RFBClient {
         case highPerformance(Bool)
         /// 같은 접속에서 일반 모드로 못 돌아왔으니 고성능 없이 다시 접속해야 한다
         case reconnectStandard
+        /// 원격 맥의 지금 입력 소스 (애플 1109, 예: com.apple.keylayout.ABC, com.apple.inputmethod.Korean.2SetKorean)
+        case inputSource(String)
     }
 
     struct CursorShape {
@@ -780,6 +782,7 @@ final class RFBClient {
                     source = String(decoding: body.dropFirst(8).prefix(n), as: UTF8.self)
                 }
                 DebugLog.write("키보드 입력 상태(1109) 사각형 \(x),\(y) \(w)x\(h) 내용 \(body.prefix(8).map { String(format: "%02x", $0) }.joined()) 입력 소스 \(source)")
+                if !source.isEmpty { emit(.inputSource(source)) }
             case 1100: // 애플: 커서 위치
                 stateLock.lock()
                 let moved = cursor?.x != x || cursor?.y != y

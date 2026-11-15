@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 /// 원격 화면 (맥 앱). 창에 맞춰 비율을 지키며 그리고, 마우스·키보드를 원격으로 보낸다
@@ -18,8 +19,6 @@ struct MacScreenView: NSViewRepresentable {
 final class MacScreenNSView: NSView, NSTextInputClient {
     /// 보기 > 실제 크기 (앞에 있는 접속 창이 받는다)
     static let actualSizeNotification = Notification.Name("iVNC.actualSize")
-    /// 한영 시험 메뉴
-    static let inputSwitchTestNotification = Notification.Name("iVNC.inputSwitchTest")
 
     private let model: SessionModel
     private var renderer: ScreenRenderer { model.renderer }
@@ -41,7 +40,11 @@ final class MacScreenNSView: NSView, NSTextInputClient {
         if renderer.pixelSize != .zero { pixelSize = renderer.pixelSize }
         NotificationCenter.default.addObserver(self, selector: #selector(flushComposition), name: SessionModel.flushCompositionNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(actualSize), name: Self.actualSizeNotification, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(inputSwitchTest(_:)), name: Self.inputSwitchTestNotification, object: nil)
+        // 이 맥 입력 소스가 바뀌면(한영 전환) 원격도 맞춘다
+        NotificationCenter.default.addObserver(self, selector: #selector(localInputSourceChanged), name: NSTextInputContext.keyboardSelectionDidChangeNotification, object: nil)
+        remoteSourceWatch = model.$remoteInputSource.dropFirst().sink { [weak self] _ in
+            DispatchQueue.main.async { self?.syncInputSource(reason: "원격 알림") }
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -52,6 +55,9 @@ final class MacScreenNSView: NSView, NSTextInputClient {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         window?.makeFirstResponder(self)
+        if let w = window {
+            NotificationCenter.default.addObserver(self, selector: #selector(windowBecameKey), name: NSWindow.didBecomeKeyNotification, object: w)
+        }
         window?.acceptsMouseMovedEvents = true
         if pixelSize != .zero { fitWindow() }
     }
@@ -95,26 +101,42 @@ final class MacScreenNSView: NSView, NSTextInputClient {
         SessionWindowSizer.of(w).fit(pixel: pixelSize, measuring: self)
     }
 
-    /// 한영 시험: 앞에 있는 접속 창만
-    @objc private func inputSwitchTest(_ n: Notification) {
-        guard let w = window, w.isKeyWindow || w.isMainWindow, let t = n.object as? InputSwitchTest else { return }
-        DebugLog.write("한영 시험: \(t.title)")
-        func tap(_ ks: UInt32, _ code: UInt16, _ name: String, hold: Double = 0.08, mods: [(UInt32, UInt16)] = []) {
-            for m in mods { model.sendRawKey(m.0, keycode: m.1, down: true, name: "조합") }
-            model.sendRawKey(ks, keycode: code, down: true, name: name)
-            DispatchQueue.main.asyncAfter(deadline: .now() + hold) { [model] in
-                model.sendRawKey(ks, keycode: code, down: false, name: name)
-                for m in mods.reversed() { model.sendRawKey(m.0, keycode: m.1, down: false, name: "조합") }
-            }
-        }
-        switch t {
-        case .hangulKeysym: tap(0xFF31, 0, "Hangul")
-        case .ctrlSpace: tap(0x20, 49, "Space", mods: [(0xFFE3, 59)])
-        case .ctrlOptSpace: tap(0x20, 49, "Space", mods: [(0xFFE3, 59), (0xFFE7, 58)])
-        case .capsTap: tap(0xFFE5, 57, "Caps_Lock")
-        case .capsLong: tap(0xFFE5, 57, "Caps_Lock", hold: 1)
-        case .fnGlobe: tap(0xFF2B, 63, "fn") // 0xFF2B 는 자리만 (fn 은 X keysym 이 없다)
-        }
+    /// 이 창으로 돌아오면(다른 앱에서 입력 소스를 바꿨을 수 있다) 다시 맞춘다
+    @objc private func windowBecameKey() {
+        switchTries = 0
+        DispatchQueue.main.async { [weak self] in self?.syncInputSource(reason: "창 돌아옴") }
+    }
+
+    // MARK: 한/영 맞추기
+    // 원격 맥은 지금 입력 소스를 1109 로 알려 준다. 이 맥과 한/영이 다르면 원격에 ⌃Space(이전 입력 소스 선택)를 보낸다.
+    // (2026-11-15 시험: Caps Lock·X Hangul 키는 원격에서 안 바뀌고 ⌃Space·⌃⌥Space 는 바뀜. 원격 맥에서 그 단축키가 켜져 있어야 한다)
+
+    private var remoteSourceWatch: AnyCancellable?
+    private var lastSwitchAt = Date.distantPast
+    private var switchTries = 0
+
+    private static func isKorean(_ id: String) -> Bool { id.contains("Korean") }
+
+    @objc private func localInputSourceChanged() {
+        switchTries = 0
+        syncInputSource(reason: "이 맥 전환")
+    }
+
+    private func syncInputSource(reason: String) {
+        guard let w = window, w.isKeyWindow, w.firstResponder === self,
+              let local = inputContext?.selectedKeyboardInputSource, let remote = model.remoteInputSource else { return }
+        guard Self.isKorean(local) != Self.isKorean(remote) else { switchTries = 0; return }
+        // 원격이 바뀌었다는 알림을 기다린다. 입력 소스가 셋 이상이면 한 번에 안 맞을 수 있어 세 번까지
+        guard Date().timeIntervalSince(lastSwitchAt) > 0.8, switchTries < 3 else { return }
+        switchTries += 1
+        lastSwitchAt = Date()
+        DebugLog.write("한/영 맞추기(\(reason)): 이 맥 \(local), 원격 \(remote) → 원격에 ⌃Space (\(switchTries)번째)")
+        model.sendRawKey(0xFFE3, keycode: 59, down: true, name: "Control")
+        model.sendRawKey(0x20, keycode: 49, down: true, name: "Space")
+        model.sendRawKey(0x20, keycode: 49, down: false, name: "Space")
+        model.sendRawKey(0xFFE3, keycode: 59, down: false, name: "Control")
+        // 원격 알림이 안 오면(이미 같거나 단축키가 꺼짐) 1초 뒤 한 번 더 본다
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.syncInputSource(reason: "다시 확인") }
     }
 
     /// 보기 > 실제 크기: 원격 1픽셀 = 화면 1포인트 (화면에 안 들어가면 들어가는 만큼)
@@ -225,19 +247,6 @@ final class MacScreenNSView: NSView, NSTextInputClient {
             return true
         }
         return super.performKeyEquivalent(with: e)
-    }
-
-    /// 한영 전환(Caps Lock): 이 맥의 입력 소스가 바뀌는 것과 함께 원격에도 Caps Lock 을 눌렀다 뗀다
-    /// (원격 맥도 Caps Lock 으로 입력 소스를 바꾸게 설정돼 있으면 같이 바뀐다)
-    override func flagsChanged(with e: NSEvent) {
-        if e.keyCode == 57 {
-            // 한영 전환 모드에서는 한 번 누를 때 켬(누름)·끔(뗌)이 0.1초 간격으로 온다 → 누름/뗌으로 그대로 보낸다
-            // (예전엔 매번 눌렀다 떼서 원격엔 두 번 눌린 셈이었다). 맥 키 코드 57 도 함께 싣는다
-            let on = e.modifierFlags.contains(.capsLock)
-            DebugLog.write("Caps Lock (한영) 이 맥 상태 \(on ? "켬" : "끔") → 원격 \(on ? "누름" : "뗌")")
-            model.sendRawKey(0xFFE5, keycode: 57, down: on, name: "Caps_Lock")
-        }
-        super.flagsChanged(with: e)
     }
 
     override func keyDown(with e: NSEvent) {
