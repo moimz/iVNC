@@ -9,6 +9,9 @@ struct MacSessionView: View {
     @State private var changingDisplay = false
     /// 한글 조합을 어디서 할지 (도구 막대 토글, 메뉴 "입력"과 같은 값)
     @AppStorage(MacScreenNSView.KeyMode.defaultsKey) private var keyMode = MacScreenNSView.KeyMode.remote.rawValue
+    /// 시스템 단축키를 원격으로 보낼지 (켜려면 손쉬운 사용 권한)
+    @AppStorage(SystemKeyCapture.defaultsKey) private var systemKeysToRemote = false
+    @State private var needsAccessibility = false
 
     init(computer: Computer) {
         _model = StateObject(wrappedValue: SessionModel(computer: computer))
@@ -33,6 +36,10 @@ struct MacSessionView: View {
             // 한글 조합 위치: 분할 단추 [⌨︎ 키 바로 전송 | 가 조합 후 전송] (칸마다 툴팁)
             ToolbarItem(placement: .automatic) {
                 KeyModeSegments(mode: $keyMode)
+            }
+            // 시스템 단축키: [⌘ 원격으로 | 💻 이 맥에서] (⌘Q 는 어느 쪽이든 원격으로)
+            ToolbarItem(placement: .automatic) {
+                SystemKeySegments(toRemote: Binding(get: { systemKeysToRemote }, set: { setSystemKeys($0) }))
             }
             // 모니터 버튼은 따로 떨어진 묶음으로
             ToolbarSpacer(.fixed)
@@ -88,10 +95,34 @@ struct MacSessionView: View {
                 _ = SessionWindowSizer.of(w)
             }
         })
-        .onAppear { model.connect(store: store) }
+        .alert("손쉬운 사용 권한이 필요합니다", isPresented: $needsAccessibility) {
+            Button("확인", role: .cancel) {}
+        } message: {
+            Text("시스템 단축키를 원격 맥으로 보내려면 시스템 설정 > 개인정보 보호 및 보안 > 손쉬운 사용에서 iVNC 를 켜 주세요. 켠 뒤 다시 누르면 됩니다.")
+        }
+        .onAppear {
+            model.connect(store: store)
+            if systemKeysToRemote && !SystemKeyCapture.shared.setEnabled(true) { systemKeysToRemote = false }
+        }
         .onDisappear { model.close() }
         // 앱을 끌 때도 접속을 정리하고 끊는다 (창 닫힘이 오기 전에 프로세스가 끝날 수 있다)
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in model.close() }
+    }
+
+    /// 시스템 단축키 보내는 곳 바꾸기. 권한이 없으면 안내하고 이 맥 그대로
+    private func setSystemKeys(_ remote: Bool) {
+        if remote {
+            if SystemKeyCapture.shared.setEnabled(true) {
+                systemKeysToRemote = true
+            } else {
+                SystemKeyCapture.askPermission()
+                needsAccessibility = true
+                systemKeysToRemote = false
+            }
+        } else {
+            SystemKeyCapture.shared.setEnabled(false)
+            systemKeysToRemote = false
+        }
     }
 
     private var pickerShown: Binding<Bool> {

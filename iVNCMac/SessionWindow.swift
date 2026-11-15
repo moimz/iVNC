@@ -149,3 +149,33 @@ struct KeyModeSegments: NSViewRepresentable {
         return img
     }
 }
+
+/// 시스템 단축키 분할 단추 [⌘ 원격으로 | 💻 이 맥에서] (칸마다 툴팁)
+struct SystemKeySegments: NSViewRepresentable {
+    @Binding var toRemote: Bool
+
+    func makeNSView(context: Context) -> NSSegmentedControl {
+        let remote = NSImage(systemSymbolName: "command", accessibilityDescription: "시스템 단축키를 원격 맥으로")!
+        let local = NSImage(systemSymbolName: "laptopcomputer", accessibilityDescription: "시스템 단축키는 이 맥에서")!
+        let c = NSSegmentedControl(images: [remote, local], trackingMode: .selectOne,
+                                   target: context.coordinator, action: #selector(Coordinator.changed(_:)))
+        c.setToolTip("시스템 단축키(⌘Tab·⌘Space·⌃방향키 등)를 원격 맥으로 보냄", forSegment: 0)
+        c.setToolTip("시스템 단축키는 이 맥에서 동작", forSegment: 1)
+        c.setWidth(34, forSegment: 0)
+        c.setWidth(34, forSegment: 1)
+        return c
+    }
+
+    func updateNSView(_ c: NSSegmentedControl, context: Context) {
+        context.coordinator.parent = self
+        c.selectedSegment = toRemote ? 0 : 1
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    final class Coordinator: NSObject {
+        var parent: SystemKeySegments
+        init(parent: SystemKeySegments) { self.parent = parent }
+        @objc func changed(_ c: NSSegmentedControl) { parent.toRemote = c.selectedSegment == 0 }
+    }
+}

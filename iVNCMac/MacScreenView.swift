@@ -62,6 +62,7 @@ final class MacScreenNSView: NSView, NSTextInputClient {
         super.viewDidMoveToWindow()
         window?.makeFirstResponder(self)
         if let w = window {
+            if w.isKeyWindow { SystemKeyCapture.shared.target = self }
             NotificationCenter.default.addObserver(self, selector: #selector(windowBecameKey), name: NSWindow.didBecomeKeyNotification, object: w)
             NotificationCenter.default.addObserver(self, selector: #selector(releaseAll), name: NSWindow.didResignKeyNotification, object: w)
         }
@@ -110,6 +111,7 @@ final class MacScreenNSView: NSView, NSTextInputClient {
 
     /// 이 창으로 돌아오면(다른 앱에서 입력 소스를 바꿨을 수 있다) 다시 맞춘다
     @objc private func windowBecameKey() {
+        SystemKeyCapture.shared.target = self
         switchTries = 0
         DispatchQueue.main.async { [weak self] in self?.syncInputSource(reason: "창 돌아옴") }
     }
@@ -359,7 +361,13 @@ final class MacScreenNSView: NSView, NSTextInputClient {
     override func performKeyEquivalent(with e: NSEvent) -> Bool {
         guard window?.firstResponder === self, e.type == .keyDown,
               e.modifierFlags.contains(.command) || e.modifierFlags.contains(.control) else { return super.performKeyEquivalent(with: e) }
-        guard let ks = keysym(e) else { return true }
+        sendShortcut(e)
+        return true
+    }
+
+    /// ⌘·⌃ 조합 키 하나 (메뉴 단축키 자리, 또는 시스템 단축키 가로채기에서)
+    private func sendShortcut(_ e: NSEvent) {
+        guard let ks = keysym(e) else { return }
         // 이 맥 조합 방식에서는 조합키를 미리 눌러 두지 않았으니 여기서 함께 누른다
         let mods = KeyMode.current == .local ? Self.modifierKeys.filter { $0.key == 55 || $0.key == 58 || $0.key == 59 || $0.key == 56 }
             .filter { e.modifierFlags.contains($0.value.flag) } : [:]
@@ -367,10 +375,14 @@ final class MacScreenNSView: NSView, NSTextInputClient {
         down(ks, e.keyCode, "조합 키")
         up(ks, e.keyCode, "조합 키")
         for (code, m) in mods { up(m.keysym, code, "조합키") }
-        return true
     }
 
     override func keyDown(with e: NSEvent) {
+        // 시스템 단축키 가로채기로 온 ⌘·⌃ 조합 (보통은 performKeyEquivalent 로 온다)
+        if e.modifierFlags.contains(.command) || e.modifierFlags.contains(.control) {
+            sendShortcut(e)
+            return
+        }
         let mode = KeyMode.current
         if mode == .local, Self.specialKeysym(e.keyCode) == nil || marked.length > 0 {
             // 이 맥 입력기로 조합 → insertText 로 완성 글자를 보낸다 (조합 중 특수 키도 입력기가 먼저)
