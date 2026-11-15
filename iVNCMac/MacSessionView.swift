@@ -7,6 +7,8 @@ struct MacSessionView: View {
     @StateObject private var model: SessionModel
     /// 화면을 보다가 모니터 바꾸기를 눌렀을 때 (처음 고를 때는 phase == .picking)
     @State private var changingDisplay = false
+    /// 한글 조합을 어디서 할지 (도구 막대 토글, 메뉴 "입력"과 같은 값)
+    @AppStorage(MacScreenNSView.KeyMode.defaultsKey) private var keyMode = MacScreenNSView.KeyMode.remote.rawValue
 
     init(computer: Computer) {
         _model = StateObject(wrappedValue: SessionModel(computer: computer))
@@ -28,6 +30,21 @@ struct MacSessionView: View {
                     .frame(minWidth: 70, alignment: .trailing)
             }
             .sharedBackgroundVisibility(.hidden)
+            // 한글 조합 위치 토글: 원격 맥이 조합 ↔ 이 맥이 조합
+            ToolbarItem(placement: .automatic) {
+                let remote = keyMode != MacScreenNSView.KeyMode.local.rawValue
+                Button {
+                    keyMode = (remote ? MacScreenNSView.KeyMode.local : .remote).rawValue
+                } label: {
+                    Image(systemName: remote ? "desktopcomputer" : "laptopcomputer")
+                        .resizable().scaledToFit()
+                        .frame(width: 18, height: 14)
+                        .accessibilityLabel(remote ? "원격 맥에서 한글 조합" : "이 맥에서 한글 조합")
+                }
+                .help(remote ? "원격 맥에서 한글 조합 중 (누르면 이 맥에서 조합)" : "이 맥에서 한글 조합 중 (누르면 원격 맥에서 조합)")
+            }
+            // 모니터 버튼은 따로 떨어진 묶음으로
+            ToolbarSpacer(.fixed)
             ToolbarItem(placement: .automatic) {
                 // display.2 는 옆으로 넓어 버튼이 뚱뚱해진다 (도구 막대는 글꼴 크기를 무시) → 그림 크기를 고정
                 Button { changingDisplay = true } label: {
@@ -110,7 +127,7 @@ struct MacSessionView: View {
             Color.clear // 모니터 고르기는 시트로
         case .viewing:
             ZStack {
-                MacScreenView(model: model)
+                MacScreenView(model: model, keyMode: keyMode)
                 if !model.hasImage { ProgressView().controlSize(.large) }
             }
         case .failed(let msg):

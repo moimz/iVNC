@@ -6,6 +6,8 @@ import SwiftUI
 /// 원격 화면 (맥 앱). 창에 맞춰 비율을 지키며 그리고, 마우스·키보드를 원격으로 보낸다
 struct MacScreenView: NSViewRepresentable {
     @ObservedObject var model: SessionModel
+    /// 바뀌면 조합 중인 글자를 정리하고 입력 뷰 상태를 다시 잡는다
+    var keyMode: String = ""
 
     func makeNSView(context: Context) -> MacScreenNSView {
         let v = MacScreenNSView(model: model)
@@ -14,6 +16,7 @@ struct MacScreenView: NSViewRepresentable {
 
     func updateNSView(_ v: MacScreenNSView, context: Context) {
         v.updateCursor(model.cursorShape)
+        v.keyModeChanged(keyMode)
     }
 }
 
@@ -146,6 +149,23 @@ final class MacScreenNSView: NSView, NSTextInputClient {
             case .remote: return "원격 맥에서 한글 조합"
             case .local: return "이 맥에서 한글 조합"
             }
+        }
+    }
+
+    private var appliedKeyMode = ""
+
+    /// 조합 위치를 바꾸면: 조합 중인 글자는 보내고, 눌린 키는 떼고, 글자 입력 뷰 여부를 다시 잡는다
+    func keyModeChanged(_ mode: String) {
+        guard mode != appliedKeyMode else { return }
+        let first = appliedKeyMode.isEmpty
+        appliedKeyMode = mode
+        guard !first else { return }
+        flushComposition()
+        releaseAll()
+        DebugLog.write("한글 조합 위치: \(KeyMode.current.title)")
+        if let w = window, w.firstResponder === self {
+            w.makeFirstResponder(nil)
+            w.makeFirstResponder(self)
         }
     }
 
