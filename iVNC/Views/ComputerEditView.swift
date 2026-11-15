@@ -74,21 +74,17 @@ struct ComputerEditView: View {
 
     @ViewBuilder private var fields: some View {
         Section {
-            TextField(kind == .mac ? "주소 (예: 192.168.0.10, mac.local)" : "주소 (예: 192.168.0.20, pc.local)", text: $host)
-                .urlField()
-            // 비워 두면 주소를 이름으로 쓴다: 그때 보일 이름을 흐리게 보여 준다
-            TextField(host.trimmingCharacters(in: .whitespaces).isEmpty ? "이름 (비우면 주소)" : host.trimmingCharacters(in: .whitespaces), text: $name)
-            TextField("포트", text: $port).numberField()
-        } footer: {
-            Text(kind == .mac ? "맥의 시스템 설정 > 일반 > 공유 > 화면 공유가 켜져 있어야 합니다."
-                              : "윈도우의 설정 > 시스템 > 원격 데스크톱이 켜져 있어야 합니다 (윈도우 Pro 이상).")
+            row("주소", kind == .mac ? "192.168.0.10, mac.local" : "192.168.0.20, pc.local", $host) { $0.urlField() }
+            row("이름", "선택 사항", $name) { $0 }
+            row("포트", String(kind.defaultPort), $port) { $0.numberField() }
         }
         Section {
-            TextField(kind == .mac ? "맥 계정 이름" : "윈도우 계정 (사용자 이름 또는 Microsoft 계정 이메일)", text: $username)
-                .asciiField()
-            SecureField(computer == nil ? "암호" : "암호 (바꿀 때만 입력)", text: $password)
-        } footer: {
-            Text("암호는 이 기기의 키체인에만 저장됩니다.")
+            row("계정", kind == .mac ? "맥 사용자 이름" : "사용자 이름 또는 Microsoft 계정 이메일", $username) { $0.asciiField() }
+            LabeledContent("암호") {
+                SecureField("암호", text: $password, prompt: Text(computer == nil ? "" : "바꿀 때만 입력"))
+                    .labelsHidden()
+                    .multilineTextAlignment(.trailing)
+            }
         }
         if kind == .mac {
             Section {
@@ -104,6 +100,16 @@ struct ComputerEditView: View {
             Text("앱을 잠깐 나가도 연결이 끊기지 않고 컴퓨터도 잠들지 않습니다. 그동안 위치를 아주 낮은 정확도로 켜 두어 배터리를 조금 더 씁니다.")
         }
         #endif
+    }
+
+    /// 왼쪽 이름표 + 오른쪽 입력칸 (예시는 입력칸 안 흐린 글씨로)
+    private func row<F: View>(_ label: String, _ prompt: String, _ text: Binding<String>,
+                              style: (TextField<Text>) -> F) -> some View {
+        LabeledContent(label) {
+            style(TextField(label, text: text, prompt: Text(prompt)))
+                .labelsHidden()
+                .multilineTextAlignment(.trailing)
+        }
     }
 
     private func save() {
