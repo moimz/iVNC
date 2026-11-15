@@ -212,6 +212,15 @@ final class RFBClient {
             if let ports = HP.streamPorts(body) {
                 hpServerPorts = ports
                 DebugLog.write("HP 서버 UDP 포트: 오디오 \(ports.audio), 비디오 \(ports.video)")
+                // 보는 중에 포트를 다시 알리면 서버가 영상을 새로 시작하자는 것 (원격 맥 화면 잠금 등, 2026-11-15 맥 앱 로그):
+                // 영상·소리가 끊긴 채 기다리므로 바로 다시 제안한다
+                if hpState == .on, let r = hpReceiver {
+                    if let peer = socket?.peerAddress6 { r.punch(server: peer, ports: [ports.audio, ports.video]) }
+                    DebugLog.write("HP 보는 중 포트 다시 알림 → 다시 제안")
+                    hpRecoverLock.lock(); hpLastReoffer = 0; hpReofferGap = 1; hpReoffering = false; hpRecoverLock.unlock()
+                    hpReoffer()
+                    return
+                }
                 if hpReceiver == nil {
                     let r = HPUDPReceiver()
                     let local = [ports.audio &+ Self.hpPortOffset, ports.video &+ Self.hpPortOffset]

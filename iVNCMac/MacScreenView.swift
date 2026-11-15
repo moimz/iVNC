@@ -23,8 +23,6 @@ final class MacScreenNSView: NSView, NSTextInputClient {
     private var renderer: ScreenRenderer { model.renderer }
     /// 원격 화면 픽셀 크기
     private var pixelSize = CGSize.zero
-    /// 처음 크기를 받으면 창을 그 비율·크기로 맞춘다 (한 번만)
-    private var sizedWindow = false
     private var cursor = NSCursor.arrow
     /// 조합 중인 글자 (한글)
     private var marked = NSMutableAttributedString()
@@ -70,33 +68,23 @@ final class MacScreenNSView: NSView, NSTextInputClient {
         renderer.layout(bounds: imageRect)
     }
 
+    /// 원격 크기가 바뀌면(처음·모니터 바꿈) 창을 그 크기(1:1)와 비율로 맞춘다
     private func sizeChanged(_ size: CGSize) {
+        guard size != pixelSize || window != nil else { return }
         pixelSize = size
         needsLayout = true
         fitWindow()
     }
 
-    /// 창 안쪽 비율을 원격 화면에 맞추고, 처음에는 원격 크기(1:1)로 연다. 화면보다 크면 맞춰 줄인다
     private func fitWindow() {
         guard let w = window, pixelSize.width > 0 else { return }
-        w.contentAspectRatio = pixelSize
-        guard !sizedWindow else { return }
-        sizedWindow = true
-        setContentSize(pixelSize, window: w)
-    }
-
-    private func setContentSize(_ want: CGSize, window w: NSWindow) {
-        let screen = (w.screen ?? NSScreen.main)?.visibleFrame.size ?? want
-        let chrome = w.frame.height - w.contentLayoutRect.height
-        let s = min(1, screen.width / want.width, (screen.height - chrome) / want.height)
-        w.setContentSize(CGSize(width: (want.width * s).rounded(), height: (want.height * s).rounded()))
-        w.center()
+        SessionWindowSizer.of(w).fit(pixel: pixelSize)
     }
 
     /// 보기 > 실제 크기: 원격 1픽셀 = 화면 1포인트 (화면에 안 들어가면 들어가는 만큼)
     @objc private func actualSize() {
-        guard let w = window, w.isKeyWindow, pixelSize.width > 0 else { return }
-        setContentSize(pixelSize, window: w)
+        guard let w = window, w.isKeyWindow else { return }
+        fitWindow()
     }
 
     // MARK: 마우스

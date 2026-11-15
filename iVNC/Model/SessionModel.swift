@@ -79,9 +79,9 @@ final class SessionModel: ObservableObject {
     static var virtualDisplaySize: (width: Int, height: Int) {
         if let r = AppSettings.resolution { return (r.width, r.height) }
         #if os(macOS)
-        // 맥: 화면에서 쓸 수 있는 영역(메뉴 막대·독 제외)에서 창 제목 막대만큼 뺀 크기 (배율 1)
+        // 맥: 화면에서 쓸 수 있는 영역(메뉴 막대·독 제외)에서 창 제목·도구 막대만큼 뺀 크기 (배율 1)
         let f = NSScreen.main?.visibleFrame.size ?? CGSize(width: 1440, height: 900)
-        return (Int(f.width) & ~1, Int(f.height - 28) & ~1)
+        return (Int(f.width) & ~1, Int(f.height - 60) & ~1)
         #else
         let b = UIScreen.main.bounds.size
         guard UIDevice.current.userInterfaceIdiom == .pad else { return (1280, 800) }
