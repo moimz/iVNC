@@ -332,17 +332,47 @@ final class RDPClient: RemoteClient {
 
     /// ⌘ 를 누른 채 다른 키·클릭: 그때 Ctrl 을 누른다
     private func commandJoined() {
-        lock.lock(); let pressCtrl = commandAlone; if pressCtrl { commandAlone = false; commandAsCtrl = true }; lock.unlock()
+        lock.lock()
+        let pressCtrl = commandDown && !commandAsCtrl
+        if commandDown { commandUsed = true }
+        if pressCtrl { commandAsCtrl = true }
+        lock.unlock()
         if pressCtrl { key(Self.ctrlKey, true) }
+    }
+
+    /// ⌘ 를 누른 채지만 Ctrl 없이 보낼 키 (⌘← → Home 등): 눌러 둔 Ctrl 을 뗀다
+    private func commandWithoutCtrl() {
+        lock.lock()
+        let releaseCtrl = commandAsCtrl
+        commandUsed = true; commandAsCtrl = false
+        lock.unlock()
+        if releaseCtrl { key(Self.ctrlKey, false) }
+    }
+
+    /// ⌘ 와 함께 누르면 윈도우 키로 바꿔 보내는 맥 단축키. 뗄 때 바꾼 키를 뗀다
+    private var remapped: [UInt16: [UInt32]] = [:]
+
+    /// ⌘+키 → 윈도우 동작. nil 이면 보통처럼 Ctrl+키. (Ctrl 필요, 보낼 키들)
+    private static func macShortcut(_ keycode: UInt16) -> (ctrl: Bool, keys: [UInt32])? {
+        switch keycode {
+        case 123: return (false, [0x147])   // ⌘← → Home (줄 처음)
+        case 124: return (false, [0x14F])   // ⌘→ → End (줄 끝)
+        case 126: return (true, [0x147])    // ⌘↑ → Ctrl+Home (문서 처음)
+        case 125: return (true, [0x14F])    // ⌘↓ → Ctrl+End (문서 끝)
+        case 12: return (false, [0x38, 0x3E]) // ⌘Q → Alt+F4 (창 닫기)
+        default: return nil
+        }
     }
 
     static let hangulKey: UInt32 = 0x72
     static let windowsKey: UInt32 = 0x15B
     static let ctrlKey: UInt32 = 0x1D
 
-    /// ⌘ 를 누르고 아직 다른 키를 안 누름 (그대로 떼면 윈도우 키)
-    private var commandAlone = false
-    /// ⌘ 와 함께 다른 키를 눌러 Ctrl 을 눌러 둠
+    /// ⌘ 를 누르고 있음
+    private var commandDown = false
+    /// ⌘ 를 누른 동안 다른 키·클릭을 했음 (아니면 뗄 때 윈도우 키)
+    private var commandUsed = false
+    /// ⌘ 대신 Ctrl 을 눌러 둠
     private var commandAsCtrl = false
 
     /// 맥 키 코드 → PC 스캔코드. ⌘ 는 Ctrl 로 (⌘C·⌘V 가 윈도우 Ctrl+C·Ctrl+V 로)
@@ -432,13 +462,26 @@ final class RDPClient: RemoteClient {
     func sendRawKey(_ keysym: UInt32, keycode: UInt16, down: Bool, name: String) {
         if keycode == 55 || keycode == 54 {
             lock.lock()
-            let asCtrl = commandAsCtrl, alone = commandAlone
-            if down { commandAlone = true; commandAsCtrl = false } else { commandAlone = false; commandAsCtrl = false }
+            let asCtrl = commandAsCtrl, alone = commandDown && !commandUsed
+            commandDown = down; commandUsed = false; commandAsCtrl = false
             lock.unlock()
             if !down {
                 // 창을 떠나며 뗀 것(⌘Tab 으로 다른 앱 등)은 윈도우 키로 치지 않는다
                 if asCtrl { key(Self.ctrlKey, false) } else if alone, name != "떠나며 뗌" { key(Self.windowsKey, true); key(Self.windowsKey, false) }
             }
+            return
+        }
+        // 맥 단축키 → 윈도우 동작 (⌘←·⌘→ Home·End, ⌘↑·⌘↓ 문서 처음·끝, ⌘Q Alt+F4)
+        lock.lock(); let cmd = commandDown; let mapped = remapped[keycode]; lock.unlock()
+        if down, cmd, let m = Self.macShortcut(keycode) {
+            if m.ctrl { commandJoined() } else { commandWithoutCtrl() }
+            for k in m.keys { key(k, true) }
+            lock.lock(); remapped[keycode] = m.keys; lock.unlock()
+            return
+        }
+        if !down, let keys = mapped {
+            for k in keys.reversed() { key(k, false) }
+            lock.lock(); remapped[keycode] = nil; lock.unlock()
             return
         }
         if down { commandJoined() }
