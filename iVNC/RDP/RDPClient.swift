@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import ImageIO
 
 /// 접속 화면(SessionModel)이 쓰는 원격 접속 하나: 맥(RFB)과 윈도우(RDP) 공용
 protocol RemoteClient: AnyObject {
@@ -140,6 +141,11 @@ final class RDPClient: RemoteClient {
             default: me.emit(.cursorShape(nil))
             }
         }
+        cb.clip_remote = { owner, kind, data, length in
+            guard let owner, let data, length > 0 else { return }
+            Unmanaged<RDPClient>.fromOpaque(owner).takeUnretainedValue()
+                .remoteClipboard(kind: Int(kind), Data(bytes: data, count: Int(length)))
+        }
         cb.log = { _, message in
             guard let message else { return }
             DebugLog.write("RDP: " + String(cString: message))
@@ -148,10 +154,14 @@ final class RDPClient: RemoteClient {
             emit(.failed("원격 데스크톱을 준비하지 못했습니다."))
             return
         }
+        ivnc_rdp_set_clipboard(h, clipboardSharing ? 1 : 0)
         lock.lock()
         if stopped { lock.unlock(); ivnc_rdp_free(h); return }
         handle = h
+        let pending = pendingClip
         lock.unlock()
+        // 접속 전에 받아 둔 이 기기 클립보드 (원격 클립보드 채널이 열리면 알린다)
+        if let pending { sendClipboard(pending) }
 
         var message = [CChar](repeating: 0, count: 256)
         let result = ivnc_rdp_run(h, host, Int32(port), username, domain, password,
@@ -533,8 +543,100 @@ final class RDPClient: RemoteClient {
         }
     }
 
+    // MARK: 클립보드 (윈도우 cliprdr: 글자 CF_UNICODETEXT, 그림 PNG·CF_DIB)
+
+    /// 접속 준비 전에 받은 이 기기 클립보드
+    private var pendingClip: RFBClient.ClipContent?
+
+    /// 이 기기에서 복사한 것을 원격이 붙여넣을 수 있게 알린다
     func sendClipboard(_ content: RFBClient.ClipContent) {
-        // 클립보드는 다음 단계 (cliprdr)
+        guard clipboardSharing, !content.isEmpty else { return }
+        var text: [UInt8]?
+        if let t = content.text {
+            // 윈도우 줄바꿈 \r\n, UTF-16LE, 끝에 0
+            let win = t.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\n", with: "\r\n")
+            text = win.utf16.flatMap { [UInt8($0 & 0xFF), UInt8($0 >> 8)] } + [0, 0]
+        }
+        let png = content.png
+        let dib = png.flatMap { Self.dib(fromPNG: $0) }
+        lock.lock()
+        guard let h = handle else { pendingClip = content; lock.unlock(); return }
+        pendingClip = nil
+        func ptr(_ a: [UInt8]?, _ body: (UnsafePointer<UInt8>?, Int32) -> Void) {
+            if let a { a.withUnsafeBufferPointer { body($0.baseAddress, Int32($0.count)) } } else { body(nil, 0) }
+        }
+        ptr(text) { tp, tl in ptr(dib) { dp, dl in ptr(png) { pp, pl in ivnc_rdp_clip_set(h, tp, tl, dp, dl, pp, pl) } } }
+        lock.unlock()
+        DebugLog.write("RDP 클립보드 보냄: \(content.summary)\(dib != nil ? ", DIB \(dib!.count / 1000)KB" : "")")
+    }
+
+    /// 원격에서 복사한 것 (접속 스레드)
+    private func remoteClipboard(kind: Int, _ data: Data) {
+        var c = RFBClient.ClipContent()
+        switch kind {
+        case 1:
+            var units = [UInt16](repeating: 0, count: data.count / 2)
+            _ = units.withUnsafeMutableBytes { data.copyBytes(to: $0) }
+            if let end = units.firstIndex(of: 0) { units.removeSubrange(end...) }
+            c.text = String(decoding: units, as: UTF16.self).replacingOccurrences(of: "\r\n", with: "\n")
+        case 2:
+            c.png = [UInt8](data)
+        case 3:
+            c.png = Self.png(fromDIB: data)
+        default: break
+        }
+        guard !c.isEmpty else { DebugLog.write("RDP 클립보드: 원격 내용을 못 바꿈 (종류 \(kind), \(data.count)바이트)"); return }
+        DebugLog.write("RDP 클립보드 받음: \(c.summary)")
+        emit(.clipboard(c))
+    }
+
+    /// DIB(비트맵 정보 머리 + 픽셀) → PNG. BMP 파일 머리(14바이트)를 붙여 ImageIO 로 푼다
+    static func png(fromDIB dib: Data) -> [UInt8]? {
+        guard dib.count > 40 else { return nil }
+        func u32(_ o: Int) -> UInt32 { dib.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: o, as: UInt32.self) } }
+        func u16(_ o: Int) -> UInt16 { dib.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: o, as: UInt16.self) } }
+        let headerSize = Int(u32(0)), bitCount = Int(u16(14)), compression = u32(16), clrUsed = Int(u32(32))
+        var offset = 14 + headerSize
+        if headerSize == 40 && compression == 3 { offset += 12 } // BI_BITFIELDS 색 마스크
+        if bitCount <= 8 { offset += 4 * (clrUsed > 0 ? clrUsed : 1 << bitCount) }
+        var file = Data([0x42, 0x4D])
+        withUnsafeBytes(of: UInt32(14 + dib.count).littleEndian) { file.append(contentsOf: $0) }
+        file.append(contentsOf: [0, 0, 0, 0])
+        withUnsafeBytes(of: UInt32(offset).littleEndian) { file.append(contentsOf: $0) }
+        file.append(dib)
+        guard let src = CGImageSourceCreateWithData(file as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return nil }
+        let out = NSMutableData()
+        guard let dst = CGImageDestinationCreateWithData(out, "public.png" as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(dst, image, nil)
+        guard CGImageDestinationFinalize(dst) else { return nil }
+        return [UInt8](out as Data)
+    }
+
+    /// PNG → DIB (BITMAPINFOHEADER 40바이트 + 32비트 B G R A, 아래 줄부터)
+    static func dib(fromPNG png: [UInt8]) -> [UInt8]? {
+        guard let src = CGImageSourceCreateWithData(Data(png) as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return nil }
+        let w = image.width, h = image.height
+        guard w > 0, h > 0, w * h <= 50_000_000 else { return nil }
+        var pixels = [UInt8](repeating: 0, count: w * h * 4)
+        let ok = pixels.withUnsafeMutableBytes { buf -> Bool in
+            guard let ctx = CGContext(data: buf.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue) else { return false }
+            // CGContext 는 아래가 원점: 메모리 첫 줄 = 그림 맨 위. DIB 는 아래 줄부터라 뒤집어 그린다
+            ctx.translateBy(x: 0, y: CGFloat(h))
+            ctx.scaleBy(x: 1, y: -1)
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        guard ok else { return nil }
+        var header = [UInt8]()
+        func put32(_ v: UInt32) { withUnsafeBytes(of: v.littleEndian) { header.append(contentsOf: $0) } }
+        func put16(_ v: UInt16) { withUnsafeBytes(of: v.littleEndian) { header.append(contentsOf: $0) } }
+        put32(40); put32(UInt32(w)); put32(UInt32(h)); put16(1); put16(32); put32(0) // BI_RGB
+        put32(UInt32(w * h * 4)); put32(2835); put32(2835); put32(0); put32(0)
+        return header + pixels
     }
 }
 

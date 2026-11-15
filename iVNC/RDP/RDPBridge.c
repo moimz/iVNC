@@ -16,6 +16,10 @@
 #include <freerdp/codec/color.h>
 #include <winpr/synch.h>
 #include <winpr/wlog.h>
+#include <winpr/user.h>
+#include <pthread.h>
+#include <freerdp/client/cliprdr.h>
+#include <freerdp/channels/cliprdr.h>
 
 const char *ivnc_freerdp_version(void) {
     return freerdp_get_version_string();
@@ -56,7 +60,21 @@ struct ivnc_rdp {
     /// 우리가 끊으라고 했는지
     atomic_int stopping;
     char username[256], domain[256], password[256];
+
+    // 클립보드 (cliprdr). clip_lock 이 아래 전부를 지킨다
+    int clip_enabled;
+    pthread_mutex_t clip_lock;
+    CliprdrClientContext *clip;
+    /// 이 기기에서 복사한 것
+    uint8_t *local_text, *local_dib, *local_png;
+    size_t local_text_len, local_dib_len, local_png_len;
+    /// 원격 PNG 형식 번호 (0 = 없음), 지금 요청한 형식
+    UINT32 remote_png_id;
+    UINT32 requested;
 };
+
+/// 우리가 원격에 알리는 PNG 형식 번호 (이름 "PNG", 0xC000 이상 아무 번호)
+#define IVNC_PNG_FORMAT 0xC0F0
 
 /// FreeRDP 문맥에 우리 것을 붙인다 (rdpClientContext 가 맨 앞이어야 한다)
 typedef struct {
@@ -177,15 +195,217 @@ static BOOL pointer_set_default(rdpContext *context) {
 
 static BOOL pointer_set_position(rdpContext *context, UINT32 x, UINT32 y) { (void)context; (void)x; (void)y; return TRUE; }
 
+// MARK: 클립보드 (cliprdr 채널)
+
+static ivnc_rdp *clip_owner(CliprdrClientContext *clip) { return clip ? (ivnc_rdp *)clip->custom : NULL; }
+
+/// 가진 것을 원격에 알린다 (clip_lock 잡은 채로)
+static UINT clip_send_format_list(ivnc_rdp *r) {
+    if (!r->clip) return CHANNEL_RC_OK;
+    CLIPRDR_FORMAT formats[3];
+    memset(formats, 0, sizeof formats);
+    UINT32 n = 0;
+    if (r->local_text) formats[n++].formatId = CF_UNICODETEXT;
+    if (r->local_dib) formats[n++].formatId = CF_DIB;
+    if (r->local_png) { formats[n].formatId = IVNC_PNG_FORMAT; formats[n].formatName = "PNG"; n++; }
+    CLIPRDR_FORMAT_LIST list;
+    memset(&list, 0, sizeof list);
+    list.common.msgType = CB_FORMAT_LIST;
+    list.numFormats = n;
+    list.formats = formats;
+    return r->clip->ClientFormatList(r->clip, &list);
+}
+
+static UINT clip_monitor_ready(CliprdrClientContext *clip, const CLIPRDR_MONITOR_READY *ready) {
+    (void)ready;
+    ivnc_rdp *r = clip_owner(clip);
+    if (!r) return CHANNEL_RC_OK;
+    CLIPRDR_GENERAL_CAPABILITY_SET general;
+    memset(&general, 0, sizeof general);
+    general.capabilitySetType = CB_CAPSTYPE_GENERAL;
+    general.capabilitySetLength = CB_CAPSTYPE_GENERAL_LEN;
+    general.version = CB_CAPS_VERSION_2;
+    general.generalFlags = CB_USE_LONG_FORMAT_NAMES;
+    CLIPRDR_CAPABILITIES caps;
+    memset(&caps, 0, sizeof caps);
+    caps.cCapabilitiesSets = 1;
+    caps.capabilitySets = (CLIPRDR_CAPABILITY_SET *)&general;
+    UINT rc = clip->ClientCapabilities(clip, &caps);
+    if (rc != CHANNEL_RC_OK) return rc;
+    pthread_mutex_lock(&r->clip_lock);
+    rc = clip_send_format_list(r);
+    pthread_mutex_unlock(&r->clip_lock);
+    say(r, "클립보드 채널 준비됨");
+    return rc;
+}
+
+static UINT clip_server_capabilities(CliprdrClientContext *clip, const CLIPRDR_CAPABILITIES *caps) {
+    (void)clip; (void)caps;
+    return CHANNEL_RC_OK;
+}
+
+/// 원격에서 복사함: 받았다고 답하고, 글자 → PNG → DIB 순으로 하나를 바로 가져온다
+static UINT clip_server_format_list(CliprdrClientContext *clip, const CLIPRDR_FORMAT_LIST *list) {
+    ivnc_rdp *r = clip_owner(clip);
+    BOOL text = FALSE, dib = FALSE;
+    UINT32 png = 0;
+    for (UINT32 i = 0; i < list->numFormats; i++) {
+        const CLIPRDR_FORMAT *f = &list->formats[i];
+        if (f->formatId == CF_UNICODETEXT) text = TRUE;
+        else if (f->formatId == CF_DIB) dib = TRUE;
+        else if (f->formatName && strcmp(f->formatName, "PNG") == 0) png = f->formatId;
+    }
+    CLIPRDR_FORMAT_LIST_RESPONSE response;
+    memset(&response, 0, sizeof response);
+    response.common.msgType = CB_FORMAT_LIST_RESPONSE;
+    response.common.msgFlags = CB_RESPONSE_OK;
+    UINT rc = clip->ClientFormatListResponse(clip, &response);
+    if (rc != CHANNEL_RC_OK || !r) return rc;
+    UINT32 want = text ? CF_UNICODETEXT : png ? png : dib ? CF_DIB : 0;
+    say(r, "원격 복사: 형식 %u개 (글자 %s, PNG %s, DIB %s)", list->numFormats, text ? "있음" : "없음", png ? "있음" : "없음", dib ? "있음" : "없음");
+    if (!want) return CHANNEL_RC_OK;
+    pthread_mutex_lock(&r->clip_lock);
+    r->remote_png_id = png;
+    r->requested = want;
+    pthread_mutex_unlock(&r->clip_lock);
+    CLIPRDR_FORMAT_DATA_REQUEST request;
+    memset(&request, 0, sizeof request);
+    request.common.msgType = CB_FORMAT_DATA_REQUEST;
+    request.requestedFormatId = want;
+    return clip->ClientFormatDataRequest(clip, &request);
+}
+
+static UINT clip_server_format_list_response(CliprdrClientContext *clip, const CLIPRDR_FORMAT_LIST_RESPONSE *response) {
+    (void)clip; (void)response;
+    return CHANNEL_RC_OK;
+}
+
+/// 원격에서 붙여넣음: 이 기기에서 복사한 것을 보낸다
+static UINT clip_server_format_data_request(CliprdrClientContext *clip, const CLIPRDR_FORMAT_DATA_REQUEST *request) {
+    ivnc_rdp *r = clip_owner(clip);
+    CLIPRDR_FORMAT_DATA_RESPONSE response;
+    memset(&response, 0, sizeof response);
+    response.common.msgType = CB_FORMAT_DATA_RESPONSE;
+    if (!r) {
+        response.common.msgFlags = CB_RESPONSE_FAIL;
+        return clip->ClientFormatDataResponse(clip, &response);
+    }
+    pthread_mutex_lock(&r->clip_lock);
+    const uint8_t *data = NULL;
+    size_t len = 0;
+    switch (request->requestedFormatId) {
+    case CF_UNICODETEXT: data = r->local_text; len = r->local_text_len; break;
+    case CF_DIB: data = r->local_dib; len = r->local_dib_len; break;
+    case IVNC_PNG_FORMAT: data = r->local_png; len = r->local_png_len; break;
+    default: break;
+    }
+    response.common.msgFlags = data ? CB_RESPONSE_OK : CB_RESPONSE_FAIL;
+    response.common.dataLen = data ? (UINT32)len : 0;
+    response.requestedFormatData = data;
+    UINT rc = clip->ClientFormatDataResponse(clip, &response);
+    pthread_mutex_unlock(&r->clip_lock);
+    say(r, "원격이 붙여넣음: 형식 0x%x, %zu바이트%s", request->requestedFormatId, len, data ? "" : " (없음)");
+    return rc;
+}
+
+/// 원격에서 복사한 내용이 옴
+static UINT clip_server_format_data_response(CliprdrClientContext *clip, const CLIPRDR_FORMAT_DATA_RESPONSE *response) {
+    ivnc_rdp *r = clip_owner(clip);
+    if (!r) return CHANNEL_RC_OK;
+    pthread_mutex_lock(&r->clip_lock);
+    UINT32 format = r->requested;
+    UINT32 png = r->remote_png_id;
+    r->requested = 0;
+    pthread_mutex_unlock(&r->clip_lock);
+    if ((response->common.msgFlags & CB_RESPONSE_FAIL) || !response->requestedFormatData || response->common.dataLen == 0) {
+        say(r, "원격 복사 내용 못 받음 (형식 0x%x)", format);
+        return CHANNEL_RC_OK;
+    }
+    int kind = format == CF_UNICODETEXT ? 1 : (png && format == png) ? 2 : format == CF_DIB ? 3 : 0;
+    if (kind && r->cb.clip_remote)
+        r->cb.clip_remote(r->cb.owner, kind, response->requestedFormatData, (int)response->common.dataLen);
+    return CHANNEL_RC_OK;
+}
+
+static UINT clip_ok_lock(CliprdrClientContext *clip, const CLIPRDR_LOCK_CLIPBOARD_DATA *l) { (void)clip; (void)l; return CHANNEL_RC_OK; }
+static UINT clip_ok_unlock(CliprdrClientContext *clip, const CLIPRDR_UNLOCK_CLIPBOARD_DATA *l) { (void)clip; (void)l; return CHANNEL_RC_OK; }
+static UINT clip_file_request(CliprdrClientContext *clip, const CLIPRDR_FILE_CONTENTS_REQUEST *req) {
+    // 파일은 알리지 않으니 올 일이 없다: 실패로 답한다
+    CLIPRDR_FILE_CONTENTS_RESPONSE response;
+    memset(&response, 0, sizeof response);
+    response.common.msgType = CB_FILECONTENTS_RESPONSE;
+    response.common.msgFlags = CB_RESPONSE_FAIL;
+    response.streamId = req->streamId;
+    return clip->ClientFileContentsResponse(clip, &response);
+}
+
+static void channel_connected(void *context, const ChannelConnectedEventArgs *e) {
+    rdpContext *ctx = (rdpContext *)context;
+    ivnc_rdp *r = owner_of(ctx);
+    if (strcmp(e->name, CLIPRDR_SVC_CHANNEL_NAME) == 0) {
+        CliprdrClientContext *clip = (CliprdrClientContext *)e->pInterface;
+        if (!r || !clip) return;
+        clip->custom = r;
+        clip->MonitorReady = clip_monitor_ready;
+        clip->ServerCapabilities = clip_server_capabilities;
+        clip->ServerFormatList = clip_server_format_list;
+        clip->ServerFormatListResponse = clip_server_format_list_response;
+        clip->ServerFormatDataRequest = clip_server_format_data_request;
+        clip->ServerFormatDataResponse = clip_server_format_data_response;
+        clip->ServerLockClipboardData = clip_ok_lock;
+        clip->ServerUnlockClipboardData = clip_ok_unlock;
+        clip->ServerFileContentsRequest = clip_file_request;
+        pthread_mutex_lock(&r->clip_lock);
+        r->clip = clip;
+        pthread_mutex_unlock(&r->clip_lock);
+    } else {
+        freerdp_client_OnChannelConnectedEventHandler(context, e);
+    }
+}
+
+static void channel_disconnected(void *context, const ChannelDisconnectedEventArgs *e) {
+    ivnc_rdp *r = owner_of((rdpContext *)context);
+    if (strcmp(e->name, CLIPRDR_SVC_CHANNEL_NAME) == 0) {
+        if (!r) return;
+        pthread_mutex_lock(&r->clip_lock);
+        if (r->clip) r->clip->custom = NULL;
+        r->clip = NULL;
+        pthread_mutex_unlock(&r->clip_lock);
+    } else {
+        freerdp_client_OnChannelDisconnectedEventHandler(context, e);
+    }
+}
+
+static uint8_t *dup_bytes(const uint8_t *p, int len) {
+    if (!p || len <= 0) return NULL;
+    uint8_t *d = malloc((size_t)len);
+    if (d) memcpy(d, p, (size_t)len);
+    return d;
+}
+
+void ivnc_rdp_set_clipboard(ivnc_rdp *r, int enabled) { if (r) r->clip_enabled = enabled; }
+
+void ivnc_rdp_clip_set(ivnc_rdp *r, const uint8_t *text, int textLength, const uint8_t *dib, int dibLength,
+                       const uint8_t *png, int pngLength) {
+    if (!r) return;
+    pthread_mutex_lock(&r->clip_lock);
+    free(r->local_text); free(r->local_dib); free(r->local_png);
+    r->local_text = dup_bytes(text, textLength); r->local_text_len = r->local_text ? (size_t)textLength : 0;
+    r->local_dib = dup_bytes(dib, dibLength); r->local_dib_len = r->local_dib ? (size_t)dibLength : 0;
+    r->local_png = dup_bytes(png, pngLength); r->local_png_len = r->local_png ? (size_t)pngLength : 0;
+    if (r->clip) clip_send_format_list(r);
+    pthread_mutex_unlock(&r->clip_lock);
+}
+
 // MARK: 접속 단계
 
 static BOOL pre_connect(freerdp *instance) {
     rdpContext *context = instance->context;
     rdpSettings *s = context->settings;
     if (!freerdp_settings_set_uint32(s, FreeRDP_OsMajorType, OSMAJORTYPE_IOS)) return FALSE;
-    // 채널(그래픽 파이프라인 등)이 붙고 떨어질 때 FreeRDP 공용 처리에 맡긴다 (GFX → gdi)
-    PubSub_SubscribeChannelConnected(context->pubSub, freerdp_client_OnChannelConnectedEventHandler);
-    PubSub_SubscribeChannelDisconnected(context->pubSub, freerdp_client_OnChannelDisconnectedEventHandler);
+    // 채널이 붙고 떨어질 때: 클립보드는 우리가, 나머지(그래픽 파이프라인 등)는 FreeRDP 공용 처리에 (GFX → gdi)
+    PubSub_SubscribeChannelConnected(context->pubSub, channel_connected);
+    PubSub_SubscribeChannelDisconnected(context->pubSub, channel_disconnected);
     return TRUE;
 }
 
@@ -225,8 +445,8 @@ static void post_disconnect(freerdp *instance) {
     if (!instance || !instance->context) return;
     ivnc_rdp *r = owner_of(instance->context);
     if (r) atomic_store(&r->ready, 0);
-    PubSub_UnsubscribeChannelConnected(instance->context->pubSub, freerdp_client_OnChannelConnectedEventHandler);
-    PubSub_UnsubscribeChannelDisconnected(instance->context->pubSub, freerdp_client_OnChannelDisconnectedEventHandler);
+    PubSub_UnsubscribeChannelConnected(instance->context->pubSub, channel_connected);
+    PubSub_UnsubscribeChannelDisconnected(instance->context->pubSub, channel_disconnected);
     gdi_free(instance);
 }
 
@@ -296,6 +516,7 @@ ivnc_rdp *ivnc_rdp_new(ivnc_rdp_callbacks callbacks) {
     ivnc_rdp *r = calloc(1, sizeof *r);
     r->cb = callbacks;
     r->context = context;
+    pthread_mutex_init(&r->clip_lock, NULL);
     ((ivnc_context *)context)->owner = r;
     return r;
 }
@@ -364,9 +585,9 @@ int ivnc_rdp_run(ivnc_rdp *r, const char *host, int port, const char *username, 
         // 원격 화면 크기를 접속 중에 바꿀 수 있게 (나중 창 크기 맞춤)
         && freerdp_settings_set_bool(s, FreeRDP_SupportDisplayControl, TRUE)
         && freerdp_settings_set_bool(s, FreeRDP_DynamicResolutionUpdate, FALSE)
-        // 아직 안 쓰는 것: 소리·클립보드·드라이브
+        // 아직 안 쓰는 것: 소리·드라이브. 클립보드는 켰을 때만
         && freerdp_settings_set_bool(s, FreeRDP_AudioPlayback, FALSE)
-        && freerdp_settings_set_bool(s, FreeRDP_RedirectClipboard, FALSE)
+        && freerdp_settings_set_bool(s, FreeRDP_RedirectClipboard, r->clip_enabled ? TRUE : FALSE)
         && freerdp_settings_set_bool(s, FreeRDP_AutoReconnectionEnabled, FALSE)
         // 한국어 자판 (키 자리는 미국 자판과 같다). 103/106 키 한국 자판이라야 스캔코드 0x72 가 한/영 키
         && freerdp_settings_set_uint32(s, FreeRDP_KeyboardLayout, 0x00000412)
@@ -415,6 +636,8 @@ void ivnc_rdp_stop(ivnc_rdp *r) {
 void ivnc_rdp_free(ivnc_rdp *r) {
     if (!r) return;
     freerdp_client_context_free(r->context);
+    free(r->local_text); free(r->local_dib); free(r->local_png);
+    pthread_mutex_destroy(&r->clip_lock);
     memset(r, 0, sizeof *r);
     free(r);
 }

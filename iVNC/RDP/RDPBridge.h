@@ -28,6 +28,8 @@ typedef struct {
     /// 커서 바꿈. mode 0 = cursor 모양, 1 = 숨김, 2 = 기본 화살표
     void (*cursor_set)(void *owner, void *cursor, int mode);
     void (*cursor_free)(void *owner, void *cursor);
+    /// 원격에서 복사함. kind 1 = 글자(UTF-16LE), 2 = PNG, 3 = DIB(비트맵 정보 머리 + 픽셀)
+    void (*clip_remote)(void *owner, int kind, const uint8_t *data, int length);
 } ivnc_rdp_callbacks;
 
 /// 실패 종류 (Swift 가 한국어 문구로 바꾼다)
@@ -45,6 +47,12 @@ enum {
 };
 
 ivnc_rdp *ivnc_rdp_new(ivnc_rdp_callbacks callbacks);
+/// 클립보드 공유 (run 전에)
+void ivnc_rdp_set_clipboard(ivnc_rdp *r, int enabled);
+/// 이 기기 클립보드를 원격에 알린다 (원격이 붙여넣을 때 가져간다). 없는 것은 NULL·0. text 는 UTF-16LE (끝 0 포함)
+void ivnc_rdp_clip_set(ivnc_rdp *r, const uint8_t *text, int textLength, const uint8_t *dib, int dibLength,
+                       const uint8_t *png, int pngLength);
+
 /// 접속하고 끊길 때까지 돌린다 (막힘). 돌려주는 값: 위 실패 종류. message 에 FreeRDP 원문 (최대 len)
 int ivnc_rdp_run(ivnc_rdp *r, const char *host, int port, const char *username, const char *domain,
                  const char *password, int width, int height, char *message, int len);
