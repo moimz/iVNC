@@ -131,26 +131,20 @@ final class MacScreenNSView: NSView, NSTextInputClient {
     // MARK: 키 보내는 방식 (시험)
 
     enum KeyMode: String, CaseIterable {
+        /// 키를 누름·뗌 그대로 보내고 원격 맥 입력기가 조합한다 (기본).
+        /// 원격이 한글이면 두벌식 그 자리의 자모를 유니코드 keysym 으로 보낸다: 서버는 받은 글자를 원격 자판에서 만드는 키를
+        /// 찾아 누르므로 'ㅁ' 을 보내면 a 키가 눌려 입력기가 조합한다 ('a' 는 두벌식에 없어 글자 그대로 들어갔다).
+        /// (2026-11-15 시험: 키 그대로(암호화·평문) 영어로만, 키 코드만 무시됨, X 한글 keysym 은 한글만 안 감, 유니코드 자모 성공)
+        case remote
         /// 이 맥 입력기로 조합해 완성된 글자를 보낸다 (아이폰과 같은 방식)
         case local
-        /// 키 자리 글자 + 맥 키 코드를 누름·뗌으로 (원격 입력기가 조합하길 기대 → 2026-11-15 시험: 영어로만 감)
-        case keys
-        /// 키 그대로를 암호화 없이 표준 KeyEvent(4) 로 (키 코드만 보내기는 키가 무시돼 바꿈)
-        case keycodes
-        /// 원격이 한글이면 두벌식 자리의 자모를 유니코드 keysym(0x0100_3141 등)으로 (서버가 그 글자를 만드는 키를 찾아 누르길 기대)
-        case jamoUnicode
-        /// 같은 자모를 X 한글 keysym(0x0eb1 등)으로
-        case jamoX
 
         static let defaultsKey = "mac.keyMode"
-        static var current: KeyMode { KeyMode(rawValue: UserDefaults.standard.string(forKey: defaultsKey) ?? "") ?? .local }
+        static var current: KeyMode { KeyMode(rawValue: UserDefaults.standard.string(forKey: defaultsKey) ?? "") ?? .remote }
         var title: String {
             switch self {
+            case .remote: return "원격 맥에서 한글 조합"
             case .local: return "이 맥에서 한글 조합"
-            case .keys: return "키 그대로 (원격이 조합)"
-            case .keycodes: return "키 그대로, 평문 (원격이 조합)"
-            case .jamoUnicode: return "한글 자모, 유니코드 (원격이 조합)"
-            case .jamoX: return "한글 자모, X 키심 (원격이 조합)"
             }
         }
     }
@@ -297,12 +291,12 @@ final class MacScreenNSView: NSView, NSTextInputClient {
 
     private func down(_ keysym: UInt32, _ code: UInt16, _ name: String) {
         held[code] = keysym
-        model.sendRawKey(keysym, keycode: code, down: true, name: name, plain: KeyMode.current == .keycodes)
+        model.sendRawKey(keysym, keycode: code, down: true, name: name)
     }
 
     private func up(_ keysym: UInt32, _ code: UInt16, _ name: String) {
         held[code] = nil
-        model.sendRawKey(keysym, keycode: code, down: false, name: name, plain: KeyMode.current == .keycodes)
+        model.sendRawKey(keysym, keycode: code, down: false, name: name)
     }
 
     /// 조합키 누름·뗌 (Caps Lock 은 보내지 않는다: 한/영은 입력 소스 맞추기로)
@@ -377,11 +371,11 @@ final class MacScreenNSView: NSView, NSTextInputClient {
             return e.charactersIgnoringModifiers?.unicodeScalars.first.map { $0.value < 0x100 ? $0.value : 0x0100_0000 | $0.value }
         }
         let ch = e.modifierFlags.contains(.shift) ? Self.usShifted(c) : c
-        // 원격이 한글 입력이면 두벌식 그 자리의 자모로 (시험)
-        let mode = KeyMode.current
-        if mode == .jamoUnicode || mode == .jamoX, model.remoteInputSource?.contains("Korean") == true,
+        // 원격이 한글 입력이면 두벌식 그 자리의 자모 (유니코드 keysym). ⌘·⌃ 조합은 키 자리 그대로 (⌘C 등)
+        if model.remoteInputSource?.contains("Korean") == true,
+           !e.modifierFlags.contains(.command), !e.modifierFlags.contains(.control),
            let j = Self.dubeolsik[ch]?.unicodeScalars.first?.value {
-            return mode == .jamoUnicode ? 0x0100_0000 | j : 0x0EA1 + (j - 0x3131) // X 한글 keysym 은 ㄱ(U+3131)=0xea1 부터 같은 차례
+            return 0x0100_0000 | j
         }
         return ch.unicodeScalars.first!.value
     }
