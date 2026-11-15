@@ -60,6 +60,7 @@ struct ivnc_rdp {
     /// 우리가 끊으라고 했는지
     atomic_int stopping;
     char username[256], domain[256], password[256];
+    char config_path[1024];
 
     // 클립보드 (cliprdr). clip_lock 이 아래 전부를 지킨다
     int clip_enabled;
@@ -385,6 +386,10 @@ static uint8_t *dup_bytes(const uint8_t *p, int len) {
 
 void ivnc_rdp_set_clipboard(ivnc_rdp *r, int enabled) { if (r) r->clip_enabled = enabled; }
 
+void ivnc_rdp_set_config_path(ivnc_rdp *r, const char *path) {
+    if (r) snprintf(r->config_path, sizeof r->config_path, "%s", path ? path : "");
+}
+
 void ivnc_rdp_clip_set(ivnc_rdp *r, const uint8_t *text, int textLength, const uint8_t *dib, int dibLength,
                        const uint8_t *png, int pngLength) {
     if (!r) return;
@@ -461,21 +466,25 @@ static BOOL authenticate(freerdp *instance, char **username, char **password, ch
     return TRUE;
 }
 
-/// 원격 인증서: 집 안 윈도우 PC 는 대개 스스로 만든 인증서라 받아들인다 (지문은 로그에)
+/// 처음 보는 원격 인증서: 집 안 윈도우 PC 는 대개 스스로 만든 인증서라 받아들이고 기억한다 (다음부터 바뀌면 묻는다)
 static DWORD verify_certificate(freerdp *instance, const char *host, UINT16 port, const char *common_name,
                                 const char *subject, const char *issuer, const char *fingerprint, DWORD flags) {
     (void)subject; (void)issuer; (void)flags;
-    say(owner_of(instance->context), "인증서 받아들임 %s:%u (%s) 지문 %s", host, port, common_name ? common_name : "", fingerprint ? fingerprint : "");
-    return 2; // 이번 접속만
+    say(owner_of(instance->context), "처음 보는 인증서 기억 %s:%u (%s) 지문 %s", host, port, common_name ? common_name : "", fingerprint ? fingerprint : "");
+    return 1; // 받아들이고 기억
 }
 
 static DWORD verify_changed_certificate(freerdp *instance, const char *host, UINT16 port, const char *common_name,
                                         const char *subject, const char *issuer, const char *fingerprint,
                                         const char *old_subject, const char *old_issuer, const char *old_fingerprint, DWORD flags) {
     (void)subject; (void)issuer; (void)old_subject; (void)old_issuer; (void)flags;
-    say(owner_of(instance->context), "인증서 바뀜 %s:%u (%s) %s → %s", host, port, common_name ? common_name : "",
+    ivnc_rdp *r = owner_of(instance->context);
+    say(r, "인증서 바뀜 %s:%u (%s) %s → %s", host, port, common_name ? common_name : "",
         old_fingerprint ? old_fingerprint : "", fingerprint ? fingerprint : "");
-    return 2;
+    if (!r || !r->cb.certificate_changed) return 0;
+    int ok = r->cb.certificate_changed(r->cb.owner, host, port, old_fingerprint ? old_fingerprint : "", fingerprint ? fingerprint : "");
+    say(r, "바뀐 인증서: %s", ok ? "사용자가 받아들임" : "사용자가 거절");
+    return ok ? 1 : 0;
 }
 
 static int logon_error_info(freerdp *instance, UINT32 data, UINT32 type) {
@@ -567,7 +576,8 @@ int ivnc_rdp_run(ivnc_rdp *r, const char *host, int port, const char *username, 
     snprintf(r->domain, sizeof r->domain, "%s", domain ? domain : "");
     snprintf(r->password, sizeof r->password, "%s", password ? password : "");
 
-    BOOL ok = freerdp_settings_set_string(s, FreeRDP_ServerHostname, host)
+    BOOL ok = (!r->config_path[0] || freerdp_settings_set_string(s, FreeRDP_ConfigPath, r->config_path))
+        && freerdp_settings_set_string(s, FreeRDP_ServerHostname, host)
         && freerdp_settings_set_uint32(s, FreeRDP_ServerPort, (UINT32)port)
         && freerdp_settings_set_string(s, FreeRDP_Username, r->username)
         && freerdp_settings_set_string(s, FreeRDP_Password, r->password)

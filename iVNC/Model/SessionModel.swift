@@ -178,6 +178,8 @@ final class SessionModel: ObservableObject {
             remoteInputSource = id
         case .clipboard(let content):
             onRemoteClipboard?(content)
+        case .certificateChanged(let host, let answer):
+            certificateQuestion = CertificateQuestion(host: host, answer: answer)
         case .cursorShape(let shape):
             cursorShape = shape
         case .stripe(let pb, let stripe, let stripes):
@@ -210,6 +212,21 @@ final class SessionModel: ObservableObject {
     }
 
     private var guided = false
+
+    /// 윈도우 인증서가 지난번과 다를 때 묻는다 (접속 화면이 창으로 띄운다)
+    struct CertificateQuestion {
+        let host: String
+        let answer: (Bool) -> Void
+    }
+    @Published var certificateQuestion: CertificateQuestion?
+
+    func answerCertificate(_ ok: Bool) {
+        let q = certificateQuestion
+        certificateQuestion = nil
+        // 거절하면 자동으로 다시 시도하지 않는다 (다시 물어보게 됨)
+        if !ok { retries = Self.maxRetries }
+        q?.answer(ok)
+    }
 
     func select(_ d: RemoteDisplay) {
         saveThumbnail()

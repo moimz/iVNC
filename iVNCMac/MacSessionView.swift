@@ -97,6 +97,13 @@ struct MacSessionView: View {
                 _ = SessionWindowSizer.of(w)
             }
         })
+        .alert("윈도우 인증서가 바뀌었습니다", isPresented: Binding(get: { model.certificateQuestion != nil },
+                                                    set: { if !$0, model.certificateQuestion != nil { model.answerCertificate(false) } })) {
+            Button("접속") { model.answerCertificate(true) }
+            Button("취소", role: .cancel) { model.answerCertificate(false) }
+        } message: {
+            Text("\(model.certificateQuestion?.host ?? "") 의 인증서가 지난번 접속 때와 다릅니다. 윈도우를 다시 설치했거나 PC 이름을 바꿨다면 괜찮지만, 아니라면 다른 컴퓨터가 중간에 끼어든 것일 수 있습니다.")
+        }
         .alert("기기 제어 권한이 필요합니다", isPresented: $needsAccessibility) {
             Button("설정 열기") { SystemKeyCapture.openPrivacySettings() }
             Button("나중에", role: .cancel) {}

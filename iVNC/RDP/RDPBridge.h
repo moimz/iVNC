@@ -28,6 +28,8 @@ typedef struct {
     /// 커서 바꿈. mode 0 = cursor 모양, 1 = 숨김, 2 = 기본 화살표
     void (*cursor_set)(void *owner, void *cursor, int mode);
     void (*cursor_free)(void *owner, void *cursor);
+    /// 원격 인증서가 지난번과 다름: 1 = 접속(새 인증서 기억), 0 = 끊음. 답할 때까지 접속 스레드가 기다린다
+    int (*certificate_changed)(void *owner, const char *host, int port, const char *oldFingerprint, const char *newFingerprint);
     /// 원격에서 복사함. kind 1 = 글자(UTF-16LE), 2 = PNG, 3 = DIB(비트맵 정보 머리 + 픽셀)
     void (*clip_remote)(void *owner, int kind, const uint8_t *data, int length);
 } ivnc_rdp_callbacks;
@@ -47,6 +49,8 @@ enum {
 };
 
 ivnc_rdp *ivnc_rdp_new(ivnc_rdp_callbacks callbacks);
+/// 인증서 기억(known_hosts2)을 둘 폴더 (run 전에)
+void ivnc_rdp_set_config_path(ivnc_rdp *r, const char *path);
 /// 클립보드 공유 (run 전에)
 void ivnc_rdp_set_clipboard(ivnc_rdp *r, int enabled);
 /// 이 기기 클립보드를 원격에 알린다 (원격이 붙여넣을 때 가져간다). 없는 것은 NULL·0. text 는 UTF-16LE (끝 0 포함)

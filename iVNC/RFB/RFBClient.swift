@@ -28,6 +28,8 @@ final class RFBClient {
         case inputSource(String, secure: Bool)
         /// 원격 맥에서 복사한 것 (클립보드 공유: 글자·그림)
         case clipboard(ClipContent)
+        /// 윈도우: 원격 인증서가 지난번과 다름 (호스트, 답: true = 접속)
+        case certificateChanged(String, (Bool) -> Void)
     }
 
     /// 클립보드 내용 (애플 페이스트보드에서 쓰는 종류만)

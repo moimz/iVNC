@@ -141,6 +141,11 @@ final class RDPClient: RemoteClient {
             default: me.emit(.cursorShape(nil))
             }
         }
+        cb.certificate_changed = { owner, host, port, _, _ in
+            guard let owner else { return 0 }
+            let host = host.map { String(cString: $0) } ?? ""
+            return Unmanaged<RDPClient>.fromOpaque(owner).takeUnretainedValue().askCertificate(host: "\(host):\(port)") ? 1 : 0
+        }
         cb.clip_remote = { owner, kind, data, length in
             guard let owner, let data, length > 0 else { return }
             Unmanaged<RDPClient>.fromOpaque(owner).takeUnretainedValue()
@@ -155,6 +160,9 @@ final class RDPClient: RemoteClient {
             return
         }
         ivnc_rdp_set_clipboard(h, clipboardSharing ? 1 : 0)
+        let certDir = AppDirectories.support.appendingPathComponent("rdp")
+        try? FileManager.default.createDirectory(at: certDir, withIntermediateDirectories: true)
+        ivnc_rdp_set_config_path(h, certDir.path)
         lock.lock()
         if stopped { lock.unlock(); ivnc_rdp_free(h); return }
         handle = h
@@ -170,7 +178,8 @@ final class RDPClient: RemoteClient {
         ivnc_rdp_free(h)
         guard !wasStopped, result != Int32(IVNC_RDP_OK) else { return }
         let detail = String(cString: message)
-        emit(.failed(Self.describe(result, detail: detail)))
+        lock.lock(); let rejected = certificateRejected; lock.unlock()
+        emit(.failed(rejected ? "바뀐 인증서를 받아들이지 않아 접속하지 않았습니다." : Self.describe(result, detail: detail)))
     }
 
     private static func describe(_ code: Int32, detail: String) -> String {
@@ -230,8 +239,31 @@ final class RDPClient: RemoteClient {
         return (Int(ivnc_rdp_received(h)), 0, 0)
     }
 
+    /// 인증서 질문에 답을 기다리는 중 (끊으면 거절로 풀어 준다)
+    private var certificateWait: DispatchSemaphore?
+    private var certificateAnswer = false
+    private var certificateRejected = false
+
+    /// 접속 스레드: 화면에 묻고 답할 때까지 기다린다 (5분 넘으면 거절)
+    private func askCertificate(host: String) -> Bool {
+        let sem = DispatchSemaphore(value: 0)
+        lock.lock()
+        if stopped { lock.unlock(); return false }
+        certificateWait = sem; certificateAnswer = false
+        lock.unlock()
+        emit(.certificateChanged(host, { [weak self] ok in
+            guard let self else { return }
+            self.lock.lock(); self.certificateAnswer = ok; let s = self.certificateWait; self.certificateWait = nil; self.lock.unlock()
+            s?.signal()
+        }))
+        _ = sem.wait(timeout: .now() + 300)
+        lock.lock(); let ok = certificateAnswer; certificateWait = nil; if !ok { certificateRejected = true }; lock.unlock()
+        return ok
+    }
+
     func stop() {
         lock.lock()
+        certificateWait?.signal(); certificateWait = nil
         stopped = true
         if let h = handle { ivnc_rdp_stop(h) }
         lock.unlock()
