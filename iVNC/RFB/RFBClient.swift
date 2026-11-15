@@ -1,6 +1,7 @@
 import CommonCrypto
 import CoreVideo
 import Foundation
+import zlib
 
 /// macOS 화면 공유(RFB 003.889 + 애플 확장) 클라이언트.
 ///
@@ -25,7 +26,17 @@ final class RFBClient {
         case reconnectStandard
         /// 원격 맥의 지금 입력 소스 (애플 1109, 예: com.apple.keylayout.ABC, com.apple.inputmethod.Korean.2SetKorean)
         case inputSource(String)
+        /// 원격 맥에서 복사한 글자 (클립보드 공유)
+        case clipboard(String)
     }
+
+    /// 애플 클립보드 공유를 쓸지 (start 전에 정한다. 맥 앱만 켬)
+    var clipboardSharing = false
+    /// 서버가 알려 준 클립보드 세션 번호 (보낼 때 그대로 돌려준다)
+    private var clipSessionID: UInt32 = 0
+    /// 서버가 "클립보드 내용 필요"(상태 3)라고 하면 보낼 글자
+    private var clipOutgoing: String?
+    private let clipLock = NSLock()
 
     struct CursorShape {
         let image: CGImage
@@ -638,6 +649,8 @@ final class RFBClient {
                 }
             }
             setup += Self.setDisplay(nil)
+            // 클립보드 자동 동기화 켬 (AutoPasteboard 0x15: [0x15][0][u16 1=켬][0 ×4]) — noVNC-ARD 와 같은 자리
+            if clipboardSharing { setup += [0x15, 0, 0, 1, 0, 0, 0, 0] }
         }
         // SetPixelFormat: 32bpp depth24 리틀엔디언 true color, R16 G8 B0
         setup += [0, 0, 0, 0, 32, 24, 0, 1] + [UInt8].be16(255) + [UInt8].be16(255) + [UInt8].be16(255) + [16, 8, 0, 0, 0, 0]
@@ -684,13 +697,36 @@ final class RFBClient {
             DebugLog.write("상태 알림 \(body.prefix(4).map { String(format: "%02x", $0) }.joined())")
             // 4 = Tickle: 보낼 게 없을 때 2초마다 온다. 서버가 화면 보내기를 멈추고 이것만 보내는 경우가 있어서,
             // 받을 때마다 자동 화면 갱신을 다시 켜 준다 (noVNC-ARD 와 같은 방식, 화면이 오는 동안에는 안 온다)
+            if clipboardSharing, body.count >= 4, body[2] == 0, body[3] == 2 {
+                // 원격 클립보드가 바뀜 → 내용 요청 (ClipboardRequest 0x0b: [0x0b][형식 0][0 0][u32 세션])
+                clipLock.lock(); let sid = clipSessionID; clipLock.unlock()
+                socket?.send([0x0B, 0, 0, 0] + [UInt8].be32(sid))
+                DebugLog.write("클립보드: 원격이 바뀜 → 요청")
+            }
+            if clipboardSharing, body.count >= 4, body[2] == 0, body[3] == 3 {
+                // 서버가 우리 클립보드를 달라고 함
+                clipLock.lock(); let text = clipOutgoing; clipLock.unlock()
+                if let text { sendClipboardNow(text) }
+            }
             if body.count >= 4 && body[2] == 0 && body[3] == 4 {
                 hpSubscribe()
                 if autoUpdateAllowed {
                     if Self.useAutoUpdate { setAutoUpdate(true) } else { requestUpdate(incremental: true) }
                 }
             }
-        case 0x1F: let h = try s.read(15); try s.skip(Int(UInt32(h[11]) << 24 | UInt32(h[12]) << 16 | UInt32(h[13]) << 8 | UInt32(h[14])))
+        case 0x1F:
+            // 클립보드: [형식][0 0][u32 세션][u32 풀린 크기][u32 압축 크기][zlib 애플 페이스트보드]
+            let h = try s.read(15)
+            func u32(_ o: Int) -> UInt32 { UInt32(h[o]) << 24 | UInt32(h[o + 1]) << 16 | UInt32(h[o + 2]) << 8 | UInt32(h[o + 3]) }
+            let sid = u32(3), full = Int(u32(7)), comp = Int(u32(11))
+            let data = try s.read(comp)
+            clipLock.lock(); clipSessionID = sid; clipLock.unlock()
+            if comp > 0, full > 0, full < 64 << 20, let pb = Self.zlibUncompress(data, size: full), let text = Self.pasteboardText(pb) {
+                DebugLog.write("클립보드: 원격 글자 받음 \(text.count)자") // 내용은 남기지 않는다
+                emit(.clipboard(text))
+            } else {
+                DebugLog.write("클립보드: 받음 \(comp)바이트, 글자 없음")
+            }
         case 0x20: let h = try s.read(8); try s.skip(Int(UInt32(h[4]) << 24 | UInt32(h[5]) << 16 | UInt32(h[6]) << 8 | UInt32(h[7])))
         case 0x51: handleDisplayInfo2(try s.read(try s.u16()))
         case 150: break
@@ -1140,6 +1176,70 @@ final class RFBClient {
         } else {
             socket?.send([4, down ? 1 : 0, 0, 0] + [UInt8].be32(keysym))
         }
+    }
+
+    // MARK: - 클립보드 (애플 페이스트보드, noVNC-ARD 를 따름)
+
+    /// 이 맥 클립보드 글자를 원격으로 (원격에서 붙여넣기 할 수 있게)
+    func sendClipboard(_ text: String) {
+        guard clipboardSharing else { return }
+        clipLock.lock(); clipOutgoing = text; clipLock.unlock()
+        sendClipboardNow(text)
+    }
+
+    private func sendClipboardNow(_ text: String) {
+        let pb = Self.pasteboard(text)
+        guard let z = Self.zlibCompress(pb) else { return }
+        clipLock.lock(); let sid = clipSessionID; clipLock.unlock()
+        // ClipboardSend 0x1f: [0x1f][형식 0][0 0][u32 세션][u32 풀린 크기][u32 압축 크기][zlib]
+        socket?.send([0x1F, 0, 0, 0] + [UInt8].be32(sid) + [UInt8].be32(UInt32(pb.count)) + [UInt8].be32(UInt32(z.count)) + z)
+        DebugLog.write("클립보드: 이 맥 글자 보냄 \(text.count)자")
+    }
+
+    /// [u32 종류 수=1][u32 이름 길이][public.utf8-plain-text][u32 flags 0][u32 속성 수 0][u32 데이터 길이][UTF-8]
+    private static func pasteboard(_ text: String) -> [UInt8] {
+        let name = Array("public.utf8-plain-text".utf8), data = Array(text.utf8)
+        return [UInt8].be32(1) + [UInt8].be32(UInt32(name.count)) + name + [UInt8].be32(0) + [UInt8].be32(0)
+            + [UInt8].be32(UInt32(data.count)) + data
+    }
+
+    /// 페이스트보드에서 public.utf8-plain-text 를 찾는다
+    private static func pasteboardText(_ b: [UInt8]) -> String? {
+        var o = 0
+        func u32() -> Int? {
+            guard o + 4 <= b.count else { return nil }
+            defer { o += 4 }
+            return Int(b[o]) << 24 | Int(b[o + 1]) << 16 | Int(b[o + 2]) << 8 | Int(b[o + 3])
+        }
+        func bytes(_ n: Int) -> ArraySlice<UInt8>? {
+            guard n >= 0, o + n <= b.count else { return nil }
+            defer { o += n }
+            return b[o..<(o + n)]
+        }
+        guard let types = u32() else { return nil }
+        for _ in 0..<min(types, 64) {
+            guard let nl = u32(), let name = bytes(nl), u32() != nil, let props = u32() else { return nil }
+            for _ in 0..<min(props, 64) {
+                guard let kl = u32(), bytes(kl) != nil, let vl = u32(), bytes(vl) != nil else { return nil }
+            }
+            guard let dl = u32(), let data = bytes(dl) else { return nil }
+            if String(decoding: name, as: UTF8.self) == "public.utf8-plain-text" { return String(decoding: data, as: UTF8.self) }
+        }
+        return nil
+    }
+
+    private static func zlibCompress(_ input: [UInt8]) -> [UInt8]? {
+        var len = compressBound(uLong(input.count))
+        var out = [UInt8](repeating: 0, count: Int(len))
+        guard compress2(&out, &len, input, uLong(input.count), Z_DEFAULT_COMPRESSION) == Z_OK else { return nil }
+        return Array(out.prefix(Int(len)))
+    }
+
+    private static func zlibUncompress(_ input: [UInt8], size: Int) -> [UInt8]? {
+        var len = uLongf(size)
+        var out = [UInt8](repeating: 0, count: size)
+        guard uncompress(&out, &len, input, uLong(input.count)) == Z_OK else { return nil }
+        return Array(out.prefix(Int(len)))
     }
 
     // MARK: - 애플 메시지

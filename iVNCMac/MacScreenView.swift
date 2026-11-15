@@ -63,6 +63,8 @@ final class MacScreenNSView: NSView, NSTextInputClient {
         window?.makeFirstResponder(self)
         if let w = window {
             if w.isKeyWindow { SystemKeyCapture.shared.target = self }
+            // 화면이 처음 뜨면 이 맥 클립보드를 원격으로 (원격에서 바로 붙여넣기)
+            MacClipboard.pushIfChanged(model, force: true)
             NotificationCenter.default.addObserver(self, selector: #selector(windowBecameKey), name: NSWindow.didBecomeKeyNotification, object: w)
             NotificationCenter.default.addObserver(self, selector: #selector(releaseAll), name: NSWindow.didResignKeyNotification, object: w)
         }
@@ -112,6 +114,7 @@ final class MacScreenNSView: NSView, NSTextInputClient {
     /// 이 창으로 돌아오면(다른 앱에서 입력 소스를 바꿨을 수 있다) 다시 맞춘다
     @objc private func windowBecameKey() {
         SystemKeyCapture.shared.target = self
+        MacClipboard.pushIfChanged(model)
         switchTries = 0
         DispatchQueue.main.async { [weak self] in self?.syncInputSource(reason: "창 돌아옴") }
     }

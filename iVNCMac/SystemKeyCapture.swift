@@ -82,3 +82,32 @@ final class SystemKeyCapture {
         }
     }
 }
+
+/// 클립보드 공유 (맥 앱). 원격에서 복사하면 이 맥 클립보드에 넣고,
+/// 접속 창으로 돌아올 때 이 맥 클립보드가 바뀌어 있으면 원격으로 보낸다 (원격에서 바로 ⌘V 하게)
+@MainActor
+enum MacClipboard {
+    static let defaultsKey = "mac.clipboardSharing"
+    /// 기본 켬
+    static var enabled: Bool { UserDefaults.standard.object(forKey: defaultsKey) as? Bool ?? true }
+
+    /// 마지막으로 주고받은 때의 이 맥 클립보드 번호 (같은 걸 다시 보내지 않게)
+    private static var handledChangeCount = NSPasteboard.general.changeCount
+
+    static func setFromRemote(_ text: String) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+        handledChangeCount = pb.changeCount
+    }
+
+    /// 이 맥에서 새로 복사한 게 있으면 원격으로 (force: 접속 처음엔 지금 것을 보낸다)
+    static func pushIfChanged(_ model: SessionModel, force: Bool = false) {
+        guard enabled else { return }
+        let pb = NSPasteboard.general
+        guard force || pb.changeCount != handledChangeCount else { return }
+        handledChangeCount = pb.changeCount
+        guard let text = pb.string(forType: .string), !text.isEmpty else { return }
+        model.sendClipboard(text)
+    }
+}

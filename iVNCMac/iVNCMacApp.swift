@@ -31,6 +31,7 @@ struct iVNCMacApp: App {
 /// 보기 메뉴: 실제 크기·창에 맞춤 (지금 앞에 있는 접속 창에 알림으로 전한다)
 struct SessionCommands: Commands {
     @AppStorage(MacScreenNSView.KeyMode.defaultsKey) private var keyMode = MacScreenNSView.KeyMode.remote.rawValue
+    @AppStorage(MacClipboard.defaultsKey) private var clipboardSharing = true
 
     var body: some Commands {
         // 한글 조합을 어디서 할지
@@ -39,6 +40,8 @@ struct SessionCommands: Commands {
                 ForEach(MacScreenNSView.KeyMode.allCases, id: \.self) { Text($0.title).tag($0.rawValue) }
             }
             .pickerStyle(.inline)
+            Divider()
+            Toggle("클립보드 공유 (다음 접속부터)", isOn: $clipboardSharing)
         }
         CommandGroup(after: .toolbar) {
             Button("실제 크기") { NotificationCenter.default.post(name: MacScreenNSView.actualSizeNotification, object: nil) }

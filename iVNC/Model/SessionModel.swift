@@ -117,6 +117,7 @@ final class SessionModel: ObservableObject {
                           virtualDisplay: Self.virtualDisplaySize)
         isHighPerformance = false
         triedHighPerformance = !standardOnly
+        c.clipboardSharing = clipboardSharing
         c.onEvent = { [weak self] in self?.handle($0) }
         client = c
         c.start()
@@ -161,6 +162,8 @@ final class SessionModel: ObservableObject {
             cursor = CGPoint(x: x, y: y)
         case .inputSource(let id):
             remoteInputSource = id
+        case .clipboard(let text):
+            onRemoteClipboard?(text)
         case .cursorShape(let shape):
             cursorShape = shape
         case .stripe(let pb, let stripe, let stripes):
@@ -257,6 +260,11 @@ final class SessionModel: ObservableObject {
     }
     /// 조합 중이라 아직 안 보낸 글자 (키보드 위에 보여 준다)
     @Published var composing = ""
+    /// 클립보드 공유 (맥 앱이 접속 전에 켠다). 원격에서 복사하면 onRemoteClipboard, 보낼 땐 sendClipboard
+    var clipboardSharing = false
+    var onRemoteClipboard: ((String) -> Void)?
+    func sendClipboard(_ text: String) { client?.sendClipboard(text) }
+
     /// 원격 맥의 지금 입력 소스 (1109). 맥 앱이 이 맥 입력 소스와 한/영을 맞출 때 쓴다
     @Published private(set) var remoteInputSource: String?
 
