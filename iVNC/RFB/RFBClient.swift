@@ -879,6 +879,33 @@ final class RFBClient {
         }
     }
 
+    /// 키·마우스를 보낸 뒤 화면을 다시 요청한다.
+    /// 애플 서버는 걸어 둔 증분 요청에는 화면이 바뀌어도 바로 답하지 않고, 새 요청이 와야 바뀐 부분을 보낸다
+    /// (2026-11-15 맥 앱 로그: 키를 친 뒤 2초 Tickle 에 맞춰 다시 요청할 때까지 화면이 안 옴, 수신량 0.0) →
+    /// 마지막 입력 0.06초·0.3초 뒤 증분 요청 (입력이 이어지면 미룬다)
+    private var nudgeGeneration = 0
+    private var lastNudgeAt: TimeInterval = 0
+    private let nudgeLock = NSLock()
+    private func nudgeAfterInput() {
+        guard hpState != .on else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        nudgeLock.lock()
+        nudgeGeneration &+= 1; let g = nudgeGeneration
+        // 끌기·연속 입력 중에도 0.1초에 한 번은 바로 요청 (입력이 이어지면 아래 지연 요청은 계속 미뤄지므로)
+        let now_ = now - lastNudgeAt > 0.1
+        if now_ { lastNudgeAt = now }
+        nudgeLock.unlock()
+        if now_ && autoUpdateAllowed && !Self.useAutoUpdate { requestUpdate(incremental: true) }
+        for delay in [0.06, 0.3] {
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self else { return }
+                self.nudgeLock.lock(); let current = self.nudgeGeneration == g; self.nudgeLock.unlock()
+                guard current, self.autoUpdateAllowed, !Self.useAutoUpdate else { return }
+                self.requestUpdate(incremental: true)
+            }
+        }
+    }
+
     private func requestUpdate(incremental: Bool) {
         // 고성능 중에는 일반 화면을 요청하지 않는다: 요청이 쌓이면 서버가 영상을 멈추고 일반 화면으로 답하기 시작한다 (2026-11-02 실측)
         guard hpState != .on else { return }
@@ -953,6 +980,7 @@ final class RFBClient {
     private func pointer(_ x: Int, _ y: Int, _ mask: UInt8) {
         let x = max(0, min(x, framebuffer.width - 1)), y = max(0, min(y, framebuffer.height - 1))
         socket?.send([5, mask] + [UInt8].be16(x) + [UInt8].be16(y))
+        nudgeAfterInput()
         stateLock.lock(); let moved = cursor?.x != x || cursor?.y != y; cursor = (x, y); stateLock.unlock()
         if moved { emit(.cursor(x, y)) }
     }
@@ -1003,6 +1031,7 @@ final class RFBClient {
 
     /// 지금 커서 자리에서 스크롤한다. dx, dy 는 맥 포인트, 양수 dy = 아래로 (내용이 위로 감)
     func scroll(dx: Double, dy: Double, phase: ScrollPhase = .none, momentum: MomentumPhase = .none) {
+        defer { nudgeAfterInput() }
         // 서버는 양수를 위로 받는다 (2026-11-03 실측: 그대로 보내면 끌기·버튼 모두 거꾸로였다)
         let dx = -dx, dy = -dy
         stateLock.lock(); let pos = cursor ?? (framebuffer.width / 2, framebuffer.height / 2); stateLock.unlock()
@@ -1095,6 +1124,7 @@ final class RFBClient {
     }
 
     private func sendKeyEvent(_ keysym: UInt32, down: Bool, keycode: UInt16 = 0) {
+        defer { nudgeAfterInput() }
         if let key = ardKey {
             // EncryptedEvent (0x10): [type][flags] + AES-ECB([0xFF][down][keysym u32][시각 u32][0 0][키코드 u16][유니코드 u16])
             // (noVNC-ARD 는 키코드·유니코드 자리를 0 으로 보낸다)
