@@ -210,6 +210,8 @@ final class RFBClient {
     // 1011 = 애플 MVS (손실 DCT, 애플 앱의 화질 "적응"). 무손실 ZRLE 보다 훨씬 작다
     private static let standardEncodings: [Int32] = [1011, 16, 6, 1, 0, 1105, 1101, 1100, 1104, 1109, -223, -224, -239] // 1100: 커서 위치, 1104: 애플 커서 모양, 1109: 키보드 입력 상태, -239: 표준 커서 모양 (애플 서버는 안 보냄)
 
+    /// 모니터 목록(DisplayInfo2)을 한 번이라도 받았는지
+    private var gotDisplayInfo = false
     /// 이 접속에서 가상 디스플레이를 요청했는지 (끊을 때 내리기 신호를 보낼지)
     private var hpRequested = false
     private var hpSecrets: HP.Secrets?
@@ -679,6 +681,22 @@ final class RFBClient {
         if hpState == .trying { encodings = [1010] + encodings + [1110] } // 고성능: 1010 맨 앞, 1110 맨 뒤
         setup += [2, 0] + [UInt8].be16(encodings.count) + encodings.flatMap { [UInt8].be32(UInt32(bitPattern: $0)) }
         s.send(setup)
+        if apple && hpState != .trying {
+            // 모니터 목록(DisplayInfo2)이 안 오면 ServerInit 크기를 화면 하나로 보여 준다
+            // (원격에 가상 디스플레이가 남은 상태 등에서 목록 없이 멈춰 있었다, 2026-11-15)
+            let fw = w, fh = h
+            DispatchQueue.global().asyncAfter(deadline: .now() + 3) { [weak self] in
+                guard let self else { return }
+                self.stateLock.lock(); let got = self.gotDisplayInfo || self.stopped; self.stateLock.unlock()
+                guard !got, fw > 0, fh > 0 else { return }
+                DebugLog.write("3초 동안 모니터 목록이 안 옴 → ServerInit \(fw)x\(fh) 를 화면 하나로")
+                // 이 화면을 이미 보내는 중으로 쳐서, 고르면 모니터 전환을 기다리지 않고 바로 화면을 요청하게 한다
+                self.stateLock.lock(); self.serverDisplayID = DisplayInfo2.allDisplays; self.stateLock.unlock()
+                let all = RemoteDisplay(id: DisplayInfo2.allDisplays, isMain: true, scale: 1,
+                                        desktop: CGRect(x: 0, y: 0, width: fw, height: fh), framebuffer: CGRect(x: 0, y: 0, width: fw, height: fh))
+                self.emit(.displays([all]))
+            }
+        }
         if !apple {
             // 표준 VNC 서버: 모니터 정보가 없으니 전체를 하나로
             let all = RemoteDisplay(id: DisplayInfo2.allDisplays, isMain: true, scale: 1,
@@ -920,6 +938,7 @@ final class RFBClient {
 
     private func handleDisplayInfo2(_ data: [UInt8]) {
         guard let info = DisplayInfo2(data) else { DebugLog.write("DisplayInfo2 해석 실패 \(data.count)바이트"); return }
+        stateLock.lock(); gotDisplayInfo = true; stateLock.unlock()
         switch hpState {
         case .trying:
             // 고성능 시도 중의 목록은 가상 디스플레이 하나다: 결과가 나올 때까지 붙잡아 둔다
