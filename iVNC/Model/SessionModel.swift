@@ -153,9 +153,13 @@ final class SessionModel: ObservableObject {
                 isHighPerformance = false
             }
         case .reconnectStandard:
-            client?.stop()
+            client?.stop() // 가상 디스플레이 내리기 신호를 보내고 끊는다 (남아 있던 것도 같이 정리되길 기대)
             standardOnly = true
-            if let store { connect(store: store) }
+            // 원격이 가상 디스플레이를 내리고 실제 모니터를 다시 켤 시간을 준다
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                guard let self, let store = self.store, !self.closed else { return }
+                self.connect(store: store)
+            }
         case .frame:
             presentFrame()
         case .cursor(let x, let y):

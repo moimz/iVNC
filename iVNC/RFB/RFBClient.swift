@@ -210,6 +210,8 @@ final class RFBClient {
     // 1011 = 애플 MVS (손실 DCT, 애플 앱의 화질 "적응"). 무손실 ZRLE 보다 훨씬 작다
     private static let standardEncodings: [Int32] = [1011, 16, 6, 1, 0, 1105, 1101, 1100, 1104, 1109, -223, -224, -239] // 1100: 커서 위치, 1104: 애플 커서 모양, 1109: 키보드 입력 상태, -239: 표준 커서 모양 (애플 서버는 안 보냄)
 
+    /// 이 접속에서 가상 디스플레이를 요청했는지 (끊을 때 내리기 신호를 보낼지)
+    private var hpRequested = false
     private var hpSecrets: HP.Secrets?
     private var hpReceiver: HPUDPReceiver?
     private var hpServerPorts: (audio: UInt16, video: UInt16)?
@@ -441,7 +443,13 @@ final class RFBClient {
     }
 
     func stop() {
-        stateLock.lock(); stopped = true; let s = socket; stateLock.unlock()
+        stateLock.lock(); let already = stopped; stopped = true; let s = socket; stateLock.unlock()
+        // 고성능(가상 디스플레이)을 요청한 접속이면 끊기 전에 가상 디스플레이 0개를 보내 원격이 정리하게 한다
+        if !already, hpRequested, let s {
+            s.send(HP.removeVirtualDisplaysMessage())
+            DebugLog.write("끊기 전 가상 디스플레이 내리기(0x1d 0개) 보냄")
+            Thread.sleep(forTimeInterval: 0.15)
+        }
         watchdog?.cancel()
         hpTimer?.cancel()
         hpReceiver?.stop()
@@ -652,6 +660,7 @@ final class RFBClient {
             if hpState == .trying {
                 // 배율 1 (레티나 아님): 원격 화면을 레티나로 볼 이유가 없고, 픽셀이 1/4 이라 영상이 훨씬 가볍다
                 setup += HP.virtualDisplayMessage(width: virtualDisplay.width, height: virtualDisplay.height, scale: 1)
+                hpRequested = true
                 DebugLog.write("HP 가상 디스플레이 요청 \(virtualDisplay.width)x\(virtualDisplay.height) @1")
                 emit(.status("고성능 연결 시도 중…"))
                 hpSchedule(after: 5) { [weak self] in
