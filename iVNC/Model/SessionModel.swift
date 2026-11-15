@@ -64,7 +64,7 @@ final class SessionModel: ObservableObject {
     @Published var typing = false
 
     let computer: Computer
-    private var client: RFBClient?
+    private var client: RemoteClient?
     private weak var store: ComputerStore?
 
     init(computer: Computer) {
@@ -102,11 +102,6 @@ final class SessionModel: ObservableObject {
         self.store = store
         client?.stop()
         if !keepStatus { phase = .connecting("접속하는 중…"); retries = 0 }
-        // 윈도우(RDP)는 2.0b 에서 만드는 중
-        if computer.type == .windows {
-            phase = .failed("윈도우 원격 데스크톱 접속은 아직 만드는 중입니다.")
-            return
-        }
         // Debug: 서명 없는 시험 빌드(키체인 못 씀)는 IVNC_TEST_PASSWORD 로 가짜 맥에 붙는다
         #if DEBUG
         let testPassword = ProcessInfo.processInfo.environment["IVNC_TEST_PASSWORD"]
@@ -117,11 +112,19 @@ final class SessionModel: ObservableObject {
             phase = .failed("저장된 암호가 없습니다. 컴퓨터를 길게 눌러 편집에서 암호를 입력하세요.")
             return
         }
-        let c = RFBClient(host: computer.host, port: computer.port, username: computer.username, password: pw,
+        let c: RemoteClient
+        if computer.type == .windows {
+            // 윈도우 원격 데스크톱: 설정 해상도(또는 이 기기에 맞춘 크기)로 원격 화면을 만든다
+            c = RDPClient(host: computer.host, port: computer.port, username: computer.username, password: pw,
+                          size: Self.virtualDisplaySize)
+            triedHighPerformance = false
+        } else {
+            c = RFBClient(host: computer.host, port: computer.port, username: computer.username, password: pw,
                           tryHighPerformance: !standardOnly && computer.prefersHighPerformance,
                           virtualDisplay: Self.virtualDisplaySize)
+            triedHighPerformance = !standardOnly
+        }
         isHighPerformance = false
-        triedHighPerformance = !standardOnly
         c.clipboardSharing = clipboardSharing
         c.onEvent = { [weak self] in self?.handle($0) }
         client = c
@@ -149,7 +152,8 @@ final class SessionModel: ObservableObject {
             if case .connecting = phase {
                 store?.markConnected(computer.id)
                 // 고성능은 가상 디스플레이 하나뿐이니 고르지 않고 바로 본다
-                if isHighPerformance, let d = list.first { select(d) } else { phase = .picking }
+                // 윈도우도 원격 화면 하나뿐이라 바로 본다
+                if isHighPerformance || computer.type == .windows, let d = list.first { select(d) } else { phase = .picking }
             }
         case .highPerformance(let ok):
             if ok {

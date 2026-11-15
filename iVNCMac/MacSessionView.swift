@@ -88,9 +88,9 @@ struct MacSessionView: View {
                     .allowsHitTesting(false)
             }
         }
-        // 고성능을 시도하면 설정 해상도로 창을 먼저 연다 (실패하면 모니터를 고른 뒤 그 크기로)
+        // 고성능을 시도하거나 윈도우면 설정 해상도로 창을 먼저 연다 (고성능이 실패하면 모니터를 고른 뒤 그 크기로)
         .background(WindowReader { w, view in
-            if model.computer.prefersHighPerformance {
+            if model.computer.prefersHighPerformance || model.computer.type == .windows {
                 let v = SessionModel.virtualDisplaySize
                 SessionWindowSizer.of(w).fit(pixel: CGSize(width: v.width, height: v.height), measuring: view)
             } else {

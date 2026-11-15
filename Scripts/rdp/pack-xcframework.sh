@@ -8,7 +8,9 @@ P=$R/pack; rm -rf $P; mkdir -p $P
 args=()
 for n in macos ios sim; do
   mkdir -p $P/$n/include
-  libtool -static -o $P/$n/libFreeRDP.a $R/out/freerdp/$n/lib/libfreerdp-client.a $R/out/freerdp/$n/lib/libfreerdp.a \
+  # 채널 공용 조각(remdesk-common 등)은 설치되지 않아 빌드 폴더에서 같이 넣는다
+  common=($(find $R/build/freerdp-$n/channels -name '*-common.a'))
+  libtool -static -o $P/$n/libFreeRDP.a $R/out/freerdp/$n/lib/libfreerdp-client.a $R/out/freerdp/$n/lib/libfreerdp.a "${common[@]}" \
     $R/out/freerdp/$n/lib/libwinpr.a $R/out/openssl/$n/lib/libssl.a $R/out/openssl/$n/lib/libcrypto.a 2>&1 | grep -v 'has no symbols' || true
   cp -R $R/out/freerdp/$n/include/freerdp3/freerdp $R/out/freerdp/$n/include/winpr3/winpr $R/out/openssl/$n/include/openssl $P/$n/include/
   args+=(-library $P/$n/libFreeRDP.a -headers $P/$n/include)
