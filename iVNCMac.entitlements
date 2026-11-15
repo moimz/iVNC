@@ -2,7 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- iCloud 키-값 동기화(com.apple.developer.ubiquity-kvstore-identifier)는 맥용 프로필이 생긴 뒤 넣는다 (Ai/iVNC.md 14장) -->
+	<!-- 컴퓨터 목록 iCloud 동기화 (아이폰·아이패드와 같은 저장소). 암호는 iCloud 키체인 -->
+	<key>com.apple.developer.ubiquity-kvstore-identifier</key>
+	<string>$(TeamIdentifierPrefix)com.moimz.iVNC</string>
 	<key>keychain-access-groups</key>
 	<array>
 		<string>$(AppIdentifierPrefix)com.moimz.iVNC</string>
