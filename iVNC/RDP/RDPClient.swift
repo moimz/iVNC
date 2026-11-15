@@ -123,6 +123,23 @@ final class RDPClient: RemoteClient {
             guard let owner else { return }
             Unmanaged<RDPClient>.fromOpaque(owner).takeUnretainedValue().remoteIME(korean: korean != 0, reason: "윈도우 알림")
         }
+        cb.cursor_new = { owner, bgra, width, height, hotX, hotY in
+            guard let bgra, let shape = RDPClient.cursorShape(bgra, Int(width), Int(height), Int(hotX), Int(hotY)) else { return nil }
+            return Unmanaged.passRetained(CursorBox(shape)).toOpaque()
+        }
+        cb.cursor_free = { _, cursor in
+            guard let cursor else { return }
+            Unmanaged<CursorBox>.fromOpaque(cursor).release()
+        }
+        cb.cursor_set = { owner, cursor, mode in
+            guard let owner else { return }
+            let me = Unmanaged<RDPClient>.fromOpaque(owner).takeUnretainedValue()
+            switch mode {
+            case 0: if let cursor { me.emit(.cursorShape(Unmanaged<CursorBox>.fromOpaque(cursor).takeUnretainedValue().shape)) }
+            case 1: me.emit(.cursorShape(RDPClient.hiddenCursor))
+            default: me.emit(.cursorShape(nil))
+            }
+        }
         cb.log = { _, message in
             guard let message else { return }
             DebugLog.write("RDP: " + String(cString: message))
@@ -308,6 +325,30 @@ final class RDPClient: RemoteClient {
         sendWheel(&vy, horizontal: false)
         sendWheel(&vx, horizontal: true)
     }
+
+    // MARK: 커서 모양
+
+    final class CursorBox {
+        let shape: RFBClient.CursorShape
+        init(_ shape: RFBClient.CursorShape) { self.shape = shape }
+    }
+
+    /// 윈도우 커서 그림 (B G R A, 알파 곱하지 않음) → 커서 모양
+    static func cursorShape(_ bgra: UnsafePointer<UInt8>, _ w: Int, _ h: Int, _ hotX: Int, _ hotY: Int) -> RFBClient.CursorShape? {
+        let data = Data(bytes: bgra, count: w * h * 4)
+        guard let provider = CGDataProvider(data: data as CFData),
+              let image = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGBitmapInfo(rawValue: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.first.rawValue),
+                                  provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { return nil }
+        return RFBClient.CursorShape(image: image, hotspot: CGPoint(x: hotX, y: hotY))
+    }
+
+    /// 원격이 커서를 숨김 (게임·동영상 등): 투명 1픽셀
+    static let hiddenCursor: RFBClient.CursorShape? = {
+        let px: [UInt8] = [0, 0, 0, 0]
+        return px.withUnsafeBufferPointer { cursorShape($0.baseAddress!, 1, 1, 0, 0) }
+    }()
 
     // MARK: 한/영
 

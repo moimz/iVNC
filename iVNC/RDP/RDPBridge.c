@@ -12,6 +12,8 @@
 #include <freerdp/channels/channels.h>
 #include <freerdp/gdi/gdi.h>
 #include <freerdp/error.h>
+#include <freerdp/graphics.h>
+#include <freerdp/codec/color.h>
 #include <winpr/synch.h>
 #include <winpr/wlog.h>
 
@@ -124,6 +126,57 @@ static BOOL set_ime_status(rdpContext *context, UINT16 id, UINT32 state, UINT32 
     return TRUE;
 }
 
+// MARK: 커서 (원격 커서 모양 → 이 기기 커서)
+
+typedef struct {
+    rdpPointer pointer;
+    void *handle;
+} ivnc_pointer;
+
+static BOOL pointer_new(rdpContext *context, rdpPointer *pointer) {
+    ivnc_rdp *r = owner_of(context);
+    ivnc_pointer *p = (ivnc_pointer *)pointer;
+    p->handle = NULL;
+    if (!r || !r->cb.cursor_new || pointer->width == 0 || pointer->height == 0) return TRUE;
+    size_t stride = (size_t)pointer->width * 4;
+    BYTE *data = calloc(1, stride * pointer->height);
+    if (!data) return FALSE;
+    if (freerdp_image_copy_from_pointer_data(data, PIXEL_FORMAT_BGRA32, (UINT32)stride, 0, 0, pointer->width, pointer->height,
+                                             pointer->xorMaskData, pointer->lengthXorMask, pointer->andMaskData,
+                                             pointer->lengthAndMask, pointer->xorBpp, context->gdi ? &context->gdi->palette : NULL))
+        p->handle = r->cb.cursor_new(r->cb.owner, data, (int)pointer->width, (int)pointer->height, (int)pointer->xPos, (int)pointer->yPos);
+    free(data);
+    return TRUE;
+}
+
+static void pointer_free(rdpContext *context, rdpPointer *pointer) {
+    ivnc_rdp *r = owner_of(context);
+    ivnc_pointer *p = (ivnc_pointer *)pointer;
+    if (r && r->cb.cursor_free && p->handle) r->cb.cursor_free(r->cb.owner, p->handle);
+    p->handle = NULL;
+}
+
+static BOOL pointer_set(rdpContext *context, rdpPointer *pointer) {
+    ivnc_rdp *r = owner_of(context);
+    ivnc_pointer *p = (ivnc_pointer *)pointer;
+    if (r && r->cb.cursor_set) r->cb.cursor_set(r->cb.owner, p->handle, p->handle ? 0 : 2);
+    return TRUE;
+}
+
+static BOOL pointer_set_null(rdpContext *context) {
+    ivnc_rdp *r = owner_of(context);
+    if (r && r->cb.cursor_set) r->cb.cursor_set(r->cb.owner, NULL, 1);
+    return TRUE;
+}
+
+static BOOL pointer_set_default(rdpContext *context) {
+    ivnc_rdp *r = owner_of(context);
+    if (r && r->cb.cursor_set) r->cb.cursor_set(r->cb.owner, NULL, 2);
+    return TRUE;
+}
+
+static BOOL pointer_set_position(rdpContext *context, UINT32 x, UINT32 y) { (void)context; (void)x; (void)y; return TRUE; }
+
 // MARK: 접속 단계
 
 static BOOL pre_connect(freerdp *instance) {
@@ -141,6 +194,16 @@ static BOOL post_connect(freerdp *instance) {
     ivnc_rdp *r = owner_of(context);
     // 메모리 순서 B G R X (우리 Framebuffer 와 같다)
     if (!gdi_init(instance, PIXEL_FORMAT_BGRX32)) return FALSE;
+    rdpPointer pointer;
+    memset(&pointer, 0, sizeof pointer);
+    pointer.size = sizeof(ivnc_pointer);
+    pointer.New = pointer_new;
+    pointer.Free = pointer_free;
+    pointer.Set = pointer_set;
+    pointer.SetNull = pointer_set_null;
+    pointer.SetDefault = pointer_set_default;
+    pointer.SetPosition = pointer_set_position;
+    graphics_register_pointer(context->graphics, &pointer);
     context->update->BeginPaint = begin_paint;
     context->update->EndPaint = end_paint;
     context->update->DesktopResize = desktop_resize;

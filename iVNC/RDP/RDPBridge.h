@@ -23,6 +23,11 @@ typedef struct {
     void (*log)(void *owner, const char *message);
     /// 원격 입력기가 한글(1)·영문(0)으로 바뀌었다고 알려 옴 (윈도우가 보낼 때만)
     void (*ime)(void *owner, int korean);
+    /// 원격 커서 모양 하나를 만든다 (메모리 순서 B G R A, 알파 곱하지 않음). 돌려준 값을 cursor_set·cursor_free 에 준다
+    void *(*cursor_new)(void *owner, const uint8_t *bgra, int width, int height, int hotX, int hotY);
+    /// 커서 바꿈. mode 0 = cursor 모양, 1 = 숨김, 2 = 기본 화살표
+    void (*cursor_set)(void *owner, void *cursor, int mode);
+    void (*cursor_free)(void *owner, void *cursor);
 } ivnc_rdp_callbacks;
 
 /// 실패 종류 (Swift 가 한국어 문구로 바꾼다)
