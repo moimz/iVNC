@@ -30,7 +30,16 @@ struct iVNCMacApp: App {
 
 /// 보기 메뉴: 실제 크기·창에 맞춤 (지금 앞에 있는 접속 창에 알림으로 전한다)
 struct SessionCommands: Commands {
+    @AppStorage(MacScreenNSView.KeyMode.defaultsKey) private var keyMode = MacScreenNSView.KeyMode.local.rawValue
+
     var body: some Commands {
+        // 시험: 키 보내는 방식
+        CommandMenu("입력") {
+            Picker("키 보내는 방식", selection: $keyMode) {
+                ForEach(MacScreenNSView.KeyMode.allCases, id: \.self) { Text($0.title).tag($0.rawValue) }
+            }
+            .pickerStyle(.inline)
+        }
         CommandGroup(after: .toolbar) {
             Button("실제 크기") { NotificationCenter.default.post(name: MacScreenNSView.actualSizeNotification, object: nil) }
                 .keyboardShortcut("0", modifiers: [.command, .option])

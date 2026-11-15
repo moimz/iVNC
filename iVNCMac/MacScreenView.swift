@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import Combine
 import SwiftUI
 
@@ -41,7 +42,9 @@ final class MacScreenNSView: NSView, NSTextInputClient {
         NotificationCenter.default.addObserver(self, selector: #selector(flushComposition), name: SessionModel.flushCompositionNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(actualSize), name: Self.actualSizeNotification, object: nil)
         // 이 맥 입력 소스가 바뀌면(한영 전환) 원격도 맞춘다
-        NotificationCenter.default.addObserver(self, selector: #selector(localInputSourceChanged), name: NSTextInputContext.keyboardSelectionDidChangeNotification, object: nil)
+        // 입력 소스 바뀜은 시스템 전체 알림으로 받는다 (이 뷰가 글자 입력 뷰가 아니어도 오게)
+        DistributedNotificationCenter.default().addObserver(self, selector: #selector(localInputSourceChanged),
+                                                            name: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String), object: nil)
         remoteSourceWatch = model.$remoteInputSource.dropFirst().sink { [weak self] _ in
             DispatchQueue.main.async { self?.syncInputSource(reason: "원격 알림") }
         }
@@ -118,6 +121,39 @@ final class MacScreenNSView: NSView, NSTextInputClient {
 
     private static func isKorean(_ id: String) -> Bool { id.contains("Korean") }
 
+    /// 이 맥의 지금 입력 소스 ID (예: com.apple.inputmethod.Korean.2SetKorean)
+    static func currentInputSourceID() -> String? {
+        guard let src = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+              let p = TISGetInputSourceProperty(src, kTISPropertyInputSourceID) else { return nil }
+        return Unmanaged<CFString>.fromOpaque(p).takeUnretainedValue() as String
+    }
+
+    // MARK: 키 보내는 방식 (시험)
+
+    enum KeyMode: String, CaseIterable {
+        /// 이 맥 입력기로 조합해 완성된 글자를 보낸다 (아이폰과 같은 방식)
+        case local
+        /// 키 자리 글자 + 맥 키 코드를 누름·뗌으로 (원격 입력기가 조합하길 기대 → 2026-11-15 시험: 영어로만 감)
+        case keys
+        /// 맥 키 코드만 (keysym 0)
+        case keycodes
+
+        static let defaultsKey = "mac.keyMode"
+        static var current: KeyMode { KeyMode(rawValue: UserDefaults.standard.string(forKey: defaultsKey) ?? "") ?? .local }
+        var title: String {
+            switch self {
+            case .local: return "이 맥에서 한글 조합"
+            case .keys: return "키 그대로 (원격이 조합)"
+            case .keycodes: return "키 코드만 (원격이 조합)"
+            }
+        }
+    }
+
+    /// 이 맥에서 조합하지 않을 때는 글자 입력 뷰가 아니게 한다 (입력 소스 바뀜 "A" 표시가 화면에 안 뜨게)
+    override var inputContext: NSTextInputContext? {
+        KeyMode.current == .local ? super.inputContext : nil
+    }
+
     @objc private func localInputSourceChanged() {
         switchTries = 0
         syncInputSource(reason: "이 맥 전환")
@@ -125,7 +161,7 @@ final class MacScreenNSView: NSView, NSTextInputClient {
 
     private func syncInputSource(reason: String) {
         guard let w = window, w.isKeyWindow, w.firstResponder === self,
-              let local = inputContext?.selectedKeyboardInputSource, let remote = model.remoteInputSource else { return }
+              let local = Self.currentInputSourceID(), let remote = model.remoteInputSource else { return }
         guard Self.isKorean(local) != Self.isKorean(remote) else { switchTries = 0; return }
         // 원격이 바뀌었다는 알림을 기다린다. 입력 소스가 셋 이상이면 한 번에 안 맞을 수 있어 세 번까지
         guard Date().timeIntervalSince(lastSwitchAt) > 0.8, switchTries < 3 else { return }
@@ -265,6 +301,12 @@ final class MacScreenNSView: NSView, NSTextInputClient {
 
     /// 조합키 누름·뗌 (Caps Lock 은 보내지 않는다: 한/영은 입력 소스 맞추기로)
     override func flagsChanged(with e: NSEvent) {
+        // 이 맥 조합 방식에서는 ⇧ 등을 원격에 눌러 두지 않는다 (완성 글자에 ⇧ 가 섞이지 않게). 조합은 ⌘·⌃ 키 때 함께 보낸다
+        if KeyMode.current == .local {
+            if held[e.keyCode] != nil, let m = Self.modifierKeys[e.keyCode] { up(m.keysym, e.keyCode, "조합키") }
+            super.flagsChanged(with: e)
+            return
+        }
         if let m = Self.modifierKeys[e.keyCode] {
             let isDown = e.modifierFlags.contains(m.flag) && held[e.keyCode] == nil
             if isDown { down(m.keysym, e.keyCode, "조합키") } else if held[e.keyCode] != nil { up(m.keysym, e.keyCode, "조합키") }
@@ -278,18 +320,37 @@ final class MacScreenNSView: NSView, NSTextInputClient {
         guard window?.firstResponder === self, e.type == .keyDown,
               e.modifierFlags.contains(.command) || e.modifierFlags.contains(.control) else { return super.performKeyEquivalent(with: e) }
         guard let ks = keysym(e) else { return true }
+        // 이 맥 조합 방식에서는 조합키를 미리 눌러 두지 않았으니 여기서 함께 누른다
+        let mods = KeyMode.current == .local ? Self.modifierKeys.filter { $0.key == 55 || $0.key == 58 || $0.key == 59 || $0.key == 56 }
+            .filter { e.modifierFlags.contains($0.value.flag) } : [:]
+        for (code, m) in mods { down(m.keysym, code, "조합키") }
         down(ks, e.keyCode, "조합 키")
         up(ks, e.keyCode, "조합 키")
+        for (code, m) in mods { up(m.keysym, code, "조합키") }
         return true
     }
 
     override func keyDown(with e: NSEvent) {
-        guard let ks = keysym(e) else { return }
+        let mode = KeyMode.current
+        if mode == .local, Self.specialKeysym(e.keyCode) == nil || marked.length > 0 {
+            // 이 맥 입력기로 조합 → insertText 로 완성 글자를 보낸다 (조합 중 특수 키도 입력기가 먼저)
+            interpretKeyEvents([e])
+            return
+        }
+        guard let ks = mode == .keycodes && Self.specialKeysym(e.keyCode) == nil ? 0 : keysym(e) else { return }
+        if mode == .local {
+            // 특수 키(방향·엔터 등): ⇧·⌥ 와 함께 눌렀다 뗀다 (⇧ 방향키로 고르기 등)
+            let mods = Self.modifierKeys.filter { [56, 58].contains($0.key) && e.modifierFlags.contains($0.value.flag) }
+            for (code, m) in mods { down(m.keysym, code, "조합키") }
+            down(ks, e.keyCode, "키"); up(ks, e.keyCode, "키")
+            for (code, m) in mods { up(m.keysym, code, "조합키") }
+            return
+        }
         down(ks, e.keyCode, e.isARepeat ? "반복" : "키") // 길게 누르면 누름이 거듭 간다 (원격이 반복)
     }
 
     override func keyUp(with e: NSEvent) {
-        guard let ks = held[e.keyCode] ?? keysym(e) else { return }
+        guard let ks = held[e.keyCode] else { return } // 누름을 보낸 키만 뗀다 (이 맥 조합 글자는 누름·뗌 없이 완성 글자로 갔다)
         up(ks, e.keyCode, "키")
     }
 
