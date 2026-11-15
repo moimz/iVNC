@@ -162,8 +162,8 @@ final class SessionModel: ObservableObject {
             cursor = CGPoint(x: x, y: y)
         case .inputSource(let id):
             remoteInputSource = id
-        case .clipboard(let text):
-            onRemoteClipboard?(text)
+        case .clipboard(let content):
+            onRemoteClipboard?(content)
         case .cursorShape(let shape):
             cursorShape = shape
         case .stripe(let pb, let stripe, let stripes):
@@ -262,8 +262,8 @@ final class SessionModel: ObservableObject {
     @Published var composing = ""
     /// 클립보드 공유 (맥 앱이 접속 전에 켠다). 원격에서 복사하면 onRemoteClipboard, 보낼 땐 sendClipboard
     var clipboardSharing = false
-    var onRemoteClipboard: ((String) -> Void)?
-    func sendClipboard(_ text: String) { client?.sendClipboard(text) }
+    var onRemoteClipboard: ((RFBClient.ClipContent) -> Void)?
+    func sendClipboard(_ content: RFBClient.ClipContent) { client?.sendClipboard(content) }
 
     /// 원격 맥의 지금 입력 소스 (1109). 맥 앱이 이 맥 입력 소스와 한/영을 맞출 때 쓴다
     @Published private(set) var remoteInputSource: String?

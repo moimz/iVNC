@@ -26,8 +26,19 @@ final class RFBClient {
         case reconnectStandard
         /// 원격 맥의 지금 입력 소스 (애플 1109, 예: com.apple.keylayout.ABC, com.apple.inputmethod.Korean.2SetKorean)
         case inputSource(String)
-        /// 원격 맥에서 복사한 글자 (클립보드 공유)
-        case clipboard(String)
+        /// 원격 맥에서 복사한 것 (클립보드 공유: 글자·그림)
+        case clipboard(ClipContent)
+    }
+
+    /// 클립보드 내용 (애플 페이스트보드에서 쓰는 종류만)
+    struct ClipContent {
+        var text: String?
+        /// public.png
+        var png: [UInt8]?
+        /// public.tiff (맥 앱이 그림을 tiff 로만 넣을 때)
+        var tiff: [UInt8]?
+        var isEmpty: Bool { text == nil && png == nil && tiff == nil }
+        var summary: String { [text.map { "글자 \($0.count)자" }, png.map { "png \($0.count / 1000)KB" }, tiff.map { "tiff \($0.count / 1000)KB" }].compactMap { $0 }.joined(separator: ", ") }
     }
 
     /// 애플 클립보드 공유를 쓸지 (start 전에 정한다. 맥 앱만 켬)
@@ -35,7 +46,7 @@ final class RFBClient {
     /// 서버가 알려 준 클립보드 세션 번호 (보낼 때 그대로 돌려준다)
     private var clipSessionID: UInt32 = 0
     /// 서버가 "클립보드 내용 필요"(상태 3)라고 하면 보낼 글자
-    private var clipOutgoing: String?
+    private var clipOutgoing: ClipContent?
     private let clipLock = NSLock()
 
     struct CursorShape {
@@ -721,7 +732,7 @@ final class RFBClient {
             let sid = u32(3), full = Int(u32(7)), comp = Int(u32(11))
             let data = try s.read(comp)
             clipLock.lock(); clipSessionID = sid; clipLock.unlock()
-            guard comp > 0, full > 0, full < 64 << 20 else { DebugLog.write("클립보드: 빈 것 (형식 \(h[0]), 크기 \(full)/\(comp))"); break }
+            guard comp > 0, full > 0, full < 128 << 20 else { DebugLog.write("클립보드: 빈 것 (형식 \(h[0]), 크기 \(full)/\(comp))"); break }
             // 압축 푸는 방법을 차례로 (zlib 한 덩어리 / 머리 없는 deflate / 접속 내내 이어지는 zlib 스트림)
             var pb: [UInt8]?, how = ""
             if let r = Self.zlibInflateLoose(data, size: full) { pb = r; how = "zlib" }
@@ -731,9 +742,10 @@ final class RFBClient {
                 DebugLog.write("클립보드: 받음 \(comp)바이트 (형식 \(h[0]), 풀면 \(full)), 압축 풀기 실패, 앞 \(data.prefix(4).map { String(format: "%02x", $0) }.joined())")
                 break
             }
-            if let text = Self.pasteboardText(pb) {
-                DebugLog.write("클립보드: 원격 글자 받음 \(text.count)자 (\(how))") // 내용은 남기지 않는다
-                emit(.clipboard(text))
+            let content = Self.pasteboardContent(pb)
+            if !content.isEmpty {
+                DebugLog.write("클립보드: 원격에서 받음 \(content.summary) (\(how))") // 내용은 남기지 않는다
+                emit(.clipboard(content))
             } else {
                 DebugLog.write("클립보드: 받음 \(comp)→\(pb.count)바이트 (\(how)), 글자 없음. 구조: \(Self.pasteboardOutline(pb))")
             }
@@ -1190,31 +1202,39 @@ final class RFBClient {
 
     // MARK: - 클립보드 (애플 페이스트보드, noVNC-ARD 를 따름)
 
-    /// 이 맥 클립보드 글자를 원격으로 (원격에서 붙여넣기 할 수 있게)
-    func sendClipboard(_ text: String) {
-        guard clipboardSharing else { return }
-        clipLock.lock(); clipOutgoing = text; clipLock.unlock()
-        sendClipboardNow(text)
+    /// 이 기기 클립보드를 원격으로 (원격에서 붙여넣기 할 수 있게)
+    func sendClipboard(_ content: ClipContent) {
+        guard clipboardSharing, !content.isEmpty else { return }
+        clipLock.lock(); clipOutgoing = content; clipLock.unlock()
+        sendClipboardNow(content)
     }
 
-    private func sendClipboardNow(_ text: String) {
-        let pb = Self.pasteboard(text)
+    private func sendClipboardNow(_ content: ClipContent) {
+        let pb = Self.pasteboard(content)
         guard let z = Self.zlibCompress(pb) else { return }
         clipLock.lock(); let sid = clipSessionID; clipLock.unlock()
         // ClipboardSend 0x1f: [0x1f][형식 0][0 0][u32 세션][u32 풀린 크기][u32 압축 크기][zlib]
         socket?.send([0x1F, 0, 0, 0] + [UInt8].be32(sid) + [UInt8].be32(UInt32(pb.count)) + [UInt8].be32(UInt32(z.count)) + z)
-        DebugLog.write("클립보드: 이 맥 글자 보냄 \(text.count)자")
+        DebugLog.write("클립보드: 이 기기에서 보냄 \(content.summary)")
     }
 
-    /// [u32 종류 수=1][u32 이름 길이][public.utf8-plain-text][u32 flags 0][u32 속성 수 0][u32 데이터 길이][UTF-8]
-    private static func pasteboard(_ text: String) -> [UInt8] {
-        let name = Array("public.utf8-plain-text".utf8), data = Array(text.utf8)
-        return [UInt8].be32(1) + [UInt8].be32(UInt32(name.count)) + name + [UInt8].be32(0) + [UInt8].be32(0)
-            + [UInt8].be32(UInt32(data.count)) + data
+    /// [u32 종류 수] { [u32 이름 길이][이름][u32 flags 0][u32 속성 수 0][u32 데이터 길이][데이터] }
+    private static func pasteboard(_ c: ClipContent) -> [UInt8] {
+        var items: [(String, [UInt8])] = []
+        if let t = c.text { items.append(("public.utf8-plain-text", Array(t.utf8))) }
+        if let p = c.png { items.append(("public.png", p)) }
+        if let t = c.tiff { items.append(("public.tiff", t)) }
+        var out = [UInt8].be32(UInt32(items.count))
+        for (name, data) in items {
+            let n = Array(name.utf8)
+            out += [UInt8].be32(UInt32(n.count)) + n + [UInt8].be32(0) + [UInt8].be32(0) + [UInt8].be32(UInt32(data.count)) + data
+        }
+        return out
     }
 
-    /// 페이스트보드에서 public.utf8-plain-text 를 찾는다
-    private static func pasteboardText(_ b: [UInt8]) -> String? {
+    /// 페이스트보드에서 글자(public.utf8-plain-text)·그림(public.png / public.tiff)을 찾는다
+    private static func pasteboardContent(_ b: [UInt8]) -> ClipContent {
+        var c = ClipContent()
         var o = 0
         func u32() -> Int? {
             guard o + 4 <= b.count else { return nil }
@@ -1226,16 +1246,21 @@ final class RFBClient {
             defer { o += n }
             return b[o..<(o + n)]
         }
-        guard let types = u32() else { return nil }
+        guard let types = u32() else { return c }
         for _ in 0..<min(types, 64) {
-            guard let nl = u32(), let name = bytes(nl), u32() != nil, let props = u32() else { return nil }
+            guard let nl = u32(), let name = bytes(nl), u32() != nil, let props = u32() else { return c }
             for _ in 0..<min(props, 64) {
-                guard let kl = u32(), bytes(kl) != nil, let vl = u32(), bytes(vl) != nil else { return nil }
+                guard let kl = u32(), bytes(kl) != nil, let vl = u32(), bytes(vl) != nil else { return c }
             }
-            guard let dl = u32(), let data = bytes(dl) else { return nil }
-            if String(decoding: name, as: UTF8.self) == "public.utf8-plain-text" { return String(decoding: data, as: UTF8.self) }
+            guard let dl = u32(), let data = bytes(dl) else { return c }
+            switch String(decoding: name, as: UTF8.self) {
+            case "public.utf8-plain-text": c.text = String(decoding: data, as: UTF8.self)
+            case "public.png": c.png = Array(data)
+            case "public.tiff": c.tiff = Array(data)
+            default: break
+            }
         }
-        return nil
+        return c
     }
 
     /// 클립보드가 접속 내내 이어지는 스트림일 때를 위해 (시험)

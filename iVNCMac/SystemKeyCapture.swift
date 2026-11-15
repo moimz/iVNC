@@ -94,20 +94,32 @@ enum MacClipboard {
     /// 마지막으로 주고받은 때의 이 맥 클립보드 번호 (같은 걸 다시 보내지 않게)
     private static var handledChangeCount = NSPasteboard.general.changeCount
 
-    static func setFromRemote(_ text: String) {
+    static func setFromRemote(_ c: RFBClient.ClipContent) {
         let pb = NSPasteboard.general
         pb.clearContents()
-        pb.setString(text, forType: .string)
+        if let t = c.text { pb.setString(t, forType: .string) }
+        if let p = c.png { pb.setData(Data(p), forType: .png) }
+        if let t = c.tiff { pb.setData(Data(t), forType: .tiff) }
         handledChangeCount = pb.changeCount
     }
 
-    /// 이 맥에서 새로 복사한 게 있으면 원격으로 (force: 접속 처음엔 지금 것을 보낸다)
+    /// 이 맥에서 새로 복사한 게 있으면 원격으로: 글자와 그림(PNG, tiff 만 있으면 PNG 로 바꿔서) (force: 접속 처음엔 지금 것을 보낸다)
     static func pushIfChanged(_ model: SessionModel, force: Bool = false) {
         guard enabled else { return }
         let pb = NSPasteboard.general
         guard force || pb.changeCount != handledChangeCount else { return }
         handledChangeCount = pb.changeCount
-        guard let text = pb.string(forType: .string), !text.isEmpty else { return }
-        model.sendClipboard(text)
+        var c = RFBClient.ClipContent()
+        if let t = pb.string(forType: .string), !t.isEmpty { c.text = t }
+        if let png = pb.data(forType: .png) {
+            c.png = [UInt8](png)
+        } else if let tiff = pb.data(forType: .tiff), let rep = NSBitmapImageRep(data: tiff),
+                  let png = rep.representation(using: .png, properties: [:]) {
+            c.png = [UInt8](png)
+        }
+        // 너무 큰 그림은 보내지 않는다 (20MB)
+        if let p = c.png, p.count > 20 << 20 { c.png = nil }
+        guard !c.isEmpty else { return }
+        model.sendClipboard(c)
     }
 }

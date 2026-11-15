@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SessionView: View {
     @EnvironmentObject private var store: ComputerStore
@@ -91,7 +92,18 @@ struct SessionView: View {
         .onChange(of: model.ended) { _, e in if e { dismiss() } }
         // 화면을 보는 동안은 손을 안 대도(영상·작업 지켜보기) 기기가 잠기지 않게
         .onChange(of: model.phase == .viewing, initial: true) { _, viewing in UIApplication.shared.isIdleTimerDisabled = viewing }
-        .onAppear { model.connect(store: store) }
+        .onAppear {
+            // 클립보드 공유: 원격에서 복사하면 이 기기 클립보드에 (보내기는 메뉴의 "클립보드 보내기": iOS 는 앱이 읽으면 허용 창이 뜬다)
+            model.clipboardSharing = true
+            model.onRemoteClipboard = { c in
+                var item: [String: Any] = [:]
+                if let t = c.text { item[UTType.utf8PlainText.identifier] = t }
+                if let p = c.png { item[UTType.png.identifier] = Data(p) }
+                else if let t = c.tiff, let img = UIImage(data: Data(t)), let png = img.pngData() { item[UTType.png.identifier] = png }
+                if !item.isEmpty { UIPasteboard.general.items = [item] }
+            }
+            model.connect(store: store)
+        }
         .onDisappear {
             UIApplication.shared.isIdleTimerDisabled = false
             model.close()
@@ -165,6 +177,21 @@ struct SessionView: View {
                 model.typing.toggle()
             },
         ]
+        // 이 기기 클립보드를 원격으로 (읽을 때 iOS 가 허용을 물을 수 있다)
+        tools.append(UIAction(title: "클립보드 보내기", image: UIImage(systemName: "doc.on.clipboard")) { _ in
+            let pb = UIPasteboard.general
+            var c = RFBClient.ClipContent()
+            if pb.hasStrings, let t = pb.string { c.text = t }
+            if pb.hasImages {
+                if let png = pb.data(forPasteboardType: UTType.png.identifier) { c.png = [UInt8](png) }
+                else if let img = pb.image, let png = img.pngData() { c.png = [UInt8](png) }
+            }
+            if let p = c.png, p.count > 20 << 20 { c.png = nil }
+            if c.isEmpty { model.showGuide("보낼 클립보드 내용이 없습니다") } else {
+                model.sendClipboard(c)
+                model.showGuide("클립보드를 원격으로 보냈습니다. 원격에서 붙여넣기 하세요")
+            }
+        })
         if model.displays.count > 1 && !model.isHighPerformance {
             tools.append(UIAction(title: "모니터 바꾸기", image: UIImage(systemName: "display.2")) { _ in displaySettings = true })
         }
