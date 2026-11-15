@@ -1089,7 +1089,9 @@ final class RFBClient {
     /// 키 하나를 누르거나 뗀다 (맥 키 코드를 함께 실을 수 있다: 맥 앱의 Caps Lock 한영 전환 시험)
     func sendRawKey(_ keysym: UInt32, keycode: UInt16, down: Bool, name: String) {
         sendKeyEvent(keysym, down: down, keycode: keycode)
-        DebugLog.write("키 \(down ? "누름" : "뗌") \(name) keysym \(String(format: "%04x", keysym)) 키코드 \(keycode) (암호화 이벤트 \(ardKey != nil))")
+        // 글자 키는 무슨 글자인지 남기지 않는다 (원격에서 친 암호가 로그에 남지 않게). 특수·조합 키만 값을 남긴다
+        let what = keysym >= 0xFF00 && keysym < 0x1_0000 ? String(format: "%04x", keysym) : "글자"
+        DebugLog.write("키 \(down ? "누름" : "뗌") \(name) \(what) 키코드 \(keycode) (암호화 이벤트 \(ardKey != nil))")
     }
 
     private func sendKeyEvent(_ keysym: UInt32, down: Bool, keycode: UInt16 = 0) {

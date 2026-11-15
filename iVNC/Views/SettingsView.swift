@@ -39,9 +39,22 @@ struct SettingsForm: View {
             } footer: {
                 Text("맥 고성능 모드와 윈도우 접속에 쓰입니다. 다음 접속부터 적용됩니다. 맥 일반 모드는 맥의 실제 해상도로 보입니다.")
             }
+            Section {
+            } footer: {
+                Text(Self.versionText).frame(maxWidth: .infinity, alignment: .center)
+            }
         }
         #if os(macOS)
         .formStyle(.grouped)
         #endif
+    }
+
+    /// "버전 0.1 (235, fa0e978)" — 빌드 번호는 git 커밋 수, 뒤는 커밋 해시 ("+" 는 커밋 전 변경 포함). Scripts/stamp-build-number.sh
+    static var versionText: String {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let version = info["CFBundleShortVersionString"] as? String ?? "-"
+        let build = info["CFBundleVersion"] as? String ?? "-"
+        let commit = info["iVNCCommit"] as? String
+        return "버전 \(version) (\(build)\(commit.map { ", \($0)" } ?? ""))"
     }
 }

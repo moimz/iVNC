@@ -88,6 +88,7 @@
 				B10000000000000000000008 /* Sources */,
 				B10000000000000000000003 /* Frameworks */,
 				B10000000000000000000009 /* Resources */,
+				B10000000000000000000099 /* Stamp Build Number */,
 			);
 			buildRules = (
 			);
@@ -108,6 +109,7 @@
 				B10000000000000000000108 /* Sources */,
 				B10000000000000000000103 /* Frameworks */,
 				B10000000000000000000109 /* Resources */,
+				B10000000000000000000199 /* Stamp Build Number */,
 			);
 			buildRules = (
 			);
@@ -177,6 +179,51 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		B10000000000000000000099 /* Stamp Build Number */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
+			);
+			name = "Stamp Build Number";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"$SRCROOT/Scripts/stamp-build-number.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+		B10000000000000000000199 /* Stamp Build Number */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
+			);
+			name = "Stamp Build Number";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"$SRCROOT/Scripts/stamp-build-number.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		B10000000000000000000008 /* Sources */ = {

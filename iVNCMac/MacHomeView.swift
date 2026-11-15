@@ -52,7 +52,7 @@ struct MacHomeView: View {
             openWindow(id: "session", value: id)
             return .handled
         }
-        .navigationTitle("컴퓨터")
+        .navigationTitle("iVNC")
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button("추가", systemImage: "plus") { adding = true }

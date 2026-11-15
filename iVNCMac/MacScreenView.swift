@@ -57,6 +57,7 @@ final class MacScreenNSView: NSView, NSTextInputClient {
         window?.makeFirstResponder(self)
         if let w = window {
             NotificationCenter.default.addObserver(self, selector: #selector(windowBecameKey), name: NSWindow.didBecomeKeyNotification, object: w)
+            NotificationCenter.default.addObserver(self, selector: #selector(releaseAll), name: NSWindow.didResignKeyNotification, object: w)
         }
         window?.acceptsMouseMovedEvents = true
         if pixelSize != .zero { fitWindow() }
@@ -238,56 +239,85 @@ final class MacScreenNSView: NSView, NSTextInputClient {
     override func cursorUpdate(with event: NSEvent) { cursor.set() }
 
     // MARK: 키보드
+    // 키를 이 맥 입력기에 거치지 않고 누름·뗌 그대로 보낸다 (키 자리 = 미국 자판 + 맥 키 코드).
+    // 한글 조합은 원격 맥의 입력기가 한다 (한/영은 위 "한/영 맞추기"로 이 맥과 같게 둔다).
 
-    /// ⌘ 조합은 메뉴보다 먼저 받아 모두 원격으로 보낸다 (⌘Q 도. 이 앱 끄기는 메뉴로)
-    override func performKeyEquivalent(with e: NSEvent) -> Bool {
-        guard window?.firstResponder === self, e.type == .keyDown else { return super.performKeyEquivalent(with: e) }
-        if e.modifierFlags.contains(.command) || e.modifierFlags.contains(.control) {
-            sendCombo(e)
-            return true
+    /// 원격에 눌려 있다고 보낸 키 (keysym, 키 코드) — 창을 떠날 때 모두 뗀다
+    private var held: [UInt16: UInt32] = [:]
+
+    /// 조합키 키 코드 → keysym (애플 서버: Super_L = ⌘, Meta_L = ⌥)
+    private static let modifierKeys: [UInt16: (keysym: UInt32, flag: NSEvent.ModifierFlags)] = [
+        55: (0xFFEB, .command), 54: (0xFFEC, .command),
+        56: (0xFFE1, .shift), 60: (0xFFE2, .shift),
+        58: (0xFFE7, .option), 61: (0xFFE8, .option),
+        59: (0xFFE3, .control), 62: (0xFFE4, .control),
+    ]
+
+    private func down(_ keysym: UInt32, _ code: UInt16, _ name: String) {
+        held[code] = keysym
+        model.sendRawKey(keysym, keycode: code, down: true, name: name)
+    }
+
+    private func up(_ keysym: UInt32, _ code: UInt16, _ name: String) {
+        held[code] = nil
+        model.sendRawKey(keysym, keycode: code, down: false, name: name)
+    }
+
+    /// 조합키 누름·뗌 (Caps Lock 은 보내지 않는다: 한/영은 입력 소스 맞추기로)
+    override func flagsChanged(with e: NSEvent) {
+        if let m = Self.modifierKeys[e.keyCode] {
+            let isDown = e.modifierFlags.contains(m.flag) && held[e.keyCode] == nil
+            if isDown { down(m.keysym, e.keyCode, "조합키") } else if held[e.keyCode] != nil { up(m.keysym, e.keyCode, "조합키") }
         }
-        return super.performKeyEquivalent(with: e)
+        super.flagsChanged(with: e)
+    }
+
+    /// ⌘·⌃ 조합은 메뉴보다 먼저 받아 원격으로 (⌘Q 도. 이 앱 끄기는 메뉴로). 조합키는 이미 눌려 있으니 키만 눌렀다 뗀다
+    /// (⌘ 를 누른 동안의 keyUp 은 창에 안 올 때가 있어 바로 뗀다)
+    override func performKeyEquivalent(with e: NSEvent) -> Bool {
+        guard window?.firstResponder === self, e.type == .keyDown,
+              e.modifierFlags.contains(.command) || e.modifierFlags.contains(.control) else { return super.performKeyEquivalent(with: e) }
+        guard let ks = keysym(e) else { return true }
+        down(ks, e.keyCode, "조합 키")
+        up(ks, e.keyCode, "조합 키")
+        return true
     }
 
     override func keyDown(with e: NSEvent) {
-        let flags = e.modifierFlags.intersection([.command, .control, .option, .shift])
-        // 조합 중이 아니면 특수 키(방향·엔터·지우기 등)는 조합키와 함께 바로 보낸다
-        if marked.length == 0, let ks = Self.specialKeysym(e.keyCode) {
-            sendCombo(e, keysym: ks)
-            return
-        }
-        if flags.contains(.command) || flags.contains(.control) {
-            sendCombo(e)
-            return
-        }
-        // 글자는 이 맥의 입력기(한글 등)를 거쳐 완성된 글자로 보낸다
-        interpretKeyEvents([e])
+        guard let ks = keysym(e) else { return }
+        down(ks, e.keyCode, e.isARepeat ? "반복" : "키") // 길게 누르면 누름이 거듭 간다 (원격이 반복)
     }
 
-    private func modifierKeysyms(_ flags: NSEvent.ModifierFlags) -> [UInt32] {
-        var m: [UInt32] = []
-        if flags.contains(.command) { m.append(0xFFEB) } // Super_L = ⌘ (애플 서버)
-        if flags.contains(.option) { m.append(0xFFE7) }  // Meta_L = ⌥
-        if flags.contains(.control) { m.append(0xFFE3) }
-        if flags.contains(.shift) { m.append(0xFFE1) }
-        return m
+    override func keyUp(with e: NSEvent) {
+        guard let ks = held[e.keyCode] ?? keysym(e) else { return }
+        up(ks, e.keyCode, "키")
     }
 
-    private func sendCombo(_ e: NSEvent, keysym: UInt32? = nil) {
-        let mods = modifierKeysyms(e.modifierFlags)
-        let key: UInt32
-        if let keysym { key = keysym }
-        else if let s = Self.specialKeysym(e.keyCode) { key = s }
-        // 조합은 키 자리(미국 자판)로: 한글 입력 중이면 글자가 "ㅂ"으로 나와 ⌘Q·⌘C 가 원격에서 안 들었다
-        else if let c = Self.usKey(e.keyCode) { key = c.unicodeScalars.first!.value }
-        else if let c = e.charactersIgnoringModifiers?.lowercased().unicodeScalars.first { key = c.value < 0x100 ? c.value : 0x0100_0000 | c.value }
-        else { return }
-        let name = Self.usKey(e.keyCode) ?? e.charactersIgnoringModifiers ?? ""
-        if mods.isEmpty {
-            model.sendKey(key, name: name)
-        } else {
-            model.sendCombo(mods, key, name: name)
+    /// 창을 떠나면 눌린 채로 남지 않게 모두 뗀다
+    override func resignFirstResponder() -> Bool {
+        releaseAll()
+        return super.resignFirstResponder()
+    }
+
+    @objc private func releaseAll() {
+        for (code, ks) in held { up(ks, code, "떠나며 뗌") }
+    }
+
+    /// 키 → keysym: 특수 키, 아니면 미국 자판 자리의 글자 (⇧ 를 누르고 있으면 윗글자. X 관례)
+    private func keysym(_ e: NSEvent) -> UInt32? {
+        if let s = Self.specialKeysym(e.keyCode) { return s }
+        guard let c = Self.usKey(e.keyCode) else {
+            return e.charactersIgnoringModifiers?.unicodeScalars.first.map { $0.value < 0x100 ? $0.value : 0x0100_0000 | $0.value }
         }
+        let ch = e.modifierFlags.contains(.shift) ? Self.usShifted(c) : c
+        return ch.unicodeScalars.first!.value
+    }
+
+    /// 미국 자판 ⇧ 윗글자
+    static func usShifted(_ c: String) -> String {
+        let map: [String: String] = ["1": "!", "2": "@", "3": "#", "4": "$", "5": "%", "6": "^", "7": "&", "8": "*", "9": "(", "0": ")",
+                                     "-": "_", "=": "+", "[": "{", "]": "}", "\\": "|", ";": ":", "'": "\"", ",": "<", ".": ">", "/": "?", "`": "~"]
+        return map[c] ?? c.uppercased()
     }
 
     /// 맥 키 코드 → 미국 자판 글자 (조합키와 함께 보낼 때. 입력 소스와 상관없이 키 자리 기준)
