@@ -30,18 +30,21 @@ struct MacSessionView: View {
                     .frame(minWidth: 70, alignment: .trailing)
             }
             .sharedBackgroundVisibility(.hidden)
-            // 한글 조합 위치 토글: 원격 맥이 조합 ↔ 이 맥이 조합
+            // 한글 조합 위치: 분할 단추 [원격 맥 | 이 맥]
             ToolbarItem(placement: .automatic) {
-                let remote = keyMode != MacScreenNSView.KeyMode.local.rawValue
-                Button {
-                    keyMode = (remote ? MacScreenNSView.KeyMode.local : .remote).rawValue
-                } label: {
-                    Image(systemName: remote ? "desktopcomputer" : "laptopcomputer")
-                        .resizable().scaledToFit()
-                        .frame(width: 18, height: 14)
-                        .accessibilityLabel(remote ? "원격 맥에서 한글 조합" : "이 맥에서 한글 조합")
+                Picker("한글 조합", selection: $keyMode) {
+                    Label("원격 맥에서 한글 조합", systemImage: "desktopcomputer")
+                        .labelStyle(.iconOnly)
+                        .help("원격 맥에서 한글 조합")
+                        .tag(MacScreenNSView.KeyMode.remote.rawValue)
+                    Label("이 맥에서 한글 조합", systemImage: "laptopcomputer")
+                        .labelStyle(.iconOnly)
+                        .help("이 맥에서 한글 조합")
+                        .tag(MacScreenNSView.KeyMode.local.rawValue)
                 }
-                .help(remote ? "원격 맥에서 한글 조합 중 (누르면 이 맥에서 조합)" : "이 맥에서 한글 조합 중 (누르면 원격 맥에서 조합)")
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .help("한글 조합을 원격 맥에서 할지 이 맥에서 할지")
             }
             // 모니터 버튼은 따로 떨어진 묶음으로
             ToolbarSpacer(.fixed)
