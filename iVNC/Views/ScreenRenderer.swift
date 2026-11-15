@@ -73,11 +73,12 @@ final class ScreenRenderer {
     }
 
     /// 프레임버퍼의 바뀐 영역을 뒤 버퍼에 복사하고 앞으로 내놓는다
-    func presentStandard(_ fb: Framebuffer) {
+    /// 프레임버퍼가 잠겨 있으면(수신 스레드가 푸는 중) 기다리지 않고 false — 부른 쪽이 잠시 뒤 다시 부른다
+    @discardableResult
+    func presentStandard(_ fb: Framebuffer) -> Bool {
         if !stripeLayers.isEmpty { clearStripes() }
-        let dirty = fb.takeDirty()
         var ok = false
-        fb.withPixels { p, w, h in
+        let got = fb.tryRead { dirty, p, w, h in
             if buffers.count != 2 || CVPixelBufferGetWidth(buffers[0]) != w || CVPixelBufferGetHeight(buffers[0]) != h {
                 buffers = [Self.makeBuffer(w, h), Self.makeBuffer(w, h)].compactMap { $0 }
                 let all = CGRect(x: 0, y: 0, width: w, height: h)
@@ -104,12 +105,14 @@ final class ScreenRenderer {
             front = back
             ok = true
         }
-        guard ok else { return }
+        guard got else { return false }
+        guard ok else { return true }
         setSize(CGSize(width: CVPixelBufferGetWidth(buffers[front]), height: CVPixelBufferGetHeight(buffers[front])))
         CATransaction.begin(); CATransaction.setDisableActions(true)
         layer.contents = CVPixelBufferGetIOSurface(buffers[front])?.takeUnretainedValue()
         CATransaction.commit()
         first()
+        return true
     }
 
     // MARK: 고성능

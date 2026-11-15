@@ -48,6 +48,16 @@ final class Framebuffer {
         if let p = pixels { body(p, width, height) }
     }
 
+    /// 화면 쪽(메인 스레드)용: 잠금이 비어 있을 때만 바뀐 영역을 가져가며 픽셀을 읽는다.
+    /// 수신 스레드가 큰 화면을 푸는 동안(잠근 채) 메인 스레드가 기다리면 앱이 멈춘다(무지개 커서) → 못 잡으면 false, 다음에 다시
+    func tryRead(_ body: (_ dirty: CGRect?, UnsafeMutablePointer<UInt32>, Int, Int) -> Void) -> Bool {
+        guard lock.try() else { return false }
+        defer { lock.unlock() }
+        let d = dirty; dirty = nil
+        if let p = pixels { body(d, p, width, height) }
+        return true
+    }
+
     /// 지금 화면을 복사한 그림
     func makeImage() -> CGImage? {
         lock.lock()

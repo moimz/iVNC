@@ -122,6 +122,16 @@ final class SessionModel: ObservableObject {
         c.start()
     }
 
+    /// 일반 모드 그림을 화면에. 수신 스레드가 아직 푸는 중이면 메인 스레드를 막지 않고 잠시 뒤 다시
+    private func presentFrame() {
+        guard let c = client else { return }
+        if renderer.presentStandard(c.framebuffer) {
+            c.frameConsumed()
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.008) { [weak self] in self?.presentFrame() }
+        }
+    }
+
     private func handle(_ e: RFBClient.Event) {
         switch e {
         case .status(let s):
@@ -146,8 +156,7 @@ final class SessionModel: ObservableObject {
             standardOnly = true
             if let store { connect(store: store) }
         case .frame:
-            if let fb = client?.framebuffer { renderer.presentStandard(fb) }
-            client?.frameConsumed()
+            presentFrame()
         case .cursor(let x, let y):
             cursor = CGPoint(x: x, y: y)
         case .inputSource(let id):
