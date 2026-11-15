@@ -10,7 +10,7 @@ import VideoToolbox
 /// 헤더 확장(8바이트)에 그림의 패킷 수가 있다.
 ///
 /// 그림의 패킷을 도착 순서와 상관없이 모아 NAL 들로 되살리고, 첫 키 그림부터 DON 순서대로 내보낸다.
-/// 재전송이 없으므로, 빠진 그림 때문에 막히면 가장 가까운 완성된 키 그림으로 건너뛴다.
+/// 빠진 패킷은 받는 쪽이 NACK 으로 다시 요청한다(서버가 따르는지는 로그 "되찾음"으로 확인). 그래도 빠진 그림 때문에 막히면 가장 가까운 완성된 키 그림으로 건너뛴다.
 /// 키 그림도 없으면 버퍼를 비우고 다음 키 그림을 기다리며 onStall 을 부른다 (키 그림을 요청하거나 다시 제안해야 한다).
 final class HPVideoAssembler {
     struct Picture {
@@ -36,7 +36,8 @@ final class HPVideoAssembler {
     }
 
     private static let maxBuffered = 512
-    private static let stallSeconds = 0.2
+    /// 뒤 그림이 끝났는데 앞 그림이 이만큼 안 채워지면 막힌 것. 빠진 패킷을 NACK 으로 다시 받을 시간(요청 두 번)을 준다
+    private static let stallSeconds = 0.3
 
     private let baseSSRC: UInt32
     private let stripes: Int

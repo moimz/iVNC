@@ -295,6 +295,72 @@ final class HPUDPReceiver {
     var onPicture: ((HPVideoAssembler.Picture) -> Void)?
     /// 조립이 막혀 키 그림부터 다시 받아야 할 때 (다시 제안)
     var onStall: (() -> Void)?
+
+    // 빠진 영상 패킷 다시 보내 달라기 (RTCP Generic NACK, RFC 4585). 줄무늬 SSRC 마다 가장 큰 순번을 기억하고,
+    // 건너뛴 순번을 바로 요청, 0.08초 뒤에도 안 오면 한 번 더. 0.5초 넘으면 포기 (조립기가 키 그림으로 넘어간다)
+    private struct Gap { var highest: Int; var missing: [UInt16: (at: TimeInterval, retried: Bool)] = [:] }
+    private var gaps: [UInt32: Gap] = [:]
+    private var pendingNacks: [UInt32: [UInt16]] = [:]
+    private(set) var nackSent = 0, nackSeqs = 0, nackRecovered = 0
+
+    /// 영상 패킷 하나가 왔을 때 (잠근 채로 부른다)
+    private func trackVideoSeq(_ ssrc: UInt32, _ seq: UInt16, now: TimeInterval) {
+        guard var g = gaps[ssrc] else { gaps[ssrc] = Gap(highest: Int(seq)); return }
+        let d = Int(Int16(bitPattern: seq &- UInt16(truncatingIfNeeded: g.highest)))
+        if d > 0 {
+            if d > 1 && d < 200 {
+                for k in 1..<d {
+                    let m = UInt16(truncatingIfNeeded: g.highest + k)
+                    g.missing[m] = (now, false)
+                    pendingNacks[ssrc, default: []].append(m)
+                }
+            }
+            g.highest += d
+        } else if g.missing.removeValue(forKey: seq) != nil {
+            nackRecovered += 1
+        }
+        gaps[ssrc] = g
+    }
+
+    /// 다시 요청할 것·오래된 것 정리 (잠근 채로)
+    private func ageGaps(now: TimeInterval) {
+        for (ssrc, var g) in gaps {
+            for (seq, m) in g.missing {
+                if now - m.at > 0.5 { g.missing[seq] = nil }
+                else if !m.retried && now - m.at > 0.08 {
+                    g.missing[seq] = (m.at, true)
+                    pendingNacks[ssrc, default: []].append(seq)
+                }
+            }
+            gaps[ssrc] = g
+        }
+    }
+
+    /// NACK 패킷들 (잠근 채로): FCI = [PID u16][BLP u16] — PID 뒤 16개 중 빠진 것은 BLP 비트로
+    private func buildNacks(_ out: SRTPContext, me: UInt32) -> [[UInt8]] {
+        var packets: [[UInt8]] = []
+        for (media, seqs) in pendingNacks where !seqs.isEmpty {
+            var fci: [UInt8] = []
+            var rest = Set(seqs)
+            while let pid = rest.min(by: { Int16(bitPattern: $0 &- $1) < 0 }) {
+                rest.remove(pid)
+                var blp: UInt16 = 0
+                for b in 0..<16 {
+                    let s = pid &+ UInt16(b + 1)
+                    if rest.remove(s) != nil { blp |= 1 << b }
+                }
+                fci += [UInt8].be16(Int(pid)) + [UInt8].be16(Int(blp))
+            }
+            let n = fci.count / 4
+            let rr = [UInt8].be32(0x80C9_0001) + [UInt8].be32(me)
+            let nack = [0x81, 205] + [UInt8].be16(2 + n) + [UInt8].be32(me) + [UInt8].be32(media) + fci
+            packets.append(out.protectRTCP(rr + nack))
+            nackSent += 1
+            nackSeqs += seqs.count
+        }
+        pendingNacks.removeAll()
+        return packets
+    }
     private var stopped = false
     private let lock = NSLock()
 
@@ -350,6 +416,7 @@ final class HPUDPReceiver {
         lock.lock(); defer { lock.unlock() }
         videoBase = baseSSRC
         videoStripes = max(stripes, 1)
+        gaps.removeAll(); pendingNacks.removeAll()
         let a = HPVideoAssembler(baseSSRC: baseSSRC, stripes: stripes)
         a.onPicture = { [unowned self] in self.readyPictures.append($0) }
         a.onStall = { [unowned self] in self.assemblerStalled = true }
@@ -467,7 +534,7 @@ final class HPUDPReceiver {
         lock.lock(); defer { lock.unlock() }
         return streams.enumerated().map { i, s in
             let name = i == 0 ? "소리" : "영상"
-            return "\(name)(\(s.localPort)) 받음 \(s.raw)개 \(s.rawBytes / 1000)KB, 검증 성공 \(s.ok) 실패 \(s.bad), 빠짐 \(s.lost), RTCP \(s.rtcpIn), 보고 보냄 \(s.sentReports), PT \(s.payloadTypes.sorted()), SSRC \(s.ssrcs.count)개"
+            return "\(name)(\(s.localPort)) 받음 \(s.raw)개 \(s.rawBytes / 1000)KB, 검증 성공 \(s.ok) 실패 \(s.bad), 빠짐 \(s.lost), RTCP \(s.rtcpIn), 보고 보냄 \(s.sentReports), PT \(s.payloadTypes.sorted()), SSRC \(s.ssrcs.count)개" + (i == 1 ? ", NACK \(nackSent)번 \(nackSeqs)개 → 되찾음 \(nackRecovered)" : "")
                 + (i == 1 && !s.naluTypes.isEmpty ? ", NAL 종류 \(s.naluTypes.sorted { $0.key < $1.key }.map { "\($0.key):\($0.value)" }.joined(separator: " "))" : "")
         }.joined(separator: " / ")
     }
@@ -494,6 +561,8 @@ final class HPUDPReceiver {
         if streams.count > 1, let out = streams[1].outbound {
             port = streams[1].remotePort; fd = streams[1].fd
             let me = streams[1].mySSRC
+            ageGaps(now: now)
+            packets += buildNacks(out, me: me)
             // 그림 받음 확인: APP(204), 이름 5, DON
             for p in pics {
                 packets.append(out.protectRTCP([0x80, 0xCC, 0x00, 0x03] + [UInt8].be32(me) + [UInt8].be32(5) + [UInt8].be32(UInt32(p.don & 0xFFFF))))
@@ -555,6 +624,7 @@ final class HPUDPReceiver {
                         if i == 1, rtp.payloadType == 100 {
                             let now = ProcessInfo.processInfo.systemUptime
                             lastVideoAt = now
+                            trackVideoSeq(rtp.ssrc, rtp.seq, now: now)
                             assembler?.push(rtp, now: now)
                         }
                     } else {
