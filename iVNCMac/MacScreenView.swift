@@ -135,7 +135,7 @@ final class MacScreenNSView: NSView, NSTextInputClient {
         case local
         /// 키 자리 글자 + 맥 키 코드를 누름·뗌으로 (원격 입력기가 조합하길 기대 → 2026-11-15 시험: 영어로만 감)
         case keys
-        /// 맥 키 코드만 (keysym 0)
+        /// 키 그대로를 암호화 없이 표준 KeyEvent(4) 로 (키 코드만 보내기는 키가 무시돼 바꿈)
         case keycodes
 
         static let defaultsKey = "mac.keyMode"
@@ -144,7 +144,7 @@ final class MacScreenNSView: NSView, NSTextInputClient {
             switch self {
             case .local: return "이 맥에서 한글 조합"
             case .keys: return "키 그대로 (원격이 조합)"
-            case .keycodes: return "키 코드만 (원격이 조합)"
+            case .keycodes: return "키 그대로, 평문 (원격이 조합)"
             }
         }
     }
@@ -291,12 +291,12 @@ final class MacScreenNSView: NSView, NSTextInputClient {
 
     private func down(_ keysym: UInt32, _ code: UInt16, _ name: String) {
         held[code] = keysym
-        model.sendRawKey(keysym, keycode: code, down: true, name: name)
+        model.sendRawKey(keysym, keycode: code, down: true, name: name, plain: KeyMode.current == .keycodes)
     }
 
     private func up(_ keysym: UInt32, _ code: UInt16, _ name: String) {
         held[code] = nil
-        model.sendRawKey(keysym, keycode: code, down: false, name: name)
+        model.sendRawKey(keysym, keycode: code, down: false, name: name, plain: KeyMode.current == .keycodes)
     }
 
     /// 조합키 누름·뗌 (Caps Lock 은 보내지 않는다: 한/영은 입력 소스 맞추기로)
@@ -337,7 +337,7 @@ final class MacScreenNSView: NSView, NSTextInputClient {
             interpretKeyEvents([e])
             return
         }
-        guard let ks = mode == .keycodes && Self.specialKeysym(e.keyCode) == nil ? 0 : keysym(e) else { return }
+        guard let ks = keysym(e) else { return }
         if mode == .local {
             // 특수 키(방향·엔터 등): ⇧·⌥ 와 함께 눌렀다 뗀다 (⇧ 방향키로 고르기 등)
             let mods = Self.modifierKeys.filter { [56, 58].contains($0.key) && e.modifierFlags.contains($0.value.flag) }
