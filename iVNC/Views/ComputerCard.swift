@@ -30,7 +30,7 @@ struct ComputerCard: View {
         } else {
             ZStack {
                 LinearGradient(colors: [Color(white: 0.22), Color(white: 0.12)], startPoint: .top, endPoint: .bottom)
-                Image(systemName: "desktopcomputer").font(.system(size: 40, weight: .light)).foregroundStyle(.white.opacity(0.6))
+                Image(systemName: computer.type == .mac ? "desktopcomputer" : "pc").font(.system(size: 40, weight: .light)).foregroundStyle(.white.opacity(0.6))
             }
         }
     }

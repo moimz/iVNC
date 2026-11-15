@@ -13,30 +13,45 @@ struct ComputerEditView: View {
     @State private var password = ""
     @State private var preferHP = true
     @State private var keepAlive = true
+    @State private var kind: Computer.Kind = .mac
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    TextField("주소 (예: 192.168.0.10, mac.local)", text: $host)
+                    Picker("종류", selection: $kind) {
+                        ForEach(Computer.Kind.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .onChange(of: kind) { old, new in
+                        // 포트를 안 바꿨으면 종류의 기본 포트로
+                        if port == String(old.defaultPort) || port.isEmpty { port = String(new.defaultPort) }
+                    }
+                }
+                Section {
+                    TextField(kind == .mac ? "주소 (예: 192.168.0.10, mac.local)" : "주소 (예: 192.168.0.20, pc.local)", text: $host)
                         .urlField()
                     // 비워 두면 주소를 이름으로 쓴다: 그때 보일 이름을 흐리게 보여 준다
                     TextField(host.trimmingCharacters(in: .whitespaces).isEmpty ? "이름 (비우면 주소)" : host.trimmingCharacters(in: .whitespaces), text: $name)
                     TextField("포트", text: $port).numberField()
                 } footer: {
-                    Text("맥의 시스템 설정 > 일반 > 공유 > 화면 공유가 켜져 있어야 합니다.")
+                    Text(kind == .mac ? "맥의 시스템 설정 > 일반 > 공유 > 화면 공유가 켜져 있어야 합니다."
+                                      : "윈도우의 설정 > 시스템 > 원격 데스크톱이 켜져 있어야 합니다 (윈도우 Pro 이상).")
                 }
                 Section {
-                    TextField("맥 계정 이름", text: $username)
+                    TextField(kind == .mac ? "맥 계정 이름" : "윈도우 계정 (사용자 이름 또는 Microsoft 계정 이메일)", text: $username)
                         .asciiField()
                     SecureField(computer == nil ? "암호" : "암호 (바꿀 때만 입력)", text: $password)
                 } footer: {
                     Text("암호는 이 기기의 키체인에만 저장됩니다.")
                 }
-                Section {
-                    Toggle("고성능 모드 우선 사용", isOn: $preferHP)
-                } footer: {
-                    Text("맥이 지원하면 가상 디스플레이로 영상처럼 받습니다. 안 되면 기본 방식으로 접속합니다.")
+                if kind == .mac {
+                    Section {
+                        Toggle("고성능 모드 우선 사용", isOn: $preferHP)
+                    } footer: {
+                        Text("맥이 지원하면 가상 디스플레이로 영상처럼 받습니다. 안 되면 기본 방식으로 접속합니다.")
+                    }
                 }
                 #if os(iOS)
                 Section {
@@ -59,6 +74,7 @@ struct ComputerEditView: View {
                 name = c.name == c.host ? "" : c.name; host = c.host; port = String(c.port); username = c.username
                 preferHP = c.prefersHighPerformance
                 keepAlive = c.keepsAliveInBackground
+                kind = c.type
             }
         }
     }
@@ -68,7 +84,8 @@ struct ComputerEditView: View {
         var c = computer ?? Computer(name: "", host: "", username: "")
         c.name = name.trimmingCharacters(in: .whitespaces).isEmpty ? h : name
         c.host = h
-        c.port = Int(port) ?? 5900
+        c.kind = kind
+        c.port = Int(port) ?? kind.defaultPort
         c.username = username.trimmingCharacters(in: .whitespaces)
         c.preferHighPerformance = preferHP
         c.keepAliveInBackground = keepAlive

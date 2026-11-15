@@ -102,6 +102,11 @@ final class SessionModel: ObservableObject {
         self.store = store
         client?.stop()
         if !keepStatus { phase = .connecting("접속하는 중…"); retries = 0 }
+        // 윈도우(RDP)는 2.0b 에서 만드는 중
+        if computer.type == .windows {
+            phase = .failed("윈도우 원격 데스크톱 접속은 아직 만드는 중입니다.")
+            return
+        }
         // Debug: 서명 없는 시험 빌드(키체인 못 씀)는 IVNC_TEST_PASSWORD 로 가짜 맥에 붙는다
         #if DEBUG
         let testPassword = ProcessInfo.processInfo.environment["IVNC_TEST_PASSWORD"]

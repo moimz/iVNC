@@ -6,7 +6,17 @@ import UniformTypeIdentifiers
 
 /// 등록한 컴퓨터 하나. 암호는 키체인에 따로 둔다.
 struct Computer: Identifiable, Codable, Hashable {
+    /// 컴퓨터 종류: 맥(화면 공유, VNC) / 윈도우(원격 데스크톱, RDP)
+    enum Kind: String, Codable, CaseIterable {
+        case mac, windows
+        var title: String { self == .mac ? "맥" : "윈도우" }
+        var defaultPort: Int { self == .mac ? 5900 : 3389 }
+    }
+
     var id = UUID()
+    /// 예전 기록(종류 없음)은 맥
+    var kind: Kind?
+    var type: Kind { kind ?? .mac }
     var name: String
     var host: String
     var port: Int = 5900
@@ -100,6 +110,7 @@ final class ComputerStore: ObservableObject {
         var username = ""
         var preferHighPerformance: Bool?
         var keepAliveInBackground: Bool?
+        var kind: String?
     }
 
     private let cloud = NSUbiquitousKeyValueStore.default
@@ -133,7 +144,8 @@ final class ComputerStore: ObservableObject {
 
     private func upload(_ c: Computer) {
         let e = CloudEntry(id: c.id, updatedAt: c.updatedAt ?? Date(), name: c.name, host: c.host, port: c.port, username: c.username,
-                           preferHighPerformance: c.preferHighPerformance, keepAliveInBackground: c.keepAliveInBackground)
+                           preferHighPerformance: c.preferHighPerformance, keepAliveInBackground: c.keepAliveInBackground,
+                           kind: c.kind?.rawValue)
         if let data = try? JSONEncoder().encode(e) { cloud.set(data, forKey: Self.cloudPrefix + c.id.uuidString) }
         cloud.synchronize()
     }
@@ -160,6 +172,7 @@ final class ComputerStore: ObservableObject {
                 c.name = e.name; c.host = e.host; c.port = e.port; c.username = e.username
                 c.preferHighPerformance = e.preferHighPerformance
                 c.keepAliveInBackground = e.keepAliveInBackground
+                c.kind = e.kind.flatMap(Computer.Kind.init(rawValue:))
                 c.updatedAt = e.updatedAt
                 if local == nil { computers.append(c) } else { replace(c) }
             }
