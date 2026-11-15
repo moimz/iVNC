@@ -48,7 +48,8 @@ struct ComputerEditView: View {
                 Form { fields }
                     .formStyle(.grouped)
                     .scrollContentBackground(.hidden)
-                    .tabItem { Text(k.title) }
+                    // 탭 칸은 같은 폭으로 나뉘어 가장 짧은 "맥" 에 맞춰지면 "윈도우" 가 잘린다 → 맥 양옆에 넓은 공백
+                    .tabItem { Text(k == .mac ? "\u{2003}맥\u{2003}" : k.title) }
                     .tag(k)
             }
         }
