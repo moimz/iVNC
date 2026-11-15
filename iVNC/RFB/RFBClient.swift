@@ -724,7 +724,7 @@ final class RFBClient {
             guard comp > 0, full > 0, full < 64 << 20 else { DebugLog.write("클립보드: 빈 것 (형식 \(h[0]), 크기 \(full)/\(comp))"); break }
             // 압축 푸는 방법을 차례로 (zlib 한 덩어리 / 머리 없는 deflate / 접속 내내 이어지는 zlib 스트림)
             var pb: [UInt8]?, how = ""
-            if let r = Self.zlibUncompress(data, size: full) { pb = r; how = "zlib" }
+            if let r = Self.zlibInflateLoose(data, size: full) { pb = r; how = "zlib" }
             else if let r = Self.rawInflate(data, size: full) { pb = r; how = "deflate" }
             else if let r = try? clipInflater.inflate(data), !r.isEmpty { pb = r; how = "이어지는 스트림" }
             guard let pb else {
@@ -1240,6 +1240,26 @@ final class RFBClient {
 
     /// 클립보드가 접속 내내 이어지는 스트림일 때를 위해 (시험)
     private let clipInflater = Inflater()
+
+    /// zlib 한 덩어리를 끝 표시(Z_STREAM_END)가 없어도 풀린 만큼 받는다.
+    /// 애플 서버는 클립보드를 sync flush 로 끊어 보내서 uncompress 는 '덜 끝남'으로 거부했다 (2026-11-15, 78da… 로 시작)
+    private static func zlibInflateLoose(_ input: [UInt8], size: Int) -> [UInt8]? {
+        var z = z_stream()
+        guard inflateInit_(&z, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK else { return nil }
+        defer { inflateEnd(&z) }
+        var out = [UInt8](repeating: 0, count: size + 64)
+        var inp = input
+        let rc: Int32 = inp.withUnsafeMutableBufferPointer { i in
+            out.withUnsafeMutableBufferPointer { o in
+                z.next_in = i.baseAddress; z.avail_in = uInt(i.count)
+                z.next_out = o.baseAddress; z.avail_out = uInt(o.count)
+                return inflate(&z, Z_SYNC_FLUSH)
+            }
+        }
+        let produced = out.count - Int(z.avail_out)
+        guard rc == Z_OK || rc == Z_STREAM_END || rc == Z_BUF_ERROR, produced > 0 else { return nil }
+        return Array(out.prefix(produced))
+    }
 
     /// 머리 없는 deflate
     private static func rawInflate(_ input: [UInt8], size: Int) -> [UInt8]? {
