@@ -256,6 +256,10 @@ final class SessionModel: ObservableObject {
     func sendReturn() {
         client?.sendSpecialKey(0xFF0D, name: "Return")
     }
+    /// 맥 앱: 키 하나 누름/뗌 + 맥 키 코드
+    func sendRawKey(_ keysym: UInt32, keycode: UInt16, down: Bool, name: String) {
+        client?.sendRawKey(keysym, keycode: keycode, down: down, name: name)
+    }
     func sendKey(_ keysym: UInt32, name: String) {
         client?.sendSpecialKey(keysym, name: name)
     }

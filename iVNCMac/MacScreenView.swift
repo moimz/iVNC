@@ -206,8 +206,11 @@ final class MacScreenNSView: NSView, NSTextInputClient {
     /// (원격 맥도 Caps Lock 으로 입력 소스를 바꾸게 설정돼 있으면 같이 바뀐다)
     override func flagsChanged(with e: NSEvent) {
         if e.keyCode == 57 {
-            DebugLog.write("Caps Lock (한영) → 원격, 이 맥 상태 \(e.modifierFlags.contains(.capsLock) ? "켬" : "끔")")
-            model.sendKey(0xFFE5, name: "Caps_Lock")
+            // 한영 전환 모드에서는 한 번 누를 때 켬(누름)·끔(뗌)이 0.1초 간격으로 온다 → 누름/뗌으로 그대로 보낸다
+            // (예전엔 매번 눌렀다 떼서 원격엔 두 번 눌린 셈이었다). 맥 키 코드 57 도 함께 싣는다
+            let on = e.modifierFlags.contains(.capsLock)
+            DebugLog.write("Caps Lock (한영) 이 맥 상태 \(on ? "켬" : "끔") → 원격 \(on ? "누름" : "뗌")")
+            model.sendRawKey(0xFFE5, keycode: 57, down: on, name: "Caps_Lock")
         }
         super.flagsChanged(with: e)
     }

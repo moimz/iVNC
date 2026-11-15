@@ -1083,14 +1083,22 @@ final class RFBClient {
         DebugLog.write("조합 보냄 \(modifiers.map { String(format: "%04x", $0) }) + \(name) 시각 \(DebugLog.wallClock())")
     }
 
-    private func sendKeyEvent(_ keysym: UInt32, down: Bool) {
+    /// 키 하나를 누르거나 뗀다 (맥 키 코드를 함께 실을 수 있다: 맥 앱의 Caps Lock 한영 전환 시험)
+    func sendRawKey(_ keysym: UInt32, keycode: UInt16, down: Bool, name: String) {
+        sendKeyEvent(keysym, down: down, keycode: keycode)
+        DebugLog.write("키 \(down ? "누름" : "뗌") \(name) keysym \(String(format: "%04x", keysym)) 키코드 \(keycode) (암호화 이벤트 \(ardKey != nil))")
+    }
+
+    private func sendKeyEvent(_ keysym: UInt32, down: Bool, keycode: UInt16 = 0) {
         if let key = ardKey {
-            // EncryptedEvent (0x10): [type][flags] + AES-ECB([0xFF][down][keysym u32][시각 u32][0 ×6])
+            // EncryptedEvent (0x10): [type][flags] + AES-ECB([0xFF][down][keysym u32][시각 u32][0 0][키코드 u16][유니코드 u16])
+            // (noVNC-ARD 는 키코드·유니코드 자리를 0 으로 보낸다)
             var p = [UInt8](repeating: 0, count: 16)
             p[0] = 0xFF
             p[1] = down ? 1 : 0
             p.replaceSubrange(2..<6, with: [UInt8].be32(keysym))
             p.replaceSubrange(6..<10, with: [UInt8].be32(UInt32(truncatingIfNeeded: Int64(Date().timeIntervalSince1970 * 1_000_000))))
+            p[12] = UInt8(keycode >> 8); p[13] = UInt8(keycode & 0xFF)
             socket?.send([0x10, 0] + RFBCrypto.ecbEncrypt(algorithm: CCAlgorithm(kCCAlgorithmAES128), key: key, data: p))
         } else {
             socket?.send([4, down ? 1 : 0, 0, 0] + [UInt8].be32(keysym))
