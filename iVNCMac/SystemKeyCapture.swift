@@ -23,12 +23,18 @@ final class SystemKeyCapture {
     func setEnabled(_ on: Bool) -> Bool {
         if !on { stop(); return true }
         if tap != nil { return true }
-        guard AXIsProcessTrusted() else { return false }
+        guard AXIsProcessTrusted() else {
+            DebugLog.write("시스템 단축키 가로채기: 기기 제어 권한 없음 (\(Bundle.main.bundlePath))")
+            return false
+        }
         let mask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue) | (1 << CGEventType.flagsChanged.rawValue)
         guard let t = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
                                         eventsOfInterest: CGEventMask(mask), callback: { _, type, event, _ in
             SystemKeyCapture.handle(type, event)
-        }, userInfo: nil) else { return false }
+        }, userInfo: nil) else {
+            DebugLog.write("시스템 단축키 가로채기: 권한은 있는데 이벤트 탭을 못 만듦")
+            return false
+        }
         tap = t
         source = CFMachPortCreateRunLoopSource(nil, t, 0)
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)

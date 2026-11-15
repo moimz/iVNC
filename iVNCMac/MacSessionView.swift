@@ -101,7 +101,7 @@ struct MacSessionView: View {
             Button("설정 열기") { SystemKeyCapture.openPrivacySettings() }
             Button("나중에", role: .cancel) {}
         } message: {
-            Text("시스템 단축키를 원격 맥으로 보내려면 시스템 설정 > 개인정보 보호 및 보안 > 기기 제어 및 데이터 접근에서 iVNC 를 켜 주세요. 켠 뒤 ⌘ 단추를 다시 누르면 됩니다.")
+            Text("시스템 단축키를 원격 맥으로 보내려면 시스템 설정 > 개인정보 보호 및 보안 > 기기 제어 및 데이터 접근에서 iVNC 를 켜 주세요.\n\n목록에 iVNC 가 이미 켜져 있는데도 이 창이 뜨면, 예전 빌드의 권한입니다. iVNC 를 \"−\" 로 지운 뒤 \"+\" 로 /Applications/iVNC.app 을 다시 추가해 주세요. 켠 뒤 ⌘ 단추를 다시 누르면 됩니다.")
         }
         .onAppear {
             model.clipboardSharing = MacClipboard.enabled
