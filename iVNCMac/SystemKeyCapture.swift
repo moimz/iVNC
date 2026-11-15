@@ -3,7 +3,7 @@ import ApplicationServices
 
 /// 시스템 단축키(⌘Tab, ⌘Space, ⌃방향키, ⌘⇧3 등)를 원격으로 보낼지.
 /// macOS 가 앱보다 먼저 가져가는 키라, 켜면 앱 밖에서 키 이벤트를 가로채(CGEventTap) 앞에 있는 접속 창에 넘긴다.
-/// 가로채기는 "손쉬운 사용" 권한이 있어야 한다 (사용자가 시스템 설정에서 직접 켠다. 앱은 안내만).
+/// 가로채기는 "기기 제어 및 데이터 접근"(macOS 27, 예전 손쉬운 사용) 권한이 있어야 한다 (사용자가 시스템 설정에서 직접 켠다. 앱은 안내와 화면 열기만).
 /// 한/영 전환(Caps Lock, ⌃Space, ⌃⌥Space)은 가로채지 않는다: 이 맥 입력 소스가 바뀌어야 원격도 맞춰진다.
 @MainActor
 final class SystemKeyCapture {
@@ -45,10 +45,14 @@ final class SystemKeyCapture {
         DebugLog.write("시스템 단축키 가로채기 끔")
     }
 
-    /// 권한 안내: 시스템이 "손쉬운 사용" 허락 창을 띄운다 (사용자가 직접 켠다)
-    static func askPermission() {
+    /// 시스템 설정의 "기기 제어 및 데이터 접근"(예전 이름 손쉬운 사용) 화면을 연다. 켜는 건 사용자가 직접.
+    /// 목록에 iVNC 가 나오도록 먼저 한 번 권한을 확인해 둔다 (허락 창은 띄우지 않음)
+    static func openPrivacySettings() {
         let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
-        _ = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
+        _ = AXIsProcessTrustedWithOptions([key: false] as CFDictionary)
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     /// 탭 콜백 (메인 런루프). nil 을 돌려주면 그 키는 이 맥에서 없어진다

@@ -97,10 +97,11 @@ struct MacSessionView: View {
                 _ = SessionWindowSizer.of(w)
             }
         })
-        .alert("손쉬운 사용 권한이 필요합니다", isPresented: $needsAccessibility) {
-            Button("확인", role: .cancel) {}
+        .alert("기기 제어 권한이 필요합니다", isPresented: $needsAccessibility) {
+            Button("설정 열기") { SystemKeyCapture.openPrivacySettings() }
+            Button("나중에", role: .cancel) {}
         } message: {
-            Text("시스템 단축키를 원격 맥으로 보내려면 시스템 설정 > 개인정보 보호 및 보안 > 손쉬운 사용에서 iVNC 를 켜 주세요. 켠 뒤 다시 누르면 됩니다.")
+            Text("시스템 단축키를 원격 맥으로 보내려면 시스템 설정 > 개인정보 보호 및 보안 > 기기 제어 및 데이터 접근에서 iVNC 를 켜 주세요. 켠 뒤 ⌘ 단추를 다시 누르면 됩니다.")
         }
         .onAppear {
             model.connect(store: store)
@@ -117,7 +118,6 @@ struct MacSessionView: View {
             if SystemKeyCapture.shared.setEnabled(true) {
                 systemKeysToRemote = true
             } else {
-                SystemKeyCapture.askPermission()
                 needsAccessibility = true
                 systemKeysToRemote = false
             }
