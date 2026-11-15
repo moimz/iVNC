@@ -721,11 +721,21 @@ final class RFBClient {
             let sid = u32(3), full = Int(u32(7)), comp = Int(u32(11))
             let data = try s.read(comp)
             clipLock.lock(); clipSessionID = sid; clipLock.unlock()
-            if comp > 0, full > 0, full < 64 << 20, let pb = Self.zlibUncompress(data, size: full), let text = Self.pasteboardText(pb) {
-                DebugLog.write("클립보드: 원격 글자 받음 \(text.count)자") // 내용은 남기지 않는다
+            guard comp > 0, full > 0, full < 64 << 20 else { DebugLog.write("클립보드: 빈 것 (형식 \(h[0]), 크기 \(full)/\(comp))"); break }
+            // 압축 푸는 방법을 차례로 (zlib 한 덩어리 / 머리 없는 deflate / 접속 내내 이어지는 zlib 스트림)
+            var pb: [UInt8]?, how = ""
+            if let r = Self.zlibUncompress(data, size: full) { pb = r; how = "zlib" }
+            else if let r = Self.rawInflate(data, size: full) { pb = r; how = "deflate" }
+            else if let r = try? clipInflater.inflate(data), !r.isEmpty { pb = r; how = "이어지는 스트림" }
+            guard let pb else {
+                DebugLog.write("클립보드: 받음 \(comp)바이트 (형식 \(h[0]), 풀면 \(full)), 압축 풀기 실패, 앞 \(data.prefix(4).map { String(format: "%02x", $0) }.joined())")
+                break
+            }
+            if let text = Self.pasteboardText(pb) {
+                DebugLog.write("클립보드: 원격 글자 받음 \(text.count)자 (\(how))") // 내용은 남기지 않는다
                 emit(.clipboard(text))
             } else {
-                DebugLog.write("클립보드: 받음 \(comp)바이트, 글자 없음")
+                DebugLog.write("클립보드: 받음 \(comp)→\(pb.count)바이트 (\(how)), 글자 없음. 구조: \(Self.pasteboardOutline(pb))")
             }
         case 0x20: let h = try s.read(8); try s.skip(Int(UInt32(h[4]) << 24 | UInt32(h[5]) << 16 | UInt32(h[6]) << 8 | UInt32(h[7])))
         case 0x51: handleDisplayInfo2(try s.read(try s.u16()))
@@ -1226,6 +1236,54 @@ final class RFBClient {
             if String(decoding: name, as: UTF8.self) == "public.utf8-plain-text" { return String(decoding: data, as: UTF8.self) }
         }
         return nil
+    }
+
+    /// 클립보드가 접속 내내 이어지는 스트림일 때를 위해 (시험)
+    private let clipInflater = Inflater()
+
+    /// 머리 없는 deflate
+    private static func rawInflate(_ input: [UInt8], size: Int) -> [UInt8]? {
+        var z = z_stream()
+        guard inflateInit2_(&z, -15, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK else { return nil }
+        defer { inflateEnd(&z) }
+        var out = [UInt8](repeating: 0, count: size)
+        var inp = input
+        let rc: Int32 = inp.withUnsafeMutableBufferPointer { i in
+            out.withUnsafeMutableBufferPointer { o in
+                z.next_in = i.baseAddress; z.avail_in = uInt(i.count)
+                z.next_out = o.baseAddress; z.avail_out = uInt(o.count)
+                return inflate(&z, Z_FINISH)
+            }
+        }
+        guard rc == Z_STREAM_END || rc == Z_OK else { return nil }
+        return Array(out.prefix(size - Int(z.avail_out)))
+    }
+
+    /// 페이스트보드 구조만 (종류 이름·크기, 내용은 안 남김) — 형식이 다를 때 보려고
+    private static func pasteboardOutline(_ b: [UInt8]) -> String {
+        var o = 0, parts: [String] = []
+        func u32() -> Int? {
+            guard o + 4 <= b.count else { return nil }
+            defer { o += 4 }
+            return Int(b[o]) << 24 | Int(b[o + 1]) << 16 | Int(b[o + 2]) << 8 | Int(b[o + 3])
+        }
+        guard let n = u32() else { return "짧음 \(b.count)" }
+        parts.append("종류 \(n)")
+        for _ in 0..<min(n, 20) {
+            guard let nl = u32(), nl < 256, o + nl <= b.count else { parts.append("이름 길이 이상 @\(o)"); break }
+            let name = String(decoding: b[o..<(o + nl)], as: UTF8.self); o += nl
+            guard let flags = u32(), let props = u32() else { parts.append("\(name) 잘림"); break }
+            var ok = true
+            for _ in 0..<min(props, 50) {
+                guard let kl = u32(), o + kl <= b.count else { ok = false; break }; o += kl
+                guard let vl = u32(), o + vl <= b.count else { ok = false; break }; o += vl
+            }
+            guard ok, let dl = u32() else { parts.append("\(name) 속성 \(props) 이상 @\(o)"); break }
+            parts.append("\(name)(flags \(flags), 속성 \(props), \(dl)바이트)")
+            o += dl
+        }
+        parts.append("끝 @\(o)/\(b.count)")
+        return parts.joined(separator: ", ")
     }
 
     private static func zlibCompress(_ input: [UInt8]) -> [UInt8]? {
