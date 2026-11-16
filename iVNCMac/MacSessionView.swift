@@ -7,6 +7,8 @@ struct MacSessionView: View {
     @StateObject private var model: SessionModel
     /// 화면을 보다가 모니터 바꾸기를 눌렀을 때 (처음 고를 때는 phase == .picking)
     @State private var changingDisplay = false
+    /// 모니터 고르기 시트에서 "접속 취소": 시트가 붙어 있으면 창이 닫히지 않으므로 시트부터 내리고, 내려간 뒤 창을 닫는다
+    @State private var closingFromPicker = false
     /// 한글 조합을 어디서 할지 (도구 막대 토글, 메뉴 "입력"과 같은 값)
     @AppStorage(MacScreenNSView.KeyMode.defaultsKey) private var keyMode = MacScreenNSView.KeyMode.remote.rawValue
     /// 시스템 단축키를 원격으로 보낼지 (켜려면 손쉬운 사용 권한)
@@ -58,7 +60,9 @@ struct MacSessionView: View {
             }
         }
         // 모니터 고르기: 제목 막대 아래에 붙어 내려오는 시트
-        .sheet(isPresented: pickerShown) {
+        .sheet(isPresented: pickerShown, onDismiss: {
+            if closingFromPicker { dismissWindow() }
+        }) {
             VStack(spacing: 0) {
                 DisplayPickerView(computer: model.computer, displays: model.displays,
                                   title: model.phase == .picking ? "볼 모니터를 고르세요" : "모니터 바꾸기",
@@ -69,7 +73,7 @@ struct MacSessionView: View {
                 HStack {
                     Spacer()
                     Button(model.phase == .picking ? "접속 취소" : "취소") {
-                        if model.phase == .picking { dismissWindow() } else { changingDisplay = false }
+                        if model.phase == .picking { closingFromPicker = true } else { changingDisplay = false }
                     }
                     .keyboardShortcut(.cancelAction)
                 }
@@ -137,7 +141,7 @@ struct MacSessionView: View {
     }
 
     private var pickerShown: Binding<Bool> {
-        Binding(get: { model.phase == .picking || (changingDisplay && model.phase == .viewing) },
+        Binding(get: { !closingFromPicker && (model.phase == .picking || (changingDisplay && model.phase == .viewing)) },
                 set: { if !$0 { changingDisplay = false } })
     }
 
