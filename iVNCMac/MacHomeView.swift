@@ -53,6 +53,8 @@ struct MacHomeView: View {
             return .handled
         }
         .navigationTitle("iVNC")
+        // Dock 을 눌렀을 때 이 창을 다시 열 수 있게 맡겨 둔다
+        .onAppear { HomeWindow.open = { [openWindow] in openWindow(id: "home") } }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button("추가", systemImage: "plus") { adding = true }

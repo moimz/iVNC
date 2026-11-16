@@ -4,6 +4,7 @@ import SwiftUI
 struct MacSessionView: View {
     @EnvironmentObject private var store: ComputerStore
     @Environment(\.dismissWindow) private var dismissWindow
+    @Environment(\.openWindow) private var openWindow
     @StateObject private var model: SessionModel
     /// 화면을 보다가 모니터 바꾸기를 눌렀을 때 (처음 고를 때는 phase == .picking)
     @State private var changingDisplay = false
@@ -131,6 +132,8 @@ struct MacSessionView: View {
             Text("시스템 단축키를 원격 맥으로 보내려면 시스템 설정 > 개인정보 보호 및 보안 > 기기 제어 및 데이터 접근에서 iVNC 를 켜 주세요.\n\n목록에 iVNC 가 이미 켜져 있는데도 이 창이 뜨면, 예전 빌드의 권한입니다. iVNC 를 \"−\" 로 지운 뒤 \"+\" 로 /Applications/iVNC.app 을 다시 추가해 주세요. 켠 뒤 ⌘ 단추를 다시 누르면 됩니다.")
         }
         .onAppear {
+            // 목록 창이 닫혀 있어도 Dock 을 누르면 다시 열 수 있게
+            HomeWindow.open = { [openWindow] in openWindow(id: "home") }
             model.clipboardSharing = MacClipboard.enabled
             model.onRemoteClipboard = { MacClipboard.setFromRemote($0) }
             model.connect(store: store)
