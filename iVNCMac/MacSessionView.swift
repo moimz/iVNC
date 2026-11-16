@@ -49,12 +49,12 @@ struct MacSessionView: View {
             ToolbarSpacer(.fixed)
             ToolbarItem(placement: .automatic) {
                 Menu {
-                    Button("왼쪽 위", systemImage: "arrow.up.left") { model.moveToCorner(.topLeft) }
-                    Button("오른쪽 위", systemImage: "arrow.up.right") { model.moveToCorner(.topRight) }
-                    Button("왼쪽 아래", systemImage: "arrow.down.left") { model.moveToCorner(.bottomLeft) }
-                    Button("오른쪽 아래", systemImage: "arrow.down.right") { model.moveToCorner(.bottomRight) }
+                    Button("왼쪽 위", systemImage: "inset.filled.topleft.rectangle") { model.moveToCorner(.topLeft) }
+                    Button("오른쪽 위", systemImage: "inset.filled.topright.rectangle") { model.moveToCorner(.topRight) }
+                    Button("왼쪽 아래", systemImage: "inset.filled.bottomleft.rectangle") { model.moveToCorner(.bottomLeft) }
+                    Button("오른쪽 아래", systemImage: "inset.filled.bottomright.rectangle") { model.moveToCorner(.bottomRight) }
                 } label: {
-                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    Image(systemName: "menubar.rectangle") // 시스템 설정 핫 코너(데스크탑 및 Dock)와 비슷한 그림
                         .accessibilityLabel("핫 코너")
                 }
                 .menuIndicator(.hidden)
