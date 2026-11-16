@@ -54,7 +54,7 @@ struct MacSessionView: View {
                     Button("왼쪽 아래", systemImage: "inset.filled.bottomleft.rectangle") { model.moveToCorner(.bottomLeft) }
                     Button("오른쪽 아래", systemImage: "inset.filled.bottomright.rectangle") { model.moveToCorner(.bottomRight) }
                 } label: {
-                    Image(systemName: "menubar.rectangle") // 시스템 설정 핫 코너(데스크탑 및 Dock)와 비슷한 그림
+                    Image(systemName: "square.arrowtriangle.4.outward")
                         .accessibilityLabel("핫 코너")
                 }
                 .menuIndicator(.hidden)
