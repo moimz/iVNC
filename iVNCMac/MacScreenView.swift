@@ -215,14 +215,23 @@ final class MacScreenNSView: NSView, NSTextInputClient {
     }
 
     /// 뷰 좌표 → 원격 픽셀 (그림 밖이면 가장자리로)
-    private func pixel(_ e: NSEvent) -> CGPoint {
+    /// avoidCorners: 원격 맥의 핫 코너가 걸리지 않게 모서리를 비킨다 (모서리 근처면 가로로 안쪽에 둔다 → 위·아래 가장자리는 그대로 닿아 Dock·메뉴 막대는 된다)
+    private func pixel(_ e: NSEvent, avoidCorners: Bool = false) -> CGPoint {
         let p = convert(e.locationInWindow, from: nil)
         let r = imageRect
         guard r.width > 0, pixelSize.width > 0 else { return .zero }
         // NSView 는 아래가 원점: 위에서부터로 뒤집는다
-        let x = (p.x - r.minX) / r.width * pixelSize.width
-        let y = (r.maxY - p.y) / r.height * pixelSize.height
-        return CGPoint(x: min(max(x, 0), pixelSize.width - 1).rounded(.down), y: min(max(y, 0), pixelSize.height - 1).rounded(.down))
+        var x = min(max((p.x - r.minX) / r.width * pixelSize.width, 0), pixelSize.width - 1).rounded(.down)
+        let y = min(max((r.maxY - p.y) / r.height * pixelSize.height, 0), pixelSize.height - 1).rounded(.down)
+        if avoidCorners {
+            // 모서리 칸: 이 맥 1포인트가 원격 몇 픽셀인지(축소 비율)의 2배, 그리고 원격 4포인트(레티나 8픽셀) 중 큰 쪽
+            let perPoint = pixelSize.width / r.width
+            let m = max((perPoint * 2).rounded(.up), 4 * CGFloat(max(model.selected?.scale ?? 1, 1)))
+            let nearY = y < m || y > pixelSize.height - 1 - m
+            if nearY && x < m { x = m }
+            if nearY && x > pixelSize.width - 1 - m { x = pixelSize.width - 1 - m }
+        }
+        return CGPoint(x: x, y: y)
     }
 
     override func mouseMoved(with e: NSEvent) { move(e, force: false) }
@@ -235,7 +244,9 @@ final class MacScreenNSView: NSView, NSTextInputClient {
         let now = Date()
         guard force || now.timeIntervalSince(lastMove) >= 1.0 / 60 else { return }
         lastMove = now
-        model.mouseMove(pixel(e))
+        // 원격 맥의 핫 코너는 막는다 (버튼을 누르지 않고 움직일 때. 끌기는 모서리까지 그대로 — 창을 모서리로 끌어 붙이는 등).
+        // 핫 코너를 쓰려면 도구 막대의 핫 코너 버튼으로
+        model.mouseMove(pixel(e, avoidCorners: pressedButton == 0 && model.computer.type == .mac))
     }
 
     override func mouseDown(with e: NSEvent) { window?.makeFirstResponder(self); press(e, button: 1) }

@@ -45,6 +45,22 @@ struct MacSessionView: View {
             ToolbarItem(placement: .automatic) {
                 SystemKeySegments(toRemote: Binding(get: { systemKeysToRemote }, set: { setSystemKeys($0) }))
             }
+            // 핫 코너: 화면에서는 모서리로 커서가 안 가게 막았으므로 여기서 골라 실행
+            ToolbarSpacer(.fixed)
+            ToolbarItem(placement: .automatic) {
+                Menu {
+                    Button("왼쪽 위", systemImage: "arrow.up.left") { model.moveToCorner(.topLeft) }
+                    Button("오른쪽 위", systemImage: "arrow.up.right") { model.moveToCorner(.topRight) }
+                    Button("왼쪽 아래", systemImage: "arrow.down.left") { model.moveToCorner(.bottomLeft) }
+                    Button("오른쪽 아래", systemImage: "arrow.down.right") { model.moveToCorner(.bottomRight) }
+                } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .accessibilityLabel("핫 코너")
+                }
+                .menuIndicator(.hidden)
+                .disabled(!(model.phase == .viewing && model.computer.type == .mac))
+                .help("핫 코너 실행 (원격 커서를 화면 모서리로)")
+            }
             // 모니터 버튼은 따로 떨어진 묶음으로
             ToolbarSpacer(.fixed)
             ToolbarItem(placement: .automatic) {

@@ -391,6 +391,17 @@ extension SessionModel: MouseInput {
     func mouseDown(_ p: CGPoint) { flushComposition(); client?.mouseDown(x: Int(p.x), y: Int(p.y)) }
     func mouseMove(_ p: CGPoint) { client?.mouseMove(x: Int(p.x), y: Int(p.y)) }
     func mouseUp(_ p: CGPoint) { client?.mouseUp(x: Int(p.x), y: Int(p.y)) }
+    enum ScreenCorner: CaseIterable { case topLeft, topRight, bottomLeft, bottomRight }
+    /// 원격 커서를 화면 모서리로 옮겨 핫 코너를 실행한다 (맥 앱 도구 막대). 조금 안쪽에서 모서리로 들어가게 두 번 보낸다
+    func moveToCorner(_ c: ScreenCorner) {
+        let s = renderer.pixelSize
+        guard phase == .viewing, s.width > 1, s.height > 1 else { return }
+        let left = c == .topLeft || c == .bottomLeft, top = c == .topLeft || c == .topRight
+        let x = left ? 0 : Int(s.width) - 1, y = top ? 0 : Int(s.height) - 1
+        let step = Int(min(s.width, s.height) / 10)
+        client?.mouseMove(x: left ? x + step : x - step, y: top ? y + step : y - step)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.client?.mouseMove(x: x, y: y) }
+    }
     /// 맥 앱: 실제 마우스 버튼을 누른 채로 (1 왼쪽, 2 오른쪽, 4 가운데). 떼기는 mouseUp
     func mouseDown(_ p: CGPoint, button: UInt8) { flushComposition(); client?.mouseDown(x: Int(p.x), y: Int(p.y), button: button) }
     var serverCursor: CGPoint? { client?.cursorPosition }
