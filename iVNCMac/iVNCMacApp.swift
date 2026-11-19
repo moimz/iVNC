@@ -8,6 +8,7 @@ struct iVNCMacApp: App {
 
     init() {
         DebugLog.write("FreeRDP \(String(cString: ivnc_freerdp_version())) 링크됨")
+        _ = Updater.shared // 자동 업데이트 시작 (하루 한 번 확인)
     }
 
     var body: some Scene {
@@ -25,10 +26,13 @@ struct iVNCMacApp: App {
             }
         }
         .windowResizability(.contentMinSize)
-        .commands { SessionCommands() }
+        .commands {
+            SessionCommands()
+            CommandGroup(after: .appInfo) { UpdateMenuButton() }
+        }
 
         Settings {
-            SettingsForm().frame(width: 360, height: 420)
+            SettingsForm().frame(width: 380, height: 560)
         }
     }
 }

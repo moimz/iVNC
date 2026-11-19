@@ -40,6 +40,9 @@ struct SettingsForm: View {
             } footer: {
                 Text("맥 고성능 모드와 윈도우 접속에 쓰입니다. 다음 접속부터 적용됩니다. 맥 일반 모드는 맥의 실제 해상도로 보입니다.")
             }
+            #if os(macOS)
+            UpdateSection() // 자동 업데이트 (맥 앱만, iVNCMac/Updater.swift)
+            #endif
             Section {
                 Button("오픈 소스 라이선스") { showLicenses = true }
             } footer: {

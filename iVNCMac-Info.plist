@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 맥 앱만. 빌드 설정(INFOPLIST_KEY_*)으로 못 넣는 항목만 둔다. 나머지는 자동 생성과 합쳐진다 -->
+	<!-- 자동 업데이트 (Sparkle): 새 버전 목록은 GitHub 최신 릴리즈의 appcast.xml, 업데이트는 이 공개 키로 서명 검증 -->
+	<key>SUFeedURL</key>
+	<string>https://github.com/moimz/iVNC/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>gp/zQAdNFxOQSK9uWVgRic/3CepxrVJFMpXOnvWL1Pc=</string>
+	<!-- 처음부터 하루 한 번 자동 확인 (두 번째 실행 때 "자동으로 확인할까요?" 를 묻지 않게). 끄기는 앱 설정 -->
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
+</dict>
+</plist>

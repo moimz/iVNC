@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		B10000000000000000000302 /* FreeRDP.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = B10000000000000000000301 /* FreeRDP.xcframework */; };
 		B10000000000000000000303 /* FreeRDP.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = B10000000000000000000301 /* FreeRDP.xcframework */; };
+		B10000000000000000000401 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = B10000000000000000000403 /* Sparkle */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -62,6 +63,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				B10000000000000000000303 /* FreeRDP.xcframework in Frameworks */,
+				B10000000000000000000401 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -129,6 +131,9 @@
 				B10000000000000000000102 /* iVNCMac */,
 			);
 			name = iVNCMac;
+			packageProductDependencies = (
+				B10000000000000000000403 /* Sparkle */,
+			);
 			productName = iVNCMac;
 			productReference = B10000000000000000000101 /* iVNC.app */;
 			productType = "com.apple.product-type.application";
@@ -160,6 +165,9 @@
 				Base,
 			);
 			mainGroup = B10000000000000000000004;
+			packageReferences = (
+				B10000000000000000000402 /* XCRemoteSwiftPackageReference "Sparkle" */,
+			);
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
 			productRefGroup = B10000000000000000000005 /* Products */;
@@ -316,7 +324,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.0;
+				MARKETING_VERSION = 2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.moimz.iVNC;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -369,7 +377,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.0;
+				MARKETING_VERSION = 2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.moimz.iVNC;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -413,6 +421,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = iVNC;
+				INFOPLIST_FILE = "iVNCMac-Info.plist";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "같은 네트워크에 있는 컴퓨터의 화면에 접속하려면 로컬 네트워크 접근이 필요합니다.";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -421,7 +430,7 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				ARCHS = arm64;
-				MARKETING_VERSION = 2.0;
+				MARKETING_VERSION = 2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.moimz.iVNC;
 				PRODUCT_MODULE_NAME = iVNCMac;
 				PRODUCT_NAME = iVNC;
@@ -462,6 +471,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = iVNC;
+				INFOPLIST_FILE = "iVNCMac-Info.plist";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "같은 네트워크에 있는 컴퓨터의 화면에 접속하려면 로컬 네트워크 접근이 필요합니다.";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -470,7 +480,7 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				ARCHS = arm64;
-				MARKETING_VERSION = 2.0;
+				MARKETING_VERSION = 2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.moimz.iVNC;
 				PRODUCT_MODULE_NAME = iVNCMac;
 				PRODUCT_NAME = iVNC;
@@ -527,6 +537,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		B10000000000000000000402 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = exactVersion;
+				version = 2.10.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		B10000000000000000000403 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B10000000000000000000402 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = B1000000000000000000000A /* Project object */;
 }
