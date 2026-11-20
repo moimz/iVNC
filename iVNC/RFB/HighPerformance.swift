@@ -378,7 +378,10 @@ final class HPUDPReceiver {
     private let lock = NSLock()
 
     /// 각 포트에 UDP 소켓을 연다. 실패하면 그 이유를 돌려준다.
-    func bind(ports: [UInt16]) -> String? {
+    /// interface: 화면 TCP 접속이 쓰는 네트워크 장치 번호. 소켓을 그 장치에 묶어, 접속 중에 더 빠른 망(예: 와이파이 쓰다가
+    /// 이더넷)이 붙어도 보고(RTCP)가 그쪽으로 새지 않게 한다. 안 묶으면 서버는 모르는 출발지라 보고를 버리고,
+    /// 속도 조절·NACK·키 그림 요청이 모두 끊겨 20Mbps 고정에 화질이 떨어진다 (2026-11-20 게스트 맥 와이파이→이더넷)
+    func bind(ports: [UInt16], interface: UInt32? = nil) -> String? {
         for p in ports {
             // IPv6 이중 스택: IPv4(::ffff:…)와 IPv6(LTE NAT64)를 함께 받는다
             let fd = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP)
@@ -392,6 +395,12 @@ final class HPUDPReceiver {
             DebugLog.write("HP UDP \(p) 받는 버퍼 \(got / 1024)KB")
             var off: Int32 = 0
             setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &off, socklen_t(MemoryLayout<Int32>.size))
+            // 장치에 묶기 (IPV6_BOUND_IF = 125). 이중 스택 소켓의 IPv4 보내기도 같은 묶음을 따른다
+            if var idx = interface {
+                if setsockopt(fd, IPPROTO_IPV6, 125, &idx, socklen_t(MemoryLayout<UInt32>.size)) != 0 {
+                    DebugLog.write("HP UDP \(p) 장치 \(idx) 에 묶기 실패: \(String(cString: strerror(errno)))")
+                }
+            }
             var addr = sockaddr_in6()
             addr.sin6_family = sa_family_t(AF_INET6)
             addr.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)

@@ -104,6 +104,40 @@ final class RFBSocket {
         return a
     }
 
+    /// 이 TCP 접속이 쓰는 내 쪽 네트워크 장치 (이름, 번호). 고성능 UDP 를 같은 장치에 묶으려고
+    var localInterface: (name: String, index: UInt32)? {
+        var storage = sockaddr_storage(), len = socklen_t(MemoryLayout<sockaddr_storage>.size)
+        let rc = withUnsafeMutablePointer(to: &storage) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &len) } }
+        guard rc == 0 else { return nil }
+        // 비교할 주소: IPv4 4바이트 또는 IPv6 16바이트 (::ffff:a.b.c.d 는 IPv4 로)
+        func key(_ sa: UnsafePointer<sockaddr>) -> [UInt8]? {
+            switch Int32(sa.pointee.sa_family) {
+            case AF_INET:
+                var a = sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr }
+                return withUnsafeBytes(of: &a) { Array($0) }
+            case AF_INET6:
+                var a = sa.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { $0.pointee.sin6_addr }
+                let b = withUnsafeBytes(of: &a) { Array($0) }
+                return b[0..<12] == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF][...] ? Array(b[12...]) : b
+            default: return nil
+            }
+        }
+        guard let mine = withUnsafePointer(to: &storage, { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { key($0) } }) else { return nil }
+        var list: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&list) == 0 else { return nil }
+        defer { freeifaddrs(list) }
+        var p = list
+        while let i = p {
+            if let sa = i.pointee.ifa_addr, key(sa) == mine {
+                let name = String(cString: i.pointee.ifa_name)
+                let index = if_nametoindex(i.pointee.ifa_name)
+                return index > 0 ? (name, index) : nil
+            }
+            p = i.pointee.ifa_next
+        }
+        return nil
+    }
+
     static func describe(_ a: sockaddr_in6) -> String {
         var a = a
         var buf = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))

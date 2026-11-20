@@ -324,7 +324,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.1;
+				MARKETING_VERSION = 2.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.moimz.iVNC;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -377,7 +377,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.1;
+				MARKETING_VERSION = 2.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.moimz.iVNC;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -430,7 +430,7 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				ARCHS = arm64;
-				MARKETING_VERSION = 2.1;
+				MARKETING_VERSION = 2.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.moimz.iVNC;
 				PRODUCT_MODULE_NAME = iVNCMac;
 				PRODUCT_NAME = iVNC;
@@ -480,7 +480,7 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				ARCHS = arm64;
-				MARKETING_VERSION = 2.1;
+				MARKETING_VERSION = 2.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.moimz.iVNC;
 				PRODUCT_MODULE_NAME = iVNCMac;
 				PRODUCT_NAME = iVNC;

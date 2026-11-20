@@ -256,7 +256,10 @@ final class RFBClient {
                 if hpReceiver == nil {
                     let r = HPUDPReceiver()
                     let local = [ports.audio &+ Self.hpPortOffset, ports.video &+ Self.hpPortOffset]
-                    if let err = r.bind(ports: local) {
+                    // 화면 TCP 와 같은 네트워크 장치로만 주고받는다 (접속 중 다른 망이 붙어도 보고가 새지 않게)
+                    let nic = socket?.localInterface
+                    DebugLog.write("HP UDP 묶을 장치: \(nic.map { "\($0.name)(\($0.index))" } ?? "모름 → 묶지 않음")")
+                    if let err = r.bind(ports: local, interface: nic?.index) {
                         DebugLog.write("HP " + err)
                         hpFail("UDP 포트를 열 수 없음")
                         return
