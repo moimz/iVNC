@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import Security
 import CoreGraphics
 import ImageIO
@@ -6,11 +7,26 @@ import UniformTypeIdentifiers
 
 /// 등록한 컴퓨터 하나. 암호는 키체인에 따로 둔다.
 struct Computer: Identifiable, Codable, Hashable {
-    /// 컴퓨터 종류: 맥(화면 공유, VNC) / 윈도우(원격 데스크톱, RDP)
+    /// 컴퓨터 종류: 맥(화면 공유, VNC) / 윈도우(원격 데스크톱, RDP) / SSH(터미널)
+    /// 주의: 2.2 이하 앱은 iCloud 로 받은 "ssh" 를 모르는 종류라 맥으로 본다 (그 앱에선 맥 카드로 보이고 접속은 실패)
     enum Kind: String, Codable, CaseIterable {
-        case mac, windows
-        var title: String { self == .mac ? "맥" : "윈도우" }
-        var defaultPort: Int { self == .mac ? 5900 : 3389 }
+        case mac, windows, ssh
+        var title: String {
+            switch self {
+            case .mac: return "맥"
+            case .windows: return "윈도우"
+            case .ssh: return "SSH"
+            }
+        }
+        var defaultPort: Int {
+            switch self {
+            case .mac: return 5900
+            case .windows: return 3389
+            case .ssh: return 22
+            }
+        }
+        /// 화면을 보는 종류 (맥·윈도우). SSH 는 터미널
+        var showsScreen: Bool { self != .ssh }
     }
 
     var id = UUID()
@@ -31,9 +47,71 @@ struct Computer: Identifiable, Codable, Hashable {
     var keepAliveInBackground: Bool?
     var keepsAliveInBackground: Bool { keepAliveInBackground ?? true }
 
+    /// SSH 인증 방식. 없으면 비밀번호
+    var sshAuth: SSHAuth?
+    /// 가져온 SSH 키 파일 이름 (보여 주기용. 키 내용은 키체인에)
+    var sshKeyName: String?
+    /// SSH 문자 인코딩 (IANA 이름). 없으면 UTF-8. 서버마다 다를 수 있어 컴퓨터마다 둔다
+    var sshEncoding: String?
+    /// SSH 서버 색 (목록 줄·터미널 제목 메뉴·탭의 색 점). iSQL 과 같은 8가지
+    var sshColor: ServerColor?
+
     var prefersHighPerformance: Bool {
         preferHighPerformance ?? !UserDefaults.standard.bool(forKey: "debug.hpOff")
     }
+}
+
+/// SSH 인증 방식 (iSQL 과 같은 이름)
+enum SSHAuth: String, Codable, CaseIterable {
+    /// 키 파일 (내용과 키 암호는 키체인)
+    case key
+    /// 비밀번호 (키체인)
+    case password
+    var label: String { self == .key ? "키 파일" : "비밀번호" }
+}
+
+/// 서버 색 (iSQL ServerColor 와 같은 것)
+enum ServerColor: String, Codable, CaseIterable, Identifiable {
+    case none, red, orange, yellow, green, blue, purple, gray
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .none: return "없음"
+        case .red: return "빨강 (운영)"
+        case .orange: return "주황"
+        case .yellow: return "노랑"
+        case .green: return "초록 (개발)"
+        case .blue: return "파랑"
+        case .purple: return "보라"
+        case .gray: return "회색"
+        }
+    }
+    var color: Color? {
+        switch self {
+        case .none: return nil
+        case .red: return .red
+        case .orange: return .orange
+        case .yellow: return .yellow
+        case .green: return .green
+        case .blue: return .blue
+        case .purple: return .purple
+        case .gray: return .gray
+        }
+    }
+}
+
+/// SSH 문자 인코딩 (맥 터미널의 텍스트 인코딩 중 쓸 만한 것)
+enum SSHEncoding {
+    static let all: [(id: String, title: String)] = [
+        ("UTF-8", "유니코드 (UTF-8)"),
+        ("EUC-KR", "한국어 (EUC-KR · CP949)"),
+        ("Shift_JIS", "일본어 (Shift JIS)"),
+        ("EUC-JP", "일본어 (EUC-JP)"),
+        ("GB18030", "중국어 간체 (GB 18030)"),
+        ("Big5", "중국어 번체 (Big 5)"),
+        ("ISO-8859-1", "서유럽 (ISO Latin 1)"),
+    ]
+    static let defaultID = "UTF-8"
 }
 
 /// 컴퓨터 목록 (Application Support/computers.json)
@@ -77,6 +155,7 @@ final class ComputerStore: ObservableObject {
     func delete(_ c: Computer) {
         computers.removeAll { $0.id == c.id }
         Keychain.deletePassword(for: c.id)
+        Keychain.deleteSSHKey(for: c.id)
         Thumbnails.delete(computer: c.id)
         persist()
         uploadDeletion(c.id)
@@ -111,6 +190,10 @@ final class ComputerStore: ObservableObject {
         var preferHighPerformance: Bool?
         var keepAliveInBackground: Bool?
         var kind: String?
+        var sshAuth: String?
+        var sshKeyName: String?
+        var sshEncoding: String?
+        var sshColor: String?
     }
 
     private let cloud = NSUbiquitousKeyValueStore.default
@@ -145,7 +228,7 @@ final class ComputerStore: ObservableObject {
     private func upload(_ c: Computer) {
         let e = CloudEntry(id: c.id, updatedAt: c.updatedAt ?? Date(), name: c.name, host: c.host, port: c.port, username: c.username,
                            preferHighPerformance: c.preferHighPerformance, keepAliveInBackground: c.keepAliveInBackground,
-                           kind: c.kind?.rawValue)
+                           kind: c.kind?.rawValue, sshAuth: c.sshAuth?.rawValue, sshKeyName: c.sshKeyName, sshEncoding: c.sshEncoding, sshColor: c.sshColor?.rawValue)
         if let data = try? JSONEncoder().encode(e) { cloud.set(data, forKey: Self.cloudPrefix + c.id.uuidString) }
         cloud.synchronize()
     }
@@ -173,6 +256,10 @@ final class ComputerStore: ObservableObject {
                 c.preferHighPerformance = e.preferHighPerformance
                 c.keepAliveInBackground = e.keepAliveInBackground
                 c.kind = e.kind.flatMap(Computer.Kind.init(rawValue:))
+                c.sshAuth = e.sshAuth.flatMap(SSHAuth.init(rawValue:))
+                c.sshKeyName = e.sshKeyName
+                c.sshEncoding = e.sshEncoding
+                c.sshColor = e.sshColor.flatMap(ServerColor.init(rawValue:))
                 c.updatedAt = e.updatedAt
                 if local == nil { computers.append(c) } else { replace(c) }
             }
@@ -188,6 +275,44 @@ final class ComputerStore: ObservableObject {
 /// 맥 암호. iCloud 키체인으로 동기화한다 (끝단 암호화, 같은 Apple 계정 기기끼리만)
 enum Keychain {
     private static let service = "com.moimz.iVNC.password"
+    /// SSH 키 파일 내용과 그 키 암호 (컴퓨터마다 하나씩, iCloud 키체인으로 아이폰·아이패드·맥이 같이 쓴다)
+    private static let sshKeyService = "com.moimz.iVNC.sshkey"
+    private static let sshKeyPassService = "com.moimz.iVNC.sshkeypass"
+
+    static func setSSHKey(_ key: Data, for id: UUID) { setData(key, service: sshKeyService, id: id) }
+    static func sshKey(for id: UUID) -> Data? { data(service: sshKeyService, id: id) }
+    static func setSSHKeyPassphrase(_ pw: String, for id: UUID) { setData(Data(pw.utf8), service: sshKeyPassService, id: id) }
+    static func sshKeyPassphrase(for id: UUID) -> String? { data(service: sshKeyPassService, id: id).map { String(decoding: $0, as: UTF8.self) } }
+    static func deleteSSHKeyPassphrase(for id: UUID) { delete(service: sshKeyPassService, id: id) }
+    static func deleteSSHKey(for id: UUID) {
+        delete(service: sshKeyService, id: id)
+        delete(service: sshKeyPassService, id: id)
+    }
+
+    private static func setData(_ d: Data, service: String, id: UUID) {
+        delete(service: service, id: id)
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                                kSecAttrAccount as String: id.uuidString, kSecValueData as String: d,
+                                kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+                                kSecAttrSynchronizable as String: true]
+        SecItemAdd(q as CFDictionary, nil)
+    }
+
+    private static func data(service: String, id: UUID) -> Data? {
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                                kSecAttrAccount as String: id.uuidString, kSecReturnData as String: true,
+                                kSecAttrSynchronizable as String: kSecAttrSynchronizableAny]
+        var out: AnyObject?
+        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess else { return nil }
+        return out as? Data
+    }
+
+    private static func delete(service: String, id: UUID) {
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                                kSecAttrAccount as String: id.uuidString,
+                                kSecAttrSynchronizable as String: kSecAttrSynchronizableAny]
+        SecItemDelete(q as CFDictionary)
+    }
 
     static func setPassword(_ pw: String, for id: UUID) {
         deletePassword(for: id)

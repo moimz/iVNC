@@ -108,6 +108,11 @@ final class SessionModel: ObservableObject {
         #else
         let testPassword: String? = nil
         #endif
+        // SSH 는 화면 세션이 아니다 (터미널은 따로 만든다). 목록에서 막지만 혹시 들어오면
+        guard computer.type.showsScreen else {
+            phase = .failed("SSH 터미널은 아직 준비 중입니다.")
+            return
+        }
         guard let pw = Keychain.password(for: computer.id) ?? testPassword else {
             phase = .failed("저장된 암호가 없습니다. 컴퓨터를 길게 눌러 편집에서 암호를 입력하세요.")
             return

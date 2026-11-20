@@ -1,16 +1,21 @@
 import SwiftUI
 
-/// 맥 앱 첫 창: 컴퓨터 카드 목록. 카드를 누르면 접속 창이 열린다
+/// 맥 앱 첫 창: 화면 공유(맥·윈도우)는 카드, SSH 는 그 아래 한 줄 목록. 묶음은 접었다 폈다.
+/// 카드·줄을 두 번 누르면 접속 창이 열린다
 struct MacHomeView: View {
     @EnvironmentObject private var store: ComputerStore
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     @State private var editing: Computer?
     @State private var adding = false
-    /// 오른쪽 설정 패널
-    @State private var showSettings = false
     /// 한 번 눌러 고른 컴퓨터 (두 번 누르거나 엔터로 접속)
     @State private var selected: UUID?
+    @AppStorage(ComputerGroupKeys.screens) private var screensExpanded = true
+    @AppStorage(ComputerGroupKeys.ssh) private var sshExpanded = true
     private let columns = [GridItem(.adaptive(minimum: 180, maximum: 280), spacing: 18)]
+
+    private var screens: [Computer] { store.computers.filter { $0.type.showsScreen } }
+    private var servers: [Computer] { store.computers.filter { !$0.type.showsScreen } }
 
     var body: some View {
         ScrollView {
@@ -18,25 +23,39 @@ struct MacHomeView: View {
                 ContentUnavailableView {
                     Label("컴퓨터가 없습니다", systemImage: "display.2")
                 } description: {
-                    Text("오른쪽 위 + 를 눌러 화면 공유가 켜진 맥을 추가하세요.")
+                    Text("오른쪽 위 + 를 눌러 맥·윈도우나 SSH 서버를 추가하세요.")
                 }
                 .padding(.top, 80)
             } else {
-                LazyVGrid(columns: columns, spacing: 22) {
-                    ForEach(store.computers) { c in
-                        ComputerCard(computer: c, selected: selected == c.id)
-                            // 한 번 = 고르기(바로), 두 번 = 접속
-                            .onTapGesture(count: 2) { openWindow(id: "session", value: c.id) }
-                            .simultaneousGesture(TapGesture().onEnded { selected = c.id })
-                            .contextMenu {
-                                Button("접속", systemImage: "play.display") { openWindow(id: "session", value: c.id) }
-                                    .keyboardShortcut(.return, modifiers: [])
-                                Button("편집…", systemImage: "pencil") { editing = c }
-                                    .keyboardShortcut("e")
-                                Divider()
-                                Button("삭제", systemImage: "trash", role: .destructive) { store.delete(c) }
-                                    .keyboardShortcut(.delete)
+                VStack(alignment: .leading, spacing: 16) {
+                    // SSH 가 없으면 묶음 머리 없이 예전처럼 카드만
+                    if !screens.isEmpty {
+                        if !servers.isEmpty {
+                            ComputerGroupHeader(title: "화면 공유", count: screens.count, expanded: $screensExpanded)
+                        }
+                        if servers.isEmpty || screensExpanded {
+                            LazyVGrid(columns: columns, spacing: 22) {
+                                ForEach(screens) { c in
+                                    ComputerCard(computer: c, selected: selected == c.id)
+                                        // 한 번 = 고르기(바로), 두 번 = 접속
+                                        .onTapGesture(count: 2) { open(c) }
+                                        .simultaneousGesture(TapGesture().onEnded { selected = c.id })
+                                        .contextMenu { menu(c) }
+                                }
                             }
+                        }
+                    }
+                    if !servers.isEmpty {
+                        ComputerGroupHeader(title: "SSH", count: servers.count, expanded: $sshExpanded)
+                            .padding(.top, screens.isEmpty ? 0 : 8)
+                        if sshExpanded {
+                            SSHList(computers: servers) { c in
+                                SSHRow(computer: c, selected: selected == c.id)
+                                    .onTapGesture(count: 2) { open(c) }
+                                    .simultaneousGesture(TapGesture().onEnded { selected = c.id })
+                                    .contextMenu { menu(c) }
+                            }
+                        }
                     }
                 }
                 .padding(20)
@@ -48,8 +67,8 @@ struct MacHomeView: View {
         .focusable()
         .focusEffectDisabled()
         .onKeyPress(.return) {
-            guard let id = selected else { return .ignored }
-            openWindow(id: "session", value: id)
+            guard let id = selected, let c = store.computers.first(where: { $0.id == id }) else { return .ignored }
+            open(c)
             return .handled
         }
         .navigationTitle("iVNC")
@@ -58,25 +77,26 @@ struct MacHomeView: View {
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button("추가", systemImage: "plus") { adding = true }
-                Button("설정", systemImage: "slider.horizontal.3") {
-                    withAnimation(.snappy) { showSettings.toggle() }
-                }
-            }
-        }
-        // 설정 패널: 오른쪽 끝에 붙은 사이드바 모양 그대로, 목록 위에 덮는다 (목록 크기는 그대로)
-        .overlay(alignment: .trailing) {
-            if showSettings {
-                HStack(spacing: 0) {
-                    Divider()
-                    SettingsForm()
-                        .frame(width: 280)
-                        .frame(maxHeight: .infinity)
-                        .background(.background)
-                }
-                .transition(.move(edge: .trailing))
+                // 설정은 ⌘, 와 같은 설정 창 ([일반 | 화면 공유 | SSH])
+                Button("설정", systemImage: "gearshape") { openSettings() }
             }
         }
         .sheet(isPresented: $adding) { ComputerEditView(computer: nil).frame(minWidth: 460, minHeight: 520) }
         .sheet(item: $editing) { ComputerEditView(computer: $0).frame(minWidth: 460, minHeight: 520) }
+    }
+
+    /// 접속: 화면 공유는 접속 창, SSH 는 늘 새 터미널 창
+    private func open(_ c: Computer) {
+        if c.type.showsScreen { openWindow(id: "session", value: c.id) } else { openWindow(id: "terminal", value: TerminalWindowRequest(computer: c.id)) }
+    }
+
+    @ViewBuilder private func menu(_ c: Computer) -> some View {
+        Button("접속", systemImage: c.type.showsScreen ? "play.display" : "terminal") { open(c) }
+            .keyboardShortcut(.return, modifiers: [])
+        Button("편집…", systemImage: "pencil") { editing = c }
+            .keyboardShortcut("e")
+        Divider()
+        Button("삭제", systemImage: "trash", role: .destructive) { store.delete(c) }
+            .keyboardShortcut(.delete)
     }
 }

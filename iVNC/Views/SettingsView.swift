@@ -1,28 +1,39 @@
 import SwiftUI
 
-/// 앱 설정 (아이폰·아이패드: 목록 왼쪽 위 버튼 → 시트)
+/// 앱 설정 (아이폰·아이패드: 목록 왼쪽 위 버튼 → 시트). [일반 | 화면 공유 | SSH] 를 목록에서 하나씩 들어간다
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
-            SettingsForm()
-                .navigationTitle("설정")
-                .inlineTitle()
-                .toolbar {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("완료") { dismiss() }
-                    }
+            List {
+                #if !os(macOS)
+                NavigationLink { ScreenSettingsForm().navigationTitle("화면 공유").inlineTitle() } label: {
+                    Label("화면 공유", systemImage: "display.2")
                 }
+                NavigationLink { TerminalSettingsList().navigationTitle("SSH").inlineTitle() } label: {
+                    Label("SSH", systemImage: "terminal")
+                }
+                NavigationLink { GeneralSettingsForm().navigationTitle("일반").inlineTitle() } label: {
+                    Label("일반", systemImage: "gearshape")
+                }
+                #endif
+            }
+            .navigationTitle("설정")
+            .inlineTitle()
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("완료") { dismiss() }
+                }
+            }
         }
     }
 }
 
-/// 설정 내용 (맥은 목록 창 옆 패널과 설정 창에서 이것만 쓴다)
-struct SettingsForm: View {
+/// 설정 > 화면 공유: 원격 화면 해상도 (맥 고성능·윈도우)
+struct ScreenSettingsForm: View {
     /// "" = 기기에 맞춤
     @AppStorage(AppSettings.resolutionKey) private var resolution = ""
-    @State private var showLicenses = false
 
     var body: some View {
         Form {
@@ -40,13 +51,26 @@ struct SettingsForm: View {
             } footer: {
                 Text("맥 고성능 모드와 윈도우 접속에 쓰입니다. 다음 접속부터 적용됩니다. 맥 일반 모드는 맥의 실제 해상도로 보입니다.")
             }
+        }
+        #if os(macOS)
+        .formStyle(.grouped)
+        #endif
+    }
+}
+
+/// 설정 > 일반: 업데이트(맥), 오픈 소스 라이선스, 버전
+struct GeneralSettingsForm: View {
+    @State private var showLicenses = false
+
+    var body: some View {
+        Form {
             #if os(macOS)
             UpdateSection() // 자동 업데이트 (맥 앱만, iVNCMac/Updater.swift)
             #endif
             Section {
                 Button("오픈 소스 라이선스") { showLicenses = true }
             } footer: {
-                Text(Self.versionText).frame(maxWidth: .infinity, alignment: .center)
+                Text(SettingsForm.versionText).frame(maxWidth: .infinity, alignment: .center)
             }
         }
         .sheet(isPresented: $showLicenses) { LicensesView() }
@@ -54,7 +78,10 @@ struct SettingsForm: View {
         .formStyle(.grouped)
         #endif
     }
+}
 
+/// 버전 글자 (예전 이름 그대로 둔다)
+enum SettingsForm {
     /// "버전 0.1 (235, fa0e978)" — 빌드 번호는 git 커밋 수, 뒤는 커밋 해시 ("+" 는 커밋 전 변경 포함). Scripts/stamp-build-number.sh
     static var versionText: String {
         let info = Bundle.main.infoDictionary ?? [:]

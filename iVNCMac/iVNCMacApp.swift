@@ -31,8 +31,17 @@ struct iVNCMacApp: App {
             CommandGroup(after: .appInfo) { UpdateMenuButton() }
         }
 
+        // SSH 터미널 창: 열 때마다 새 창 (창마다 탭·분할)
+        WindowGroup("SSH", id: "terminal", for: TerminalWindowRequest.self) { $req in
+            if let req {
+                TerminalWindowView(request: req)
+                    .environmentObject(store)
+            }
+        }
+        .defaultSize(width: 760, height: 480)
+
         Settings {
-            SettingsForm().frame(width: 380, height: 560)
+            MacSettingsView()
         }
     }
 }

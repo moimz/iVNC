@@ -10,6 +10,13 @@
 		B10000000000000000000302 /* FreeRDP.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = B10000000000000000000301 /* FreeRDP.xcframework */; };
 		B10000000000000000000303 /* FreeRDP.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = B10000000000000000000301 /* FreeRDP.xcframework */; };
 		B10000000000000000000401 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = B10000000000000000000403 /* Sparkle */; };
+		B10000000000000000000413 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = B10000000000000000000411 /* NIOSSH */; };
+		B10000000000000000000414 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = B10000000000000000000412 /* NIOSSH */; };
+		B10000000000000000000425 /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = B10000000000000000000421 /* NIOCore */; };
+		B10000000000000000000426 /* NIOPosix in Frameworks */ = {isa = PBXBuildFile; productRef = B10000000000000000000422 /* NIOPosix */; };
+		B10000000000000000000427 /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = B10000000000000000000423 /* NIOCore */; };
+		B10000000000000000000428 /* NIOPosix in Frameworks */ = {isa = PBXBuildFile; productRef = B10000000000000000000424 /* NIOPosix */; };
+		B10000000000000000000432 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = B10000000000000000000431 /* SwiftTerm */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -55,6 +62,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				B10000000000000000000302 /* FreeRDP.xcframework in Frameworks */,
+				B10000000000000000000413 /* NIOSSH in Frameworks */,
+				B10000000000000000000425 /* NIOCore in Frameworks */,
+				B10000000000000000000426 /* NIOPosix in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -64,6 +74,10 @@
 			files = (
 				B10000000000000000000303 /* FreeRDP.xcframework in Frameworks */,
 				B10000000000000000000401 /* Sparkle in Frameworks */,
+				B10000000000000000000414 /* NIOSSH in Frameworks */,
+				B10000000000000000000427 /* NIOCore in Frameworks */,
+				B10000000000000000000428 /* NIOPosix in Frameworks */,
+				B10000000000000000000432 /* SwiftTerm in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -109,6 +123,11 @@
 				B10000000000000000000002 /* iVNC */,
 			);
 			name = iVNC;
+			packageProductDependencies = (
+				B10000000000000000000411 /* NIOSSH */,
+				B10000000000000000000421 /* NIOCore */,
+				B10000000000000000000422 /* NIOPosix */,
+			);
 			productName = iVNC;
 			productReference = B10000000000000000000001 /* iVNC.app */;
 			productType = "com.apple.product-type.application";
@@ -133,6 +152,10 @@
 			name = iVNCMac;
 			packageProductDependencies = (
 				B10000000000000000000403 /* Sparkle */,
+				B10000000000000000000412 /* NIOSSH */,
+				B10000000000000000000423 /* NIOCore */,
+				B10000000000000000000424 /* NIOPosix */,
+				B10000000000000000000431 /* SwiftTerm */,
 			);
 			productName = iVNCMac;
 			productReference = B10000000000000000000101 /* iVNC.app */;
@@ -167,6 +190,9 @@
 			mainGroup = B10000000000000000000004;
 			packageReferences = (
 				B10000000000000000000402 /* XCRemoteSwiftPackageReference "Sparkle" */,
+				B10000000000000000000410 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */,
+				B10000000000000000000420 /* XCRemoteSwiftPackageReference "swift-nio" */,
+				B10000000000000000000430 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
 			);
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
@@ -547,6 +573,30 @@
 				version = 2.10.1;
 			};
 		};
+		B10000000000000000000410 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-nio-ssh";
+			requirement = {
+				kind = exactVersion;
+				version = 0.15.1;
+			};
+		};
+		B10000000000000000000420 /* XCRemoteSwiftPackageReference "swift-nio" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-nio";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.80.0;
+			};
+		};
+		B10000000000000000000430 /* XCRemoteSwiftPackageReference "SwiftTerm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/migueldeicaza/SwiftTerm";
+			requirement = {
+				kind = exactVersion;
+				version = 1.99.3;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -554,6 +604,41 @@
 			isa = XCSwiftPackageProductDependency;
 			package = B10000000000000000000402 /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
+		};
+		B10000000000000000000411 /* NIOSSH */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B10000000000000000000410 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */;
+			productName = NIOSSH;
+		};
+		B10000000000000000000412 /* NIOSSH */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B10000000000000000000410 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */;
+			productName = NIOSSH;
+		};
+		B10000000000000000000421 /* NIOCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B10000000000000000000420 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIOCore;
+		};
+		B10000000000000000000422 /* NIOPosix */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B10000000000000000000420 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIOPosix;
+		};
+		B10000000000000000000423 /* NIOCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B10000000000000000000420 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIOCore;
+		};
+		B10000000000000000000424 /* NIOPosix */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B10000000000000000000420 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIOPosix;
+		};
+		B10000000000000000000431 /* SwiftTerm */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B10000000000000000000430 /* XCRemoteSwiftPackageReference "SwiftTerm" */;
+			productName = SwiftTerm;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
