@@ -36,8 +36,6 @@ enum TerminalSettings {
     static let titleAddress = p + "title.address"
     static let titleDirectory = p + "title.directory"
     static let titleSize = p + "title.size"
-    static let columns = p + "columns"
-    static let rows = p + "rows"
     static let scrollbackLimited = p + "scrollbackLimited"
     static let scrollbackLines = p + "scrollbackLines"
 

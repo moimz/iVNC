@@ -33,39 +33,68 @@ final class SSHShell {
     private let auth: Auth
     private let term: String
     private var group: MultiThreadedEventLoopGroup?
+    /// 셸·SFTP·exec 채널을 여는 접속 (경유하면 마지막 서버로 가는 안쪽 접속)
     private var connection: Channel?
+    /// 맨 바깥 TCP 접속 (닫으면 경유 통로까지 모두 닫힌다)
+    private var outer: Channel?
+
+    /// 경유 서버 하나 (배스천). 바깥쪽부터 차례로
+    struct Hop {
+        let host: String
+        let port: Int
+        let username: String
+        let auth: Auth
+        /// 오류 글에 붙일 이름
+        let name: String
+    }
+    private let jumps: [Hop]
     private var shell: Channel?
     private var exitStatus: Int?
     private var closed = false
+    /// 이 셸을 서버에서 찾는 표식 (LC_ 환경 변수로 붙인다. 우분투 기본 sshd 가 LC_* 를 받아 준다) → 지금 폴더 알아내기
+    let marker = UUID().uuidString
 
-    init(host: String, port: Int, username: String, auth: Auth, term: String) {
+    /// 셸 대신 이 명령으로 시작 (복제·새 탭을 지금 폴더에서: cd 뒤 로그인 셸로 바꾼다)
+    private let startCommand: String?
+
+    init(host: String, port: Int, username: String, auth: Auth, term: String, startCommand: String? = nil, jumps: [Hop] = []) {
         self.host = host; self.port = port; self.username = username; self.auth = auth; self.term = term
+        self.startCommand = startCommand
+        self.jumps = jumps
+    }
+
+    /// 지금 폴더에서 로그인 셸을 여는 명령 (root 로 이어 가려면 sudo -s: 암호는 사용자가 친다)
+    static func startCommand(directory: String?, asRoot: Bool) -> String? {
+        guard directory != nil || asRoot else { return nil }
+        var cmd = ""
+        if let d = directory { cmd += "cd -- '" + d.replacingOccurrences(of: "'", with: "'\\''") + "' 2>/dev/null; " }
+        cmd += asRoot ? "exec sudo -s" : "exec \"${SHELL:-/bin/sh}\" -l"
+        return cmd
     }
 
     func connect(cols: Int, rows: Int, keepAlive: Bool) {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         self.group = group
-        DebugLog.write("SSH 접속 시작 \(username)@\(host):\(port)")
-        let userAuth = UserAuth(username: username, auth: auth)
-        let hostAuth = HostKeyCheck(host: host, port: port) { [weak self] q, answer in
-            DispatchQueue.main.async {
-                guard let ask = self?.onHostKeyQuestion else { answer(false); return }
-                ask(q, answer)
-            }
-        }
+        // 경유 서버들 → 목적지. 바깥 서버에만 TCP 로 붙고, 그 안에서 다음 서버로 통로(direct-tcpip)를 열어 다시 SSH 를 맺는다.
+        // 경유 서버에서는 셸을 열지 않으니 그 서버 명령 기록에 아무것도 남지 않고, 안쪽 로그인은 끝에서 끝까지 암호화된다
+        let hops = jumps + [Hop(host: host, port: port, username: username, auth: auth, name: "")]
+        DebugLog.write("SSH 접속 시작 \(hops.map { "\($0.username)@\($0.host):\($0.port)" }.joined(separator: " → "))")
+        let first = hops[0]
         let bootstrap = ClientBootstrap(group: group)
             .channelOption(ChannelOptions.socketOption(.so_keepalive), value: keepAlive ? 1 : 0)
             .channelOption(ChannelOptions.connectTimeout, value: .seconds(15))
-            .channelInitializer { channel in
+            .channelInitializer { [weak self] channel in
                 channel.eventLoop.makeCompletedFuture {
-                    try channel.pipeline.syncOperations.addHandlers([
-                        NIOSSHHandler(role: .client(.init(userAuthDelegate: userAuth, serverAuthDelegate: hostAuth)),
-                                      allocator: channel.allocator, inboundChildChannelInitializer: nil),
-                        ErrorCatcher { [weak self] e in self?.finish(error: Self.describe(e)) },
-                    ])
+                    guard let self else { return }
+                    try channel.pipeline.syncOperations.addHandlers(self.sshHandlers(for: first, last: hops.count == 1, allocator: channel.allocator))
                 }
             }
-        bootstrap.connect(host: host, port: port).flatMap { [weak self] conn -> EventLoopFuture<Channel> in
+        bootstrap.connect(host: first.host, port: first.port).flatMap { [weak self] conn -> EventLoopFuture<Channel> in
+            guard let self else { return conn.eventLoop.makeFailedFuture(ChannelError.ioOnClosedChannel) }
+            self.outer = conn
+            conn.closeFuture.whenComplete { [weak self] _ in self?.finish(error: nil) }
+            return self.chain(conn, index: 1, hops: hops)
+        }.flatMap { [weak self] conn -> EventLoopFuture<Channel> in
             guard let self else { return conn.eventLoop.makeFailedFuture(ChannelError.ioOnClosedChannel) }
             self.connection = conn
             conn.closeFuture.whenComplete { [weak self] _ in self?.finish(error: nil) }
@@ -82,11 +111,16 @@ final class SSHShell {
         }.flatMap { [weak self] child -> EventLoopFuture<Void> in
             guard let self else { return child.eventLoop.makeSucceededVoidFuture() }
             self.shell = child
+            // 표식은 서버가 안 받아 줘도 그만 (답을 안 기다린다)
+            child.triggerUserOutboundEvent(SSHChannelRequestEvent.EnvironmentRequest(wantReply: false, name: "LC_IVNC_SESSION", value: self.marker), promise: nil)
             let pty = SSHChannelRequestEvent.PseudoTerminalRequest(
                 wantReply: true, term: self.term, terminalCharacterWidth: cols, terminalRowHeight: rows,
                 terminalPixelWidth: 0, terminalPixelHeight: 0, terminalModes: .init([:]))
             return child.triggerUserOutboundEvent(pty).flatMap {
-                child.triggerUserOutboundEvent(SSHChannelRequestEvent.ShellRequest(wantReply: true))
+                if let cmd = self.startCommand {
+                    return child.triggerUserOutboundEvent(SSHChannelRequestEvent.ExecRequest(command: cmd, wantReply: true))
+                }
+                return child.triggerUserOutboundEvent(SSHChannelRequestEvent.ShellRequest(wantReply: true))
             }
         }.whenComplete { [weak self] result in
             switch result {
@@ -97,6 +131,106 @@ final class SSHShell {
                 DebugLog.write("SSH 실패: \(e)")
                 self?.finish(error: Self.describe(e))
             }
+        }
+    }
+
+    /// 같은 접속에 SFTP 채널을 하나 더 연다 (다시 로그인하지 않는다)
+    func openSFTP() async throws -> SFTPClient {
+        guard let conn = connection else { throw ChannelError.ioOnClosedChannel }
+        return try await conn.eventLoop.flatSubmit {
+            conn.pipeline.handler(type: NIOSSHHandler.self).flatMap { ssh -> EventLoopFuture<SFTPClient> in
+                let p = conn.eventLoop.makePromise(of: Channel.self)
+                ssh.createChannel(p) { child, _ in
+                    child.eventLoop.makeCompletedFuture { try child.pipeline.syncOperations.addHandler(SFTPHandler()) }
+                }
+                return p.futureResult.flatMap { SFTPClient.start(on: $0) }
+            }
+        }.get()
+    }
+
+    /// 서버에서 명령 하나를 실행해 표준 출력을 받는다 (같은 접속, 별도 채널)
+    func exec(_ command: String) async throws -> String {
+        guard let conn = connection else { throw ChannelError.ioOnClosedChannel }
+        let bytes: [UInt8] = try await conn.eventLoop.flatSubmit {
+            conn.pipeline.handler(type: NIOSSHHandler.self).flatMap { ssh -> EventLoopFuture<[UInt8]> in
+                let opened = conn.eventLoop.makePromise(of: Channel.self)
+                let output = conn.eventLoop.makePromise(of: [UInt8].self)
+                ssh.createChannel(opened) { child, _ in
+                    child.eventLoop.makeCompletedFuture { try child.pipeline.syncOperations.addHandler(ExecCollector(output)) }
+                }
+                return opened.futureResult.flatMap { child in
+                    child.triggerUserOutboundEvent(SSHChannelRequestEvent.ExecRequest(command: command, wantReply: true))
+                }.flatMap { output.futureResult }
+            }
+        }.get()
+        return String(decoding: bytes, as: UTF8.self)
+    }
+
+    /// 셸이 지금 있는 폴더 (리눅스: 표식이 붙은 로그인 셸 → 그 터미널의 앞쪽 프로세스 → /proc/…/cwd). 모르면 nil
+    func currentDirectory() async -> String? { await currentState().directory }
+
+    /// 지금 폴더 + 앞쪽 셸이 root 인지 (sudo su 등. 로그인 계정이 root 가 아닐 때만 true).
+    /// root 셸의 폴더는 일반 계정이 못 읽어 sudo 를 친 폴더(로그인 셸 폴더)가 된다
+    func currentState() async -> (directory: String?, root: Bool) {
+        let m = marker
+        let script = """
+        for f in /proc/[0-9]*/environ; do
+          grep -qszx 'LC_IVNC_SESSION=\(m)' "$f" || continue
+          p=${f#/proc/}; p=${p%/environ}
+          pp=$(awk '{print $4}' /proc/$p/stat 2>/dev/null)
+          grep -qszx 'LC_IVNC_SESSION=\(m)' /proc/$pp/environ && continue
+          t=$(awk '{print $8}' /proc/$p/stat 2>/dev/null)
+          readlink /proc/$t/cwd 2>/dev/null || readlink /proc/$p/cwd
+          awk '/^Uid:/{print $2}' /proc/$t/status 2>/dev/null
+          id -u
+          break
+        done
+        """
+        guard let out = try? await exec(script) else { return (nil, false) }
+        let lines = out.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        let dir = lines.first.flatMap { $0.hasPrefix("/") ? String($0) : nil }
+        let fgRoot = lines.count >= 3 && lines[1] == "0" && lines[2] != "0"
+        return (dir, fgRoot)
+    }
+
+    /// 한 서버의 SSH 처리기 + 오류 잡기 (경유 서버면 오류 글 앞에 그 이름)
+    private func sshHandlers(for hop: Hop, last: Bool, allocator: ByteBufferAllocator) -> [ChannelHandler] {
+        let userAuth = UserAuth(username: hop.username, auth: hop.auth)
+        let hostAuth = HostKeyCheck(host: hop.host, port: hop.port) { [weak self] q, answer in
+            DispatchQueue.main.async {
+                guard let ask = self?.onHostKeyQuestion else { answer(false); return }
+                ask(q, answer)
+            }
+        }
+        let prefix = last ? "" : "경유 서버 \(hop.name): "
+        return [
+            NIOSSHHandler(role: .client(.init(userAuthDelegate: userAuth, serverAuthDelegate: hostAuth)),
+                          allocator: allocator, inboundChildChannelInitializer: nil),
+            ErrorCatcher { [weak self] e in self?.finish(error: prefix + Self.describe(e)) },
+        ]
+    }
+
+    /// conn(이전 서버) 안에서 hops[index] 로 통로를 열고 그 위에 SSH 를 맺는다. 끝까지 가면 마지막 접속
+    private func chain(_ conn: Channel, index: Int, hops: [Hop]) -> EventLoopFuture<Channel> {
+        guard index < hops.count else { return conn.eventLoop.makeSucceededFuture(conn) }
+        let hop = hops[index]
+        let via = hops[index - 1].name
+        return conn.pipeline.handler(type: NIOSSHHandler.self).flatMap { [weak self] ssh -> EventLoopFuture<Channel> in
+            guard let self else { return conn.eventLoop.makeFailedFuture(ChannelError.ioOnClosedChannel) }
+            let promise = conn.eventLoop.makePromise(of: Channel.self)
+            let origin = try! SocketAddress(ipAddress: "127.0.0.1", port: 0)
+            ssh.createChannel(promise, channelType: .directTCPIP(.init(targetHost: hop.host, targetPort: hop.port, originatorAddress: origin))) { child, _ in
+                child.eventLoop.makeCompletedFuture {
+                    try child.pipeline.syncOperations.addHandler(SSHTunnelData())
+                    try child.pipeline.syncOperations.addHandlers(self.sshHandlers(for: hop, last: index == hops.count - 1, allocator: child.allocator))
+                }
+            }
+            return promise.futureResult.flatMapErrorThrowing { e in
+                if let s = e as? NIOSSHError, s.type == .channelSetupRejected {
+                    throw TunnelRejected(via: via, target: "\(hop.host):\(hop.port)")
+                }
+                throw e
+            }.flatMap { self.chain($0, index: index + 1, hops: hops) }
         }
     }
 
@@ -115,6 +249,7 @@ final class SSHShell {
     func close() {
         closed = true
         connection?.close(promise: nil)
+        outer?.close(promise: nil)
         let g = group
         group = nil
         DispatchQueue.global().async { try? g?.syncShutdownGracefully() }
@@ -132,6 +267,7 @@ final class SSHShell {
             self.closed = true
             self.onClose?(error, self.exitStatus)
             self.connection?.close(promise: nil)
+            self.outer?.close(promise: nil)
             let g = self.group
             self.group = nil
             DispatchQueue.global().async { try? g?.syncShutdownGracefully() }
@@ -152,6 +288,7 @@ final class SSHShell {
         if e is ChannelError { return "접속이 끊겼습니다." }
         if let a = e as? AuthFailure { return a.localizedDescription }
         if let h = e as? HostKeyRejected { return h.localizedDescription }
+        if let t = e as? TunnelRejected { return t.localizedDescription }
         let ns = e as NSError
         if ns.domain == NSPOSIXErrorDomain || "\(e)".contains("connectTimeout") {
             return "\(e)".contains("Timeout") ? "서버가 응답하지 않습니다." : "접속할 수 없습니다: \(ns.localizedDescription)"
@@ -164,6 +301,15 @@ final class SSHShell {
 
 struct AuthFailure: LocalizedError {
     var errorDescription: String? { "로그인하지 못했습니다. 계정과 암호(또는 키)를 확인하세요." }
+}
+
+/// 경유 서버가 다음 서버로 통로를 안 열어 줌
+struct TunnelRejected: LocalizedError {
+    let via: String
+    let target: String
+    var errorDescription: String? {
+        "경유 서버 \(via) 가 \(target) 로 가는 통로를 열어 주지 않았습니다. 주소·포트를 확인하거나, 그 서버의 포트 전달(AllowTcpForwarding)이 꺼져 있는지 확인하세요."
+    }
 }
 
 struct HostKeyRejected: LocalizedError {
@@ -272,6 +418,53 @@ private final class ShellHandler: ChannelDuplexHandler {
 
     func write(context: ChannelHandlerContext, data: NIOAny, promise: EventLoopPromise<Void>?) {
         context.write(data, promise: promise)
+    }
+}
+
+/// 경유 통로: SSH 채널 데이터 ↔ 바이트 (그 위에 안쪽 SSH 를 얹는다)
+private final class SSHTunnelData: ChannelDuplexHandler {
+    typealias InboundIn = SSHChannelData
+    typealias InboundOut = ByteBuffer
+    typealias OutboundIn = ByteBuffer
+    typealias OutboundOut = SSHChannelData
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        let d = unwrapInboundIn(data)
+        guard d.type == .channel, case .byteBuffer(let b) = d.data else { return }
+        context.fireChannelRead(wrapInboundOut(b))
+    }
+
+    func write(context: ChannelHandlerContext, data: NIOAny, promise: EventLoopPromise<Void>?) {
+        let b = unwrapOutboundIn(data)
+        context.write(wrapOutboundOut(SSHChannelData(type: .channel, data: .byteBuffer(b))), promise: promise)
+    }
+}
+
+/// exec 채널의 출력을 모은다 (채널이 닫히면 끝)
+private final class ExecCollector: ChannelInboundHandler {
+    typealias InboundIn = SSHChannelData
+    let promise: EventLoopPromise<[UInt8]>
+    var bytes: [UInt8] = []
+    init(_ p: EventLoopPromise<[UInt8]>) { promise = p }
+
+    func handlerAdded(context: ChannelHandlerContext) {
+        context.channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { _ in }
+    }
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        let d = unwrapInboundIn(data)
+        guard d.type == .channel, case .byteBuffer(var buf) = d.data, let b = buf.readBytes(length: buf.readableBytes) else { return }
+        bytes += b
+    }
+
+    func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
+        if let e = event as? ChannelEvent, case .inputClosed = e { context.close(promise: nil) }
+        context.fireUserInboundEventTriggered(event)
+    }
+
+    func channelInactive(context: ChannelHandlerContext) {
+        promise.succeed(bytes)
+        context.fireChannelInactive()
     }
 }
 

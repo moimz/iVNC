@@ -55,6 +55,8 @@ struct Computer: Identifiable, Codable, Hashable {
     var sshEncoding: String?
     /// SSH 서버 색 (목록 줄·터미널 제목 메뉴·탭의 색 점). iSQL 과 같은 8가지
     var sshColor: ServerColor?
+    /// 경유 서버 (배스천): 다른 SSH 컴퓨터의 id. 그 서버를 거쳐 이 서버에 접속한다
+    var sshJump: UUID?
 
     var prefersHighPerformance: Bool {
         preferHighPerformance ?? !UserDefaults.standard.bool(forKey: "debug.hpOff")
@@ -161,6 +163,19 @@ final class ComputerStore: ObservableObject {
         uploadDeletion(c.id)
     }
 
+    /// SSH 경유 서버들 (바깥쪽부터). 고리가 생기면 거기서 멈춘다
+    func jumpChain(for c: Computer) -> [Computer] {
+        var chain: [Computer] = []
+        var seen: Set<UUID> = [c.id]
+        var next = c.sshJump
+        while let id = next, !seen.contains(id), let j = computers.first(where: { $0.id == id && $0.type == .ssh }) {
+            chain.insert(j, at: 0)
+            seen.insert(id)
+            next = j.sshJump
+        }
+        return chain
+    }
+
     func markConnected(_ id: UUID) {
         guard let i = computers.firstIndex(where: { $0.id == id }) else { return }
         computers[i].lastConnected = Date()
@@ -194,6 +209,7 @@ final class ComputerStore: ObservableObject {
         var sshKeyName: String?
         var sshEncoding: String?
         var sshColor: String?
+        var sshJump: String?
     }
 
     private let cloud = NSUbiquitousKeyValueStore.default
@@ -228,7 +244,8 @@ final class ComputerStore: ObservableObject {
     private func upload(_ c: Computer) {
         let e = CloudEntry(id: c.id, updatedAt: c.updatedAt ?? Date(), name: c.name, host: c.host, port: c.port, username: c.username,
                            preferHighPerformance: c.preferHighPerformance, keepAliveInBackground: c.keepAliveInBackground,
-                           kind: c.kind?.rawValue, sshAuth: c.sshAuth?.rawValue, sshKeyName: c.sshKeyName, sshEncoding: c.sshEncoding, sshColor: c.sshColor?.rawValue)
+                           kind: c.kind?.rawValue, sshAuth: c.sshAuth?.rawValue, sshKeyName: c.sshKeyName, sshEncoding: c.sshEncoding, sshColor: c.sshColor?.rawValue,
+                           sshJump: c.sshJump?.uuidString)
         if let data = try? JSONEncoder().encode(e) { cloud.set(data, forKey: Self.cloudPrefix + c.id.uuidString) }
         cloud.synchronize()
     }
@@ -260,6 +277,7 @@ final class ComputerStore: ObservableObject {
                 c.sshKeyName = e.sshKeyName
                 c.sshEncoding = e.sshEncoding
                 c.sshColor = e.sshColor.flatMap(ServerColor.init(rawValue:))
+                c.sshJump = e.sshJump.flatMap(UUID.init(uuidString:))
                 c.updatedAt = e.updatedAt
                 if local == nil { computers.append(c) } else { replace(c) }
             }

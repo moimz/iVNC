@@ -180,15 +180,13 @@ private struct PaletteWell: View {
     }
 }
 
-/// 윈도우: 제목, 창 크기, 스크롤백
+/// 윈도우: 제목, 스크롤백
 struct TerminalWindowForm: View {
     typealias K = TerminalSettings
     @AppStorage(K.titleName) private var titleName = true
     @AppStorage(K.titleAddress) private var titleAddress = true
     @AppStorage(K.titleDirectory) private var titleDirectory = false
     @AppStorage(K.titleSize) private var titleSize = false
-    @AppStorage(K.columns) private var columns = 80
-    @AppStorage(K.rows) private var rows = 24
     @AppStorage(K.scrollbackLimited) private var limited = true
     @AppStorage(K.scrollbackLines) private var lines = 10_000
 
@@ -202,16 +200,6 @@ struct TerminalWindowForm: View {
             } header: {
                 Text("제목")
             }
-            #if os(macOS)
-            Section {
-                Stepper(value: $columns, in: 40...400) { LabeledContent("열", value: "\(columns)") }
-                Stepper(value: $rows, in: 10...200) { LabeledContent("행", value: "\(rows)") }
-            } header: {
-                Text("창 크기")
-            } footer: {
-                Text("새 터미널 창을 열 때의 크기입니다. 창 크기를 바꾸면 서버에도 알립니다.")
-            }
-            #endif
             Section {
                 Toggle("줄 수 제한", isOn: $limited)
                 if limited {

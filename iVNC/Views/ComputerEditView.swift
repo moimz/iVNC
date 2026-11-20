@@ -28,6 +28,7 @@ struct ComputerEditView: View {
     @State private var pickingKey = false
     @State private var encoding = SSHEncoding.defaultID
     @State private var color = ServerColor.none
+    @State private var jump: UUID?
 
     var body: some View {
         NavigationStack {
@@ -57,6 +58,7 @@ struct ComputerEditView: View {
                     keyName = c.sshKeyName
                     encoding = c.sshEncoding ?? SSHEncoding.defaultID
                     color = c.sshColor ?? .none
+                    jump = c.sshJump
                 }
                 #if os(iOS)
                 .fileImporter(isPresented: $pickingKey, allowedContentTypes: [.data, .item]) { result in
@@ -178,6 +180,14 @@ struct ComputerEditView: View {
         }
         if kind == .ssh {
             Section {
+                Picker("경유 서버", selection: $jump) {
+                    Text("없음").tag(UUID?.none)
+                    ForEach(jumpCandidates) { c in Text("\(c.name)  (\(c.username)@\(c.host))").tag(Optional(c.id)) }
+                }
+            } footer: {
+                Text("배스천 서버를 거쳐 접속합니다. 경유 서버에서는 셸을 열지 않고 통로만 열어, 그 서버 명령 기록에 아무것도 남지 않습니다. 이 서버의 로그인은 경유 서버가 볼 수 없게 암호화됩니다.")
+            }
+            Section {
                 Picker("문자 인코딩", selection: $encoding) {
                     ForEach(SSHEncoding.all, id: \.id) { Text($0.title).tag($0.id) }
                 }
@@ -214,6 +224,14 @@ struct ComputerEditView: View {
         case .mac: return "맥 사용자 이름"
         case .windows: return "사용자 이름 또는 Microsoft 계정 이메일"
         case .ssh: return "사용자 이름"
+        }
+    }
+
+    /// 경유 서버로 고를 수 있는 SSH 서버 (자기 자신, 자기를 거쳐 가는 서버는 빼서 고리가 안 생기게)
+    private var jumpCandidates: [Computer] {
+        let me = computer?.id
+        return store.computers.filter { c in
+            c.type == .ssh && c.id != me && !(me.map { id in store.jumpChain(for: c).contains { $0.id == id } } ?? false)
         }
     }
 
@@ -278,6 +296,7 @@ struct ComputerEditView: View {
         if kind == .ssh {
             c.sshEncoding = encoding == SSHEncoding.defaultID ? nil : encoding
             c.sshColor = color == .none ? nil : color
+            c.sshJump = jump
             c.sshAuth = sshAuth
             if sshAuth == .key {
                 c.sshKeyName = keyName

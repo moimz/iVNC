@@ -17,6 +17,8 @@ final class TerminalWindowModel: ObservableObject {
     @Published var focused = 0
     /// 마지막 탭이 닫히면 창을 닫는다
     var onEmpty: (() -> Void)?
+    /// 서버의 경유 서버들 (창이 컴퓨터 목록으로 채운다)
+    var jumpChain: ((Computer) -> [Computer])?
     /// 탭이 바뀌면(서버 지문 질문·상태·제목) 창도 다시 그린다. 안 그러면 지문 알림이 안 떠 "접속 중…" 에 멈춘다
     private var tabWatchers: [UUID: AnyCancellable] = [:]
 
@@ -29,10 +31,22 @@ final class TerminalWindowModel: ObservableObject {
     var allTabs: [TerminalTab] { panes.flatMap(\.tabs) }
 
     /// 서버의 새 터미널을 탭으로 연다 (지금 탭 오른쪽)
-    func open(_ c: Computer, pane: Int? = nil) {
+    /// 같은 서버 새 터미널을 그 탭의 지금 폴더에서 (⌘T·복제). root 셸이면 sudo -s 로
+    func openLike(_ tab: TerminalTab, pane: Int? = nil) {
+        let target = pane ?? paneIndex(of: tab) ?? focused
+        let osc7 = tab.directory.flatMap { URL(string: $0)?.path }.flatMap { $0.isEmpty ? nil : $0 }
+        guard let shell = tab.sshShell else { open(tab.computer, pane: target); return }
+        Task {
+            let st = await shell.currentState()
+            open(tab.computer, pane: target, directory: osc7 ?? st.directory, asRoot: st.root)
+        }
+    }
+
+    func open(_ c: Computer, pane: Int? = nil, directory: String? = nil, asRoot: Bool = false) {
         let i = pane ?? focused
         guard panes.indices.contains(i) else { return }
-        let tab = TerminalTab(computer: c)
+        let tab = TerminalTab(computer: c, directory: directory, asRoot: asRoot)
+        tab.jumps = jumpChain?(c) ?? []
         tab.onRequestClose = { [weak self] t in self?.close(t) }
         tabWatchers[tab.id] = tab.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         let at = panes[i].tabs.firstIndex { $0.id == panes[i].active }.map { $0 + 1 } ?? panes[i].tabs.count
@@ -88,22 +102,24 @@ final class TerminalWindowModel: ObservableObject {
         focus(tab)
     }
 
-    /// 분할 보기: 하나면 오른쪽 칸을 만들어 지금 탭을 옮긴다 (탭이 하나뿐이면 같은 서버 새 탭을 연다). 둘이면 합친다
-    func toggleSplit() {
-        if panes.count > 1 {
-            let right = panes.remove(at: 1)
-            panes[0].tabs += right.tabs
-            focused = 0
-            return
+    /// 분할은 탭 우클릭으로만 (iSQL 처럼): 다른 칸으로 옮기기. 칸이 하나면 오른쪽 칸을 만든다
+    func moveToSplit(_ tab: TerminalTab) {
+        guard let from = paneIndex(of: tab) else { return }
+        if panes.count == 1 {
+            guard panes[0].tabs.count > 1 else { return } // 하나뿐인 탭을 옮기면 왼쪽이 비어 분할이 안 된다
+            panes.append(Pane())
         }
-        guard let tab = activeTab else { return }
-        panes.append(Pane())
-        if panes[0].tabs.count > 1 {
-            move(tab.id, toPane: 1, before: nil)
-        } else {
-            open(tab.computer, pane: 1)
-        }
+        move(tab.id, toPane: from == 0 ? 1 : 0, before: nil)
     }
+
+    /// 같은 서버 새 터미널을 다른 칸에 연다. 칸이 하나면 오른쪽 칸을 만든다
+    func duplicateToSplit(_ tab: TerminalTab) {
+        guard let from = paneIndex(of: tab) else { return }
+        if panes.count == 1 { panes.append(Pane()) }
+        openLike(tab, pane: from == 0 ? 1 : 0)
+    }
+
+    func paneIndex(id: UUID) -> Int? { panes.firstIndex { $0.id == id } }
 
     func paneIndex(of tab: TerminalTab) -> Int? { panes.firstIndex { $0.tabs.contains { $0.id == tab.id } } }
 
@@ -128,9 +144,10 @@ struct TerminalWindowView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            ForEach(Array(model.panes.enumerated()), id: \.element.id) { i, pane in
-                if i > 0 { Divider() }
-                TerminalPaneView(model: model, index: i)
+            // 칸은 번호가 아니라 id 로 (칸이 사라질 때 없는 번호를 읽어 앱이 죽었다)
+            ForEach(model.panes) { pane in
+                if pane.id != model.panes.first?.id { Divider() }
+                TerminalPaneView(model: model, paneID: pane.id)
             }
         }
         .frame(minWidth: 480, minHeight: 260)
@@ -143,21 +160,34 @@ struct TerminalWindowView: View {
             .sharedBackgroundVisibility(.hidden)
             // 오른쪽 끝에 붙인다
             ToolbarSpacer(.flexible)
+            // [터미널 | 파인더] (iSQL 의 데이터/구조처럼)
+            ToolbarItem(placement: .primaryAction) {
+                Picker("보기", selection: Binding(get: { model.activeTab?.mode ?? .terminal },
+                                                 set: { model.activeTab?.setMode($0) })) {
+                    Label("터미널", systemImage: "apple.terminal").tag(TerminalTab.Mode.terminal).help("터미널 (⌘1)")
+                    Label("파인더", systemImage: "folder").tag(TerminalTab.Mode.files).help("파인더 · 파일 주고받기 (⌘2)")
+                }
+                .pickerStyle(.segmented)
+                .labelStyle(.iconOnly)
+                .disabled(model.activeTab == nil)
+            }
+            ToolbarSpacer(.fixed)
             ToolbarItemGroup(placement: .primaryAction) {
                 Button("새 탭", systemImage: "plus") {
-                    if let c = model.activeTab?.computer { model.open(c) }
+                    if let t = model.activeTab { model.openLike(t) }
                 }
                 .keyboardShortcut("t")
                 .help("같은 서버 새 탭 (⌘T)")
-                Button(model.panes.count > 1 ? "분할 닫기" : "분할 보기", systemImage: "rectangle.split.2x1") { model.toggleSplit() }
-                    .help(model.panes.count > 1 ? "분할 닫기" : "분할 보기")
             }
         }
         // ⌘W = 지금 탭 닫기 (마지막 탭이면 창도 닫힌다). 도구 막대에 숨겨 두면 빈 칸이 생겨 버튼이 오른쪽 끝에 안 붙었다
         .background {
-            Button("탭 닫기") { if let t = model.activeTab { model.close(t) } }
-                .keyboardShortcut("w")
-                .opacity(0).allowsHitTesting(false).accessibilityHidden(true)
+            Group {
+                Button("탭 닫기") { if let t = model.activeTab { model.close(t) } }.keyboardShortcut("w")
+                Button("터미널") { model.activeTab?.setMode(.terminal) }.keyboardShortcut("1")
+                Button("파인더") { model.activeTab?.setMode(.files) }.keyboardShortcut("2")
+            }
+            .opacity(0).allowsHitTesting(false).accessibilityHidden(true)
         }
         .alert(hostKeyTitle, isPresented: Binding(get: { questionTab != nil }, set: { if !$0 { questionTab?.answerHostKey(false) } })) {
             Button("접속") { questionTab?.answerHostKey(true) }
@@ -171,6 +201,7 @@ struct TerminalWindowView: View {
         }
         .onAppear {
             model.onEmpty = { dismissWindow() }
+            model.jumpChain = { [store] c in store.jumpChain(for: c) }
             if model.allTabs.isEmpty, let c = store.computers.first(where: { $0.id == request.computer }) { model.open(c) }
         }
         .onDisappear { model.closeAll() }
@@ -187,16 +218,25 @@ struct TerminalWindowView: View {
 /// 칸 하나: 탭 줄 + 터미널 화면
 private struct TerminalPaneView: View {
     @ObservedObject var model: TerminalWindowModel
-    let index: Int
+    let paneID: UUID
 
     var body: some View {
-        let pane = model.panes[index]
+        if let index = model.paneIndex(id: paneID) { content(model.panes[index], index: index) }
+    }
+
+    private func content(_ pane: TerminalWindowModel.Pane, index: Int) -> some View {
         VStack(spacing: 0) {
-            TabStripView(model: model, index: index)
+            TabStripView(model: model, pane: pane, index: index)
             Divider()
             ZStack {
                 PaneHost(tabs: pane.tabs, active: pane.active)
-                if let t = pane.tabs.first(where: { $0.id == pane.active }) { StatusOverlay(tab: t) }
+                if let t = pane.tabs.first(where: { $0.id == pane.active }) {
+                    if t.mode == .files {
+                        FileBrowserView(session: t.files, serverName: t.computer.name).id(t.id)
+                    } else {
+                        StatusOverlay(tab: t)
+                    }
+                }
             }
             .contentShape(Rectangle())
             .simultaneousGesture(TapGesture().onEnded { model.focused = index })
@@ -258,12 +298,13 @@ private struct PaneHost: NSViewRepresentable {
                 box.addSubview(t.view)
                 box.needsLayout = true
             }
-            t.view.isHidden = t.id != active
+            // 파인더를 보는 동안은 터미널을 숨긴다 (키 입력이 터미널로 가지 않게)
+            t.view.isHidden = t.id != active || t.mode == .files
         }
         if let t = tabs.first(where: { $0.id == active }) {
             box.layer?.backgroundColor = t.view.nativeBackgroundColor.withAlphaComponent(t.view.backgroundOpacity).cgColor
         }
-        if let t = tabs.first(where: { $0.id == active }) {
+        if let t = tabs.first(where: { $0.id == active }), t.mode == .terminal {
             DispatchQueue.main.async { if t.view.window?.firstResponder !== t.view { t.view.window?.makeFirstResponder(t.view) } }
         }
     }
@@ -272,10 +313,10 @@ private struct PaneHost: NSViewRepresentable {
 /// 탭 줄 (가로로 넘치면 스크롤). 끌어서 순서 바꾸기·다른 칸으로 옮기기
 private struct TabStripView: View {
     @ObservedObject var model: TerminalWindowModel
+    let pane: TerminalWindowModel.Pane
     let index: Int
 
     var body: some View {
-        let pane = model.panes[index]
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 0) {
                 ForEach(pane.tabs) { t in
@@ -299,7 +340,10 @@ private struct TabStripView: View {
         guard let p = items.first else { return false }
         _ = p.loadObject(ofClass: NSString.self) { s, _ in
             guard let s = s as? String, let id = UUID(uuidString: s) else { return }
-            DispatchQueue.main.async { model.move(id, toPane: index, before: before) }
+            DispatchQueue.main.async {
+                guard let i = model.paneIndex(id: pane.id) else { return }
+                model.move(id, toPane: i, before: before)
+            }
         }
         return true
     }
@@ -321,6 +365,8 @@ private struct TabItemView: View {
                 .lineLimit(1)
                 .fontWeight(active && focused ? .semibold : .regular)
                 .foregroundStyle(tab.state == .connected ? .primary : .secondary)
+            // 이름은 왼쪽, 닫기는 오른쪽 끝 (가운데 정렬 대신)
+            Spacer(minLength: 8)
             Button { model.close(tab) } label: { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)) }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
@@ -340,14 +386,11 @@ private struct TabItemView: View {
         .onHover { hover = $0 }
         .help(tab.displayTitle)
         .contextMenu {
-            Button("같은 서버 새 탭") { model.select(tab); model.open(tab.computer) }
-            if model.panes.count > 1 {
-                let i = model.paneIndex(of: tab) ?? 0
-                Button(i == 0 ? "오른쪽 분할로 옮기기" : "왼쪽 분할로 옮기기") { model.move(tab.id, toPane: i == 0 ? 1 : 0, before: nil) }
-            } else {
-                Button("오른쪽 분할로 옮기기") { model.select(tab); model.toggleSplit() }
-                    .disabled(model.panes[0].tabs.count < 2)
-            }
+            Button("같은 서버 새 탭") { model.select(tab); model.openLike(tab) }
+            let side = model.panes.count > 1 && model.paneIndex(of: tab) == 1 ? "왼쪽" : "오른쪽"
+            Button("\(side) 분할로 이동") { model.moveToSplit(tab) }
+                .disabled(model.panes.count == 1 && (model.panes.first?.tabs.count ?? 0) < 2)
+            Button("\(side) 분할로 복제") { model.duplicateToSplit(tab) }
             Divider()
             Button("다시 접속") { tab.disconnect(); tab.connect() }
             Button("탭 닫기") { model.close(tab) }

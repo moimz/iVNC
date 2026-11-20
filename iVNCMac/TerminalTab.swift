@@ -27,19 +27,33 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, TerminalViewD
     @Published var hostKeyQuestion: SSHShell.HostKeyQuestion?
     private var hostKeyAnswer: ((Bool) -> Void)?
 
+    /// 이 탭에서 보는 것: 터미널 / 파인더(SFTP)
+    enum Mode: String { case terminal, files }
+    @Published var mode: Mode = .terminal
+    /// 파인더 (처음 볼 때 만든다)
+    private(set) lazy var files = FileSession(tab: self)
+
     let view: TerminalView
     private var shell: SSHShell?
+    /// 파인더가 같은 접속에 SFTP·명령 채널을 연다
+    var sshShell: SSHShell? { state == .connected ? shell : nil }
     /// 셸이 끝나 설정대로 탭을 닫아야 할 때 (창 모델이 연결)
     var onRequestClose: ((TerminalTab) -> Void)?
 
-    init(computer: Computer) {
+    /// 이 폴더에서 시작 (복제·⌘T). root 면 sudo -s 로
+    private let startDirectory: String?
+    private let startAsRoot: Bool
+
+    init(computer: Computer, directory: String? = nil, asRoot: Bool = false) {
         self.computer = computer
+        startDirectory = directory
+        startAsRoot = asRoot
         let d = UserDefaults.standard
         typealias K = TerminalSettings
         let limited = d.object(forKey: K.scrollbackLimited) as? Bool ?? true
         let lines = d.object(forKey: K.scrollbackLines) as? Int ?? 10_000
-        let options = TerminalOptions(cols: d.object(forKey: K.columns) as? Int ?? 80,
-                                      rows: d.object(forKey: K.rows) as? Int ?? 24,
+        // 열×행은 창 폭에서 계산된다 (설정의 "창 크기"는 지웠다: 분할·창 크기마다 바뀌어 고정 값이 안 맞는다)
+        let options = TerminalOptions(cols: 80, rows: 24,
                                       termName: d.string(forKey: K.termType) ?? "xterm-256color",
                                       scrollback: limited ? lines : 1_000_000)
         view = TerminalView(frame: NSRect(x: 0, y: 0, width: 720, height: 440), font: Self.font(), options: options)
@@ -90,30 +104,45 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, TerminalViewD
 
     // MARK: 접속
 
+    struct AuthMessage: Error { let text: String }
+
+    /// 경유 서버들 (바깥쪽부터). 창 모델이 목록에서 찾아 넣는다
+    var jumps: [Computer] = []
+
+    /// 키체인에서 이 서버의 로그인 수단 (실패하면 안내 글)
+    private static func auth(for c: Computer) -> Result<SSHShell.Auth, AuthMessage> {
+        let who = c.name
+        if c.sshAuth == .key {
+            guard let file = Keychain.sshKey(for: c.id) else { return .failure(.init(text: "\(who): 저장된 SSH 키가 없습니다. 서버 편집에서 키를 골라 주세요.")) }
+            do {
+                return .success(.key(try OpenSSHKey.ed25519(from: file, passphrase: Keychain.sshKeyPassphrase(for: c.id))))
+            } catch {
+                return .failure(.init(text: "\(who): \(error.localizedDescription)"))
+            }
+        }
+        guard let pw = Keychain.password(for: c.id) else { return .failure(.init(text: "\(who): 저장된 비밀번호가 없습니다. 서버 편집에서 비밀번호를 넣어 주세요.")) }
+        return .success(.password(pw))
+    }
+
     func connect() {
         state = .connecting
+        var hops: [SSHShell.Hop] = []
+        for j in jumps {
+            switch Self.auth(for: j) {
+            case .success(let a): hops.append(.init(host: j.host, port: j.port, username: j.username, auth: a, name: j.name))
+            case .failure(let m): fail("경유 서버 " + m.text); return
+            }
+        }
         let auth: SSHShell.Auth
-        if computer.sshAuth == .key {
-            guard let file = Keychain.sshKey(for: computer.id) else {
-                fail("저장된 SSH 키가 없습니다. 서버 편집에서 키를 골라 주세요.")
-                return
-            }
-            do {
-                auth = .key(try OpenSSHKey.ed25519(from: file, passphrase: Keychain.sshKeyPassphrase(for: computer.id)))
-            } catch {
-                fail(error.localizedDescription)
-                return
-            }
-        } else {
-            guard let pw = Keychain.password(for: computer.id) else {
-                fail("저장된 비밀번호가 없습니다. 서버 편집에서 비밀번호를 넣어 주세요.")
-                return
-            }
-            auth = .password(pw)
+        switch Self.auth(for: computer) {
+        case .success(let a): auth = a
+        case .failure(let m): fail(m.text); return
         }
         let d = UserDefaults.standard
         let s = SSHShell(host: computer.host, port: computer.port, username: computer.username, auth: auth,
-                         term: d.string(forKey: TerminalSettings.termType) ?? "xterm-256color")
+                         term: d.string(forKey: TerminalSettings.termType) ?? "xterm-256color",
+                         startCommand: SSHShell.startCommand(directory: startDirectory, asRoot: startAsRoot),
+                         jumps: hops)
         s.onHostKeyQuestion = { [weak self] q, answer in
             guard let self else { answer(false); return }
             self.hostKeyAnswer = answer
@@ -131,6 +160,15 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, TerminalViewD
         s.connect(cols: size.cols, rows: size.rows, keepAlive: d.object(forKey: TerminalSettings.keepAlive) as? Bool ?? true)
     }
 
+    /// 파인더를 한 번이라도 열었는지 (닫을 때 SFTP 도 닫는다)
+    private(set) var filesStarted = false
+
+    func setMode(_ m: Mode) {
+        if m == .files { filesStarted = true }
+        mode = m
+        if m == .terminal { DispatchQueue.main.async { self.view.window?.makeFirstResponder(self.view) } }
+    }
+
     func answerHostKey(_ ok: Bool) {
         hostKeyQuestion = nil
         hostKeyAnswer?(ok)
@@ -138,6 +176,7 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, TerminalViewD
     }
 
     func disconnect() {
+        if mode == .files || filesStarted { files.close() }
         shell?.onClose = nil
         shell?.close()
         shell = nil
