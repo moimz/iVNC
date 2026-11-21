@@ -162,9 +162,6 @@ struct TerminalWindowView: View {
     @StateObject private var model = TerminalWindowModel()
     /// 사이드바를 펼쳤는지 (창마다 기억, 새 창은 펼침)
     @SceneStorage("terminal.sidebar") private var sidebarShown = true
-    /// 창을 막 열었을 때 맥 26 NavigationSplitView 는 본문을 사이드바 밑(왼쪽)에 한 번 깔았다가 사이드바 폭만큼 옮긴다.
-    /// 그게 "탭 줄·터미널이 왼쪽에 숨었다가 오른쪽으로 밀려 나오는" 것으로 보였다 (사용자) → 자리가 잡힐 때까지 본문을 숨긴다
-    @State private var settled = false
 
     var body: some View {
         NavigationSplitView(columnVisibility: Binding(get: { sidebarShown ? .all : .detailOnly },
@@ -180,13 +177,13 @@ struct TerminalWindowView: View {
                 }
             }
             .frame(minWidth: 480, minHeight: 260)
-            .opacity(settled ? 1 : 0)
+            // 본문은 숨기지 않는다: 위치를 기록해 보니 첫 배치 안에서 제자리를 잡았다 (2026-11-21, Ai.md 12번)
             // 오른쪽 버튼은 본문에 붙인다 (창 전체에 붙이면 사이드바가 있을 때 왼쪽으로 몰린다, iSQL 툴바 규칙)
             .toolbar {
                 // 제목이자 서버 바꾸기 (iSQL ServerSwitcher 모양, 둥근 유리 배경 없이).
                 // 창 전체 .toolbar 에 두면 창을 처음 열 때 사이드바 토글 밑에 깔렸다가 다시 그려질 때 옆으로 밀려 나왔다 (사용자 화면 기록) → 본문 쪽에
                 ToolbarItem(placement: .navigation) {
-                    ServerMenu(model: model)
+                    ServerMenu(model: model, initial: store.computers.first { $0.id == request.computer })
                 }
                 .sharedBackgroundVisibility(.hidden)
                 // 오른쪽 끝에 붙인다
@@ -234,10 +231,6 @@ struct TerminalWindowView: View {
             }
         }
         .onAppear {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                var t = Transaction(); t.disablesAnimations = true
-                withTransaction(t) { settled = true }
-            }
             model.onEmpty = { dismissWindow() }
             model.jumpChain = { [store] c in store.jumpChain(for: c) }
             if model.allTabs.isEmpty, let c = store.computers.first(where: { $0.id == request.computer }) { model.open(c) }
@@ -270,7 +263,7 @@ private struct TerminalPaneView: View {
                 PaneHost(tabs: pane.tabs, active: pane.active)
                 if let t = pane.tabs.first(where: { $0.id == pane.active }) {
                     if t.mode == .files {
-                        FileBrowserView(session: t.files, serverName: t.computer.name, onEject: { t.setMode(.terminal) }).id(t.id)
+                        FileBrowserView(session: t.files, serverName: t.computer.name).id(t.id)
                     } else {
                         StatusOverlay(tab: t)
                     }
@@ -449,16 +442,21 @@ private struct TabItemView: View {
 private struct ServerMenu: View {
     @ObservedObject var model: TerminalWindowModel
     @State private var hover = false
+    /// 창을 연 서버: 탭이 열리기 전 첫 그림부터 같은 글자를 보여 준다.
+    /// 처음에 "SSH" 로 짧게 자리를 잡았다가 탭이 열려 길어지면, 툴바가 자리를 다시 안 잡아
+    /// 늘어난 부분이 사이드바 토글 밑으로 삐져나갔다가 나중에 밀려 나왔다 (사용자, 위치 기록으로 본문은 안 밀리는 것 확인)
+    var initial: Computer?
     @State private var anchor = MenuAnchorBox()
 
     var body: some View {
         Button(action: showMenu) {
             HStack(spacing: 7) {
-                if let t = model.activeTab {
-                    Circle().fill(t.computer.sshColor?.color ?? .secondary).frame(width: 9, height: 9)
-                    Text(t.computer.name).font(.system(size: 15, weight: .semibold))
-                    Text(Self.address(t.computer)).font(.caption).foregroundStyle(.secondary)
-                    if !t.jumps.isEmpty {
+                if let c = model.activeTab?.computer ?? initial {
+                    let jumps = model.activeTab?.jumps ?? []
+                    Circle().fill(c.sshColor?.color ?? .secondary).frame(width: 9, height: 9)
+                    Text(c.name).font(.system(size: 15, weight: .semibold))
+                    Text(Self.address(c)).font(.caption).foregroundStyle(.secondary)
+                    if let t = model.activeTab, !jumps.isEmpty {
                         Image(systemName: "arrow.triangle.branch").font(.system(size: 10)).foregroundStyle(.secondary)
                             .help(t.jumps.map(\.name).joined(separator: " → ") + " 경유")
                     }

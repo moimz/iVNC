@@ -425,32 +425,12 @@ final class Transfer: Identifiable, @unchecked Sendable {
 enum FileViewOptions {
     static let showHidden = "files.showHidden"
     static let foldersFirst = "files.foldersFirst"
-    static let textSize = "files.textSize"
-    static let dateStyle = "files.dateStyle"
-    static let showSize = "files.column.size"
-    static let showDate = "files.column.date"
-    static let showKind = "files.column.kind"
-    static let showPermissions = "files.column.permissions"
-
-    enum TextSize: String, CaseIterable, Identifiable {
-        case small, regular, large
-        var id: String { rawValue }
-        var title: String { self == .small ? "작게" : self == .regular ? "보통" : "크게" }
-        var font: Font { .system(size: self == .small ? 11 : self == .regular ? 13 : 15) }
-        var icon: CGFloat { self == .small ? 14 : self == .regular ? 16 : 20 }
-    }
-
-    enum DateStyle: String, CaseIterable, Identifiable {
-        case relative, dateTime, date
-        var id: String { rawValue }
-        var title: String {
-            switch self {
-            case .relative: return "오늘·어제로"
-            case .dateTime: return "날짜와 시간"
-            case .date: return "날짜만"
-            }
-        }
-    }
+    /// 글자 크기는 고정: 이름 13pt, 크기·날짜 12pt (숫자 폭 같게), 아이콘 16pt
+    static let nameFont = Font.system(size: 13)
+    static let numberFont = Font.system(size: 12).monospacedDigit()
+    /// 크기 단위(KB·MB·GB): 고정폭이라 단위마다 폭이 같다 (사용자)
+    static let unitFont = Font.system(size: 11, design: .monospaced)
+    static let iconSize: CGFloat = 16
 }
 
 /// 아이콘·종류·날짜 글자
@@ -480,20 +460,27 @@ enum FileLook {
         return String((0..<9).map { p & (0o400 >> UInt32($0)) != 0 ? bits[$0] : "-" })
     }
 
-    private static let relative: DateFormatter = {
+    /// 크기: 숫자와 단위를 나눠서. 바이트 단위는 쓰지 않고 KB 부터 ("17바이트" 대신 0.1 KB, 사용자).
+    /// 10 미만은 소수 한 자리, 그 이상은 정수 (Finder 처럼 1000 단위)
+    nonisolated static func size(_ bytes: Int64) -> (String, String) {
+        let units = ["KB", "MB", "GB", "TB", "PB"]
+        var v = Double(bytes) / 1000
+        var i = 0
+        while v >= 1000 && i < units.count - 1 { v /= 1000; i += 1 }
+        if bytes > 0 && v < 0.1 { v = 0.1 }
+        let n = v < 10 ? String(format: "%.1f", v) : String(format: "%.0f", v.rounded())
+        return (n, units[i])
+    }
+
+    /// 날짜는 늘 "2026-11-21 11:39" (글자 수가 같아 열 너비가 고정된다, 사용자)
+    private static let fixed: DateFormatter = {
         let f = DateFormatter()
-        f.dateStyle = .short; f.timeStyle = .short; f.doesRelativeDateFormatting = true
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd HH:mm"
         return f
     }()
 
-    static func date(_ d: Date?, style: FileViewOptions.DateStyle) -> String {
-        guard let d else { return "" }
-        switch style {
-        case .relative: return relative.string(from: d)
-        case .dateTime: return d.formatted(date: .numeric, time: .shortened)
-        case .date: return d.formatted(date: .numeric, time: .omitted)
-        }
-    }
+    static func date(_ d: Date?) -> String { d.map { fixed.string(from: $0) } ?? "" }
 }
 
 // MARK: - 화면
@@ -504,8 +491,6 @@ private let remoteDragType = UTType(exportedAs: "com.moimz.ivnc.remote-files")
 struct FileBrowserView: View {
     @ObservedObject var session: FileSession
     let serverName: String
-    /// ⏏: 파인더를 닫고 터미널로
-    var onEject: (() -> Void)?
 
     /// 이보다 좁으면(분할 칸 등) 한 칸만 보이고 [이 맥 | 서버] 로 바꾼다
     static let twoPaneWidth: CGFloat = 700
@@ -516,12 +501,12 @@ struct FileBrowserView: View {
                 if geo.size.width >= Self.twoPaneWidth {
                     HSplitView {
                         FilePaneView(session: session, pane: session.local, title: "이 맥").frame(minWidth: 260)
-                        FilePaneView(session: session, pane: session.remote, title: serverName, onEject: onEject).frame(minWidth: 260)
+                        FilePaneView(session: session, pane: session.remote, title: serverName).frame(minWidth: 260)
                     }
                 } else if session.compactShowsLocal {
                     FilePaneView(session: session, pane: session.local, title: "이 맥", compact: true)
                 } else {
-                    FilePaneView(session: session, pane: session.remote, title: serverName, compact: true, onEject: onEject)
+                    FilePaneView(session: session, pane: session.remote, title: serverName, compact: true)
                 }
             }
             if !session.transfers.isEmpty {
@@ -542,21 +527,12 @@ private struct FilePaneView: View {
     let title: String
     /// 좁은 한 칸 모양: 머리에 [이 맥 | 서버] 전환
     var compact = false
-    /// 경로 줄 왼쪽 ⏏ (서버 칸): 파인더를 닫고 터미널로
-    var onEject: (() -> Void)?
 
     @AppStorage(FileViewOptions.showHidden) private var showHidden = false
     @AppStorage(FileViewOptions.foldersFirst) private var foldersFirst = true
-    @AppStorage(FileViewOptions.textSize) private var textSize = FileViewOptions.TextSize.regular.rawValue
-    @AppStorage(FileViewOptions.dateStyle) private var dateStyle = FileViewOptions.DateStyle.relative.rawValue
-    @AppStorage(FileViewOptions.showSize) private var showSize = true
-    @AppStorage(FileViewOptions.showDate) private var showDate = true
-    @AppStorage(FileViewOptions.showKind) private var showKind = false
-    @AppStorage(FileViewOptions.showPermissions) private var showPermissions = false
 
     @State private var selection = Set<String>()
     @State private var order = [KeyPathComparator(\FileRowItem.name, comparator: .localizedStandard)]
-    @State private var columns = TableColumnCustomization<FileRowItem>()
     @State private var showOptions = false
     @State private var dropTarget = false
     @State private var newFolder = false
@@ -564,8 +540,6 @@ private struct FilePaneView: View {
     @State private var deleting: [FileItem] = []
     @State private var nameInput = ""
 
-    private var size: FileViewOptions.TextSize { .init(rawValue: textSize) ?? .regular }
-    private var style: FileViewOptions.DateStyle { .init(rawValue: dateStyle) ?? .relative }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -598,11 +572,9 @@ private struct FilePaneView: View {
             Text(deleting.count == 1 ? "\(deleting[0].name) 을(를) 지웁니다. 폴더면 안의 내용도 모두 지워지고, 되돌릴 수 없습니다."
                  : "\(deleting.count)개를 지웁니다. 폴더면 안의 내용도 모두 지워지고, 되돌릴 수 없습니다.")
         }
-        .onAppear(perform: applyColumns)
-        .onChange(of: [showSize, showDate, showKind, showPermissions]) { applyColumns() }
     }
 
-    // 위 줄: [⏏ | 서버 › var › www › html ⌄] ··· [새로 고침] [보기 옵션] (Transmit 경로 줄)
+    // 위 줄: [이 맥/서버 아이콘 | 서버 › var › www › html ⌄] ··· [새로 고침] [보기 옵션] (좁으면 아이콘 대신 [이 맥 | 서버] 토글)
     private var header: some View {
         HStack(spacing: 8) {
             if compact {
@@ -613,9 +585,14 @@ private struct FilePaneView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .fixedSize()
-                Divider().frame(height: 14)
+            } else {
+                // 이 맥 / 서버 표시 (좁아지면 위 토글로 바뀐다, 사용자)
+                Image(systemName: pane.isRemote ? "server.rack" : "internaldrive")
+                    .foregroundStyle(.secondary)
+                    .help(pane.isRemote ? title : "이 맥")
             }
-            PathBar(session: session, pane: pane, title: title, onEject: pane.isRemote ? onEject : nil)
+            Divider().frame(height: 14)
+            PathBar(session: session, pane: pane, title: title)
             Spacer(minLength: 4)
             if pane.loading { ProgressView().controlSize(.small) }
             Button { Task { await pane.refresh() } } label: { Image(systemName: "arrow.clockwise") }
@@ -631,39 +608,34 @@ private struct FilePaneView: View {
 
     private var table: some View {
         let rows = pane.rows(order: order, foldersFirst: foldersFirst, showHidden: showHidden)
-        return Table(of: FileRowItem.self, selection: $selection, sortOrder: $order, columnCustomization: $columns) {
+        return Table(of: FileRowItem.self, selection: $selection, sortOrder: $order) {
             // 제목은 줄의 ▸ 자리만큼 띄운다 (열 제목에는 여백을 줄 수 없어 앞에 빈칸 글자: 전각 공백 + 가는 공백 ≈ 16pt)
             TableColumn(Text("\u{2003}\u{2009}이름"), value: \.name, comparator: .localizedStandard) { r in nameCell(r) }
                 .width(min: 160, ideal: 300)
-                .customizationID("name")
-                .disabledCustomizationBehavior(.visibility)
             TableColumn("크기", value: \.sizeValue) { r in
-                Text(r.item.isDirectory ? "•" : ByteCountFormatter.string(fromByteCount: r.item.size ?? 0, countStyle: .file))
-                    .foregroundStyle(.secondary).monospacedDigit().frame(maxWidth: .infinity, alignment: .trailing)
+                // 숫자(숫자 폭 같게, 오른쪽 정렬) + 단위(고정 칸): 단위가 KB·MB·GB 로 달라도 숫자 끝과 단위가 세로로 맞는다 (사용자)
+                HStack(spacing: 3) {
+                    if r.item.isDirectory {
+                        Text("•")
+                    } else {
+                        let (number, unit) = FileLook.size(r.item.size ?? 0)
+                        Text(number).frame(maxWidth: .infinity, alignment: .trailing)
+                        Text(unit).font(FileViewOptions.unitFont).lineLimit(1).fixedSize().frame(width: 16, alignment: .leading)
+                    }
+                }
+                .font(FileViewOptions.numberFont).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .trailing)
             }
-            .width(min: 40, ideal: 56, max: 110)
-            .customizationID("size")
+            .width(90)
             TableColumn("날짜", value: \.dateValue) { r in
-                Text(FileLook.date(r.item.modified, style: style)).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
+                Text(FileLook.date(r.item.modified)).font(FileViewOptions.numberFont).foregroundStyle(.secondary).lineLimit(1)
             }
-            .width(min: 80, ideal: 150)
-            .customizationID("date")
-            TableColumn("종류", value: \.kindValue) { r in
-                Text(r.kindValue).foregroundStyle(.secondary).lineLimit(1)
-            }
-            .width(min: 60, ideal: 110)
-            .customizationID("kind")
-            TableColumn("권한") { r in
-                Text(FileLook.permissions(r.item.permissions)).foregroundStyle(.secondary).font(size.font.monospaced())
-            }
-            .width(min: 70, ideal: 86)
-            .customizationID("permissions")
+            .width(120)
         } rows: {
             ForEach(rows) { r in
                 TableRow(r).itemProvider { provider(for: r.item) }
             }
         }
-        .font(size.font)
+        .font(FileViewOptions.nameFont)
         .tableStyle(.inset(alternatesRowBackgrounds: false))
         .background(TableLinesRemover())
         .contextMenu(forSelectionType: String.self) { ids in menu(ids) } primaryAction: { ids in open(ids) }
@@ -685,19 +657,13 @@ private struct FilePaneView: View {
                 Color.clear.frame(width: 12, height: 1)
             }
             Image(nsImage: FileLook.icon(r.item, remote: pane.isRemote))
-                .resizable().frame(width: size.icon, height: size.icon)
+                .resizable().frame(width: FileViewOptions.iconSize, height: FileViewOptions.iconSize)
                 .opacity(r.item.isHidden ? 0.55 : 1)
             Text(r.item.name).lineLimit(1).truncationMode(.middle)
                 .foregroundStyle(r.item.isHidden ? .secondary : .primary)
         }
     }
 
-    private func applyColumns() {
-        columns[visibility: "size"] = showSize ? .visible : .hidden
-        columns[visibility: "date"] = showDate ? .visible : .hidden
-        columns[visibility: "kind"] = showKind ? .visible : .hidden
-        columns[visibility: "permissions"] = showPermissions ? .visible : .hidden
-    }
 
     private func items(_ ids: Set<String>) -> [FileItem] { ids.compactMap { pane.item($0) } }
 
@@ -827,23 +793,16 @@ private enum SeparatorPatch {
     }
 }
 
-/// 경로 줄 (Transmit 처럼): [⏏ |] 맨 위 › 폴더 › … › 지금 폴더 ⌄
+/// 경로 줄 (Transmit 처럼): 맨 위 › 폴더 › … › 지금 폴더 ⌄ (⏏ 는 뺌, 사용자: 필요 없다)
 /// 앞 폴더는 눌러서 바로 가고, 지금 폴더(강조색)는 위 폴더 목록·자주 가는 곳 메뉴. 좁으면 가운데를 … 로 줄인다
 private struct PathBar: View {
     @ObservedObject var session: FileSession
     @ObservedObject var pane: FilePane
     let title: String
-    var onEject: (() -> Void)?
     @State private var anchor = MenuAnchorBox()
 
     var body: some View {
         HStack(spacing: 6) {
-            if let onEject {
-                Button(action: onEject) { Image(systemName: "eject.fill").font(.system(size: 11)) }
-                    .buttonStyle(.borderless)
-                    .help("파인더 닫기 (터미널로)")
-                Divider().frame(height: 14)
-            }
             // 넓으면 다 보이고, 좁으면 맨 위와 지금 폴더는 남기고 가운데부터 … 로
             let chain = Array(ancestors.reversed())
             ViewThatFits(in: .horizontal) {
@@ -952,33 +911,12 @@ private struct PathBar: View {
 private struct FileViewOptionsView: View {
     @AppStorage(FileViewOptions.showHidden) private var showHidden = false
     @AppStorage(FileViewOptions.foldersFirst) private var foldersFirst = true
-    @AppStorage(FileViewOptions.textSize) private var textSize = FileViewOptions.TextSize.regular.rawValue
-    @AppStorage(FileViewOptions.dateStyle) private var dateStyle = FileViewOptions.DateStyle.relative.rawValue
-    @AppStorage(FileViewOptions.showSize) private var showSize = true
-    @AppStorage(FileViewOptions.showDate) private var showDate = true
-    @AppStorage(FileViewOptions.showKind) private var showKind = false
-    @AppStorage(FileViewOptions.showPermissions) private var showPermissions = false
 
     var body: some View {
         Form {
             Section {
                 Toggle("숨김 파일 보기", isOn: $showHidden)
-                Toggle("폴더를 위에", isOn: $foldersFirst)
-            }
-            Section {
-                Picker("글자 크기", selection: $textSize) {
-                    ForEach(FileViewOptions.TextSize.allCases) { Text($0.title).tag($0.rawValue) }
-                }
-                .pickerStyle(.segmented)
-                Picker("날짜", selection: $dateStyle) {
-                    ForEach(FileViewOptions.DateStyle.allCases) { Text($0.title).tag($0.rawValue) }
-                }
-            }
-            Section("보일 열") {
-                Toggle("크기", isOn: $showSize)
-                Toggle("날짜", isOn: $showDate)
-                Toggle("종류", isOn: $showKind)
-                Toggle("권한", isOn: $showPermissions)
+                Toggle("폴더를 상단에 고정", isOn: $foldersFirst)
             }
         }
         .formStyle(.grouped)
