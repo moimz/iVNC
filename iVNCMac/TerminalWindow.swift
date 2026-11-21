@@ -191,7 +191,10 @@ struct TerminalWindowView: View {
                 // [터미널 | 파인더] (iSQL 의 데이터/구조처럼)
                 ToolbarItem(placement: .primaryAction) {
                     Picker("보기", selection: Binding(get: { model.activeTab?.mode ?? .terminal },
-                                                     set: { model.activeTab?.setMode($0) })) {
+                                                     set: { m in
+                                                         guard let t = model.activeTab else { return }
+                                                         if m == .files { Task { await t.requestFiles() } } else { t.setMode(m) }
+                                                     })) {
                         Label("터미널", systemImage: "apple.terminal").tag(TerminalTab.Mode.terminal).help("터미널 (⌘1)")
                         Label("파인더", systemImage: "folder").tag(TerminalTab.Mode.files).help("파인더 · 파일 주고받기 (⌘2)")
                     }
@@ -216,9 +219,14 @@ struct TerminalWindowView: View {
             Group {
                 Button("탭 닫기") { if let t = model.activeTab { model.close(t) } }.keyboardShortcut("w")
                 Button("터미널") { model.activeTab?.setMode(.terminal) }.keyboardShortcut("1")
-                Button("파인더") { model.activeTab?.setMode(.files) }.keyboardShortcut("2")
+                Button("파인더") { if let t = model.activeTab { Task { await t.requestFiles() } } }.keyboardShortcut("2")
             }
             .opacity(0).allowsHitTesting(false).accessibilityHidden(true)
+        }
+        .alert("지금 셸에서는 파인더로 바꿀 수 없습니다", isPresented: Binding(get: { blockedTab != nil }, set: { if !$0 { blockedTab?.filesBlocked = nil } })) {
+            Button("확인", role: .cancel) { blockedTab?.filesBlocked = nil }
+        } message: {
+            Text(blockedTab?.filesBlocked ?? "")
         }
         .alert(hostKeyTitle, isPresented: Binding(get: { questionTab != nil }, set: { if !$0 { questionTab?.answerHostKey(false) } })) {
             Button("접속") { questionTab?.answerHostKey(true) }
@@ -241,6 +249,8 @@ struct TerminalWindowView: View {
             for t in model.allTabs { t.applySettings() }
         }
     }
+
+    private var blockedTab: TerminalTab? { model.allTabs.first { $0.filesBlocked != nil } }
 
     private var questionTab: TerminalTab? { model.allTabs.first { $0.hostKeyQuestion != nil } }
     private var hostKeyTitle: String { questionTab?.hostKeyQuestion?.changed == true ? "서버 지문이 바뀌었습니다" : "처음 접속하는 서버입니다" }
@@ -397,9 +407,11 @@ private struct TabItemView: View {
                 .fontWeight(active && focused ? .semibold : .regular)
                 .foregroundStyle(tab.state == .connected ? .primary : .secondary)
                 .layoutPriority(1)
-            // 지금 폴더를 작게 (같은 서버 탭끼리 구분, 사용자). 길면 앞을 줄인다
-            if let dir = tab.workingDirectory {
-                Text(dir).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+            // 셸이면 지금 폴더, 아니면 앞에서 돌고 있는 프로그램(vim·mysql·top …)을 작게 (사용자). 길면 앞을 줄인다
+            if let label = tab.frontLabel {
+                let program = tab.foreground.map { !$0.isShell } ?? false
+                Text(label).font(.caption).foregroundStyle(program ? Color.orange : Color.secondary)
+                    .lineLimit(1).truncationMode(.head)
             }
             // 이름은 왼쪽, 닫기는 오른쪽 끝 (가운데 정렬 대신)
             Spacer(minLength: 8)

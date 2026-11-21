@@ -133,6 +133,22 @@ final class FileSession: ObservableObject {
     @Published private(set) var remoteHome: String?
     /// 마지막으로 따라간 터미널 폴더
     private var lastFollowed: String?
+    /// 파인더가 보고 있는 사용자 (경로 줄 "root@SUN"). 터미널 앞쪽 셸 사용자를 따른다
+    @Published private(set) var viewer: String?
+    /// 다른 사용자 셸이 띄운 sftp-server 에 잇는 명령 (nil = 로그인 계정 sftp)
+    private var bridge: String?
+    var isOpen: Bool { client != nil }
+
+    /// 볼 사용자를 정한다. 바뀌면 SFTP 를 닫고 다음 appear 에서 그 사용자로 다시 연다
+    func useIdentity(user: String, bridge: String?) {
+        if user != viewer || (bridge != nil && bridge != self.bridge) {
+            client?.close()
+            client = nil
+            lastFollowed = nil
+        }
+        viewer = user
+        self.bridge = bridge
+    }
     private var ticker: Timer?
 
     static let localKey = "files.localPath"
@@ -176,11 +192,20 @@ final class FileSession: ObservableObject {
         do {
             if client == nil {
                 remote.loading = true
-                let c = try await shell.openSFTP()
+                let c = try await shell.openSFTP(command: bridge)
                 client = c
                 remote.loader = { p in try await c.list(p).map(Self.item) }
-                remoteHome = try? await c.realpath(".")
+                if bridge != nil {
+                    // 그 셸이 띄운 sftp-server 는 셸 폴더에서 시작한다 → "." 이 곧 터미널 폴더
+                    remoteHome = nil
+                    let here = try? await c.realpath(".")
+                    if let here { lastFollowed = here; await remote.open(here); return }
+                } else {
+                    remoteHome = try? await c.realpath(".")
+                }
             }
+            // 다른 사용자 셸(root 등)로 보는 중이면 로그인 셸 폴더를 따라가지 않는다 (처음 열 때 그 셸 폴더로 갔다)
+            if bridge != nil { await remote.refresh(); return }
             // 터미널 폴더: 셸이 알려 준 것(OSC 7) → 리눅스 /proc → 홈
             var dir = tab.directory.flatMap { URL(string: $0)?.path }.flatMap { $0.isEmpty ? nil : $0 }
             if dir == nil { dir = await shell.currentDirectory() }
@@ -492,6 +517,9 @@ struct FileBrowserView: View {
     @ObservedObject var session: FileSession
     let serverName: String
 
+    /// 서버 칸 맨 앞 이름: "root@SUN" 처럼 지금 보고 있는 사용자 (사용자)
+    private var remoteTitle: String { session.viewer.map { "\($0)@\(serverName)" } ?? serverName }
+
     /// 이보다 좁으면(분할 칸 등) 한 칸만 보이고 [이 맥 | 서버] 로 바꾼다
     static let twoPaneWidth: CGFloat = 700
 
@@ -501,12 +529,12 @@ struct FileBrowserView: View {
                 if geo.size.width >= Self.twoPaneWidth {
                     HSplitView {
                         FilePaneView(session: session, pane: session.local, title: "이 맥").frame(minWidth: 260)
-                        FilePaneView(session: session, pane: session.remote, title: serverName).frame(minWidth: 260)
+                        FilePaneView(session: session, pane: session.remote, title: remoteTitle).frame(minWidth: 260)
                     }
                 } else if session.compactShowsLocal {
                     FilePaneView(session: session, pane: session.local, title: "이 맥", compact: true)
                 } else {
-                    FilePaneView(session: session, pane: session.remote, title: serverName, compact: true)
+                    FilePaneView(session: session, pane: session.remote, title: remoteTitle, compact: true)
                 }
             }
             if !session.transfers.isEmpty {
@@ -702,7 +730,9 @@ private struct FilePaneView: View {
 
     private func provider(for item: FileItem) -> NSItemProvider {
         if pane.isRemote { return RemoteDrag.provider(for: item, session: session) }
-        return NSItemProvider(contentsOf: item.url) ?? NSItemProvider()
+        // 파일 주소(URL)로 내보낸다. contentsOf 는 "파일 내용"으로만 실려서 서버 칸(파일 주소를 받음)에 놓아도
+        // 올라가지 않았다 (사용자: Finder 에서는 되고 왼쪽 칸에서는 안 됨). 주소로 실으면 Finder 로 끌어내도 파일로 놓인다
+        return NSItemProvider(object: item.url as NSURL)
     }
 
     private func drop(_ items: [NSItemProvider]) -> Bool {

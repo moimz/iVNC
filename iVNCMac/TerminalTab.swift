@@ -23,6 +23,10 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, TerminalViewD
     @Published private(set) var remoteTitle = ""
     @Published private(set) var directory: String?
     @Published private(set) var size = (cols: 80, rows: 24)
+    /// 터미널 앞에서 돌고 있는 것 (셸·vim·mysql …, 서버가 1초마다 바뀐 것만 알려 줌)
+    @Published private(set) var foreground: SSHShell.Foreground?
+    /// 파인더로 바꿀 수 없는 이유 (창이 경고로 띄운다)
+    @Published var filesBlocked: String?
     /// 서버 지문 질문 (창이 알림으로 띄운다)
     @Published var hostKeyQuestion: SSHShell.HostKeyQuestion?
     private var hostKeyAnswer: ((Bool) -> Void)?
@@ -156,7 +160,7 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, TerminalViewD
         s.onConnected = { [weak self] in
             guard let self else { return }
             self.state = .connected
-            if self.osc7Path == nil && self.titlePath == nil { self.refreshDirectory(after: 1.5) }
+            self.shell?.watchForeground { [weak self] f in self?.foreground = f }
             let cmd = (d.string(forKey: TerminalSettings.startupCommand) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             if !cmd.isEmpty { self.shell?.send(Array((cmd + "\r").utf8)[...]) }
         }
@@ -167,6 +171,72 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, TerminalViewD
 
     /// 파인더를 한 번이라도 열었는지 (닫을 때 SFTP 도 닫는다)
     private(set) var filesStarted = false
+
+    /// 탭에 작게 보일 것: 셸이면 지금 폴더, 아니면 앞에서 돌고 있는 프로그램 이름 (vim·mysql·top …)
+    var frontLabel: String? {
+        if let f = foreground, !f.isShell { return f.comm }
+        return workingDirectory
+    }
+
+    /// 파인더로 바꾸기 (⌘2·[터미널 | 파인더]). 지금 터미널 셸의 사용자 권한으로 연다 (사용자):
+    /// 앞쪽이 셸이 아니거나(vim·mysql …) 프롬프트에 쳐 둔 명령이 있으면 바꾸지 않고 이유를 알린다.
+    /// 앞쪽 셸이 로그인 계정이 아니면(sudo su, su - ubuntu) 그 셸에 sftp-server 를 띄워 파인더를 거기에 잇는다
+    func requestFiles() async {
+        guard mode != .files else { return }
+        guard let shell = sshShell else { filesBlocked = "접속돼 있지 않습니다."; return }
+        guard let f = await shell.foreground() else {
+            // 리눅스가 아니라 앞쪽을 모르면 예전처럼 로그인 계정으로
+            files.useIdentity(user: computer.username, bridge: nil)
+            setMode(.files)
+            return
+        }
+        foreground = f
+        if !f.isShell {
+            filesBlocked = "터미널 앞에서 \(f.comm) 이(가) 실행 중입니다.\n끝내고 셸 프롬프트로 돌아온 뒤 바꿔 주세요."
+            return
+        }
+        if !promptIsEmpty() {
+            filesBlocked = "프롬프트에 입력하다 만 명령이 있습니다.\n지우거나 실행한 뒤 바꿔 주세요."
+            return
+        }
+        if !f.otherUser {
+            files.useIdentity(user: f.user, bridge: nil)
+        } else if files.viewer != f.user || !files.isOpen {
+            // 그 셸에 한 줄 넣는 동안 사용자 입력을 막는다 (섞이지 않게)
+            view.inputLocked = true
+            let token = (UUID().uuidString + UUID().uuidString).replacingOccurrences(of: "-", with: "").lowercased()
+            shell.send(Array(Self.helperCommand(token: token, login: computer.username).utf8)[...])
+            files.useIdentity(user: f.user, bridge: Self.bridgeCommand(token: token))
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.view.inputLocked = false }
+        }
+        setMode(.files)
+    }
+
+    /// 다른 사용자 셸에 넣는 한 줄: 무작위 폴더에 통로(FIFO) 둘을 만들고 그 셸 사용자로 sftp-server 를 띄운다.
+    /// 앞 공백 = bash 기록에 안 남김(ignorespace), 바깥 ( … & ) = 작업 번호 글이 안 뜸.
+    /// root 면 통로 주인을 로그인 계정으로 바꿔 둘만 쓰고, 아니면 666 + 남이 목록을 못 보는 폴더(711) + 3초 뒤 이름 지움
+    private static func helperCommand(token: String, login: String) -> String {
+        let d = "/tmp/.ivnc-\(token)"
+        let body = "d=\(d); mkdir -m 711 $d && mkfifo -m 600 $d/i $d/o && { chown '\(login)' $d/i $d/o 2>/dev/null || chmod 666 $d/i $d/o; } && "
+            + "for s in /usr/lib/openssh/sftp-server /usr/libexec/openssh/sftp-server /usr/lib/ssh/sftp-server /usr/libexec/sftp-server; do [ -x $s ] && break; done; "
+            + "($s <$d/i >$d/o 2>/dev/null &); sleep 3; rm -rf $d"
+        return " ( ( \(body) ) >/dev/null 2>&1 & )\r"
+    }
+
+    /// 로그인 계정 채널에서 그 통로에 잇는 명령 (sftp-server 표준 입출력 ↔ 이 채널)
+    private static func bridgeCommand(token: String) -> String {
+        let d = "/tmp/.ivnc-\(token)"
+        return "d=\(d); i=0; while [ ! -p $d/o ] && [ $i -lt 25 ]; do sleep 0.1; i=$((i+1)); done; cat $d/o & exec cat > $d/i"
+    }
+
+    /// 커서 줄이 프롬프트로 끝나는지 (쳐 둔 명령이 없는지). 마지막 글자 줄이 $ # % > ❯ 로 끝나야 한다
+    private func promptIsEmpty() -> Bool {
+        let data = view.getBufferAsData(kind: .active, encoding: .utf8)
+        let lines = String(decoding: data, as: UTF8.self).replacingOccurrences(of: "\u{0}", with: " ").components(separatedBy: "\n")
+        guard let last = lines.last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) else { return true }
+        let t = last.trimmingCharacters(in: .whitespaces)
+        return t.range(of: #"[$#%>❯»]$"#, options: .regularExpression) != nil
+    }
 
     func setMode(_ m: Mode) {
         if m == .files { filesStarted = true }
@@ -217,7 +287,8 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, TerminalViewD
     /// 탭에 작게 보일 지금 폴더: OSC 7 → 셸이 붙인 창 제목("root@sun: /var/www", 우분투 기본) → 엔터 뒤 서버에 물어본 값.
     /// 홈은 ~ 로 줄인다
     var workingDirectory: String? {
-        guard let path = osc7Path ?? titlePath ?? polledDirectory else { return nil }
+        let shellDir = foreground.flatMap { $0.isShell ? $0.directory : nil }
+        guard let path = osc7Path ?? titlePath ?? shellDir ?? polledDirectory else { return nil }
         let home = computer.username == "root" ? "/root" : "/home/\(computer.username)"
         if path == home { return "~" }
         if path.hasPrefix(home + "/") { return "~" + path.dropFirst(home.count) }
@@ -274,9 +345,8 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, TerminalViewD
 
     nonisolated func send(source: TerminalView, data: ArraySlice<UInt8>) {
         MainActor.assumeIsolated {
+            if view.inputLocked { NSSound.beep(); return }
             shell?.send(data)
-            // 엔터를 쳤고 셸이 폴더를 알려 주지 않으면 (cd 했을 수 있으니) 서버에 묻는다
-            if data.contains(13) && osc7Path == nil && titlePath == nil { refreshDirectory(after: 0.8) }
         }
     }
 

@@ -64,10 +64,13 @@ final class SFTPClient {
     }
 
     /// 채널에 sftp 를 열고 버전을 맞춘다
-    static func start(on child: Channel) -> EventLoopFuture<SFTPClient> {
+    /// command 가 있으면 sftp 서브시스템 대신 그 명령(표준 입출력이 sftp-server 에 이어진 것)으로 연다
+    static func start(on child: Channel, command: String? = nil) -> EventLoopFuture<SFTPClient> {
         child.pipeline.handler(type: SFTPHandler.self).flatMap { h in
             let client = SFTPClient(channel: child, handler: h)
-            return child.triggerUserOutboundEvent(SSHChannelRequestEvent.SubsystemRequest(subsystem: "sftp", wantReply: true))
+            let request: Any = command.map { SSHChannelRequestEvent.ExecRequest(command: $0, wantReply: true) }
+                ?? SSHChannelRequestEvent.SubsystemRequest(subsystem: "sftp", wantReply: true)
+            return child.triggerUserOutboundEvent(request)
                 .flatMap { h.sendInit() }
                 .flatMap { exts -> EventLoopFuture<SFTPClient> in
                     guard exts["limits@openssh.com"] != nil else { return child.eventLoop.makeSucceededFuture(client) }

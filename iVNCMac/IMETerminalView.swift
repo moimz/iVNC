@@ -21,6 +21,9 @@ final class IMETerminalView: TerminalView {
     private var lastCaret: NSPoint?
     private var pendingReset: DispatchWorkItem?
 
+    /// 파인더 도우미 한 줄을 셸에 넣는 동안 사용자 입력을 막는다 (TerminalTab.send 에서 버림. keyDown 은 밖에서 못 바꾼다)
+    var inputLocked = false
+
     /// SwiftTerm 은 받은 글자를 화면 주기(디스플레이 링크)에 그리고 커서도 그때 옮긴다.
     /// 그래서 feed 바로 뒤에 커서를 읽으면 옛 자리라 "동" 이 두 번 보였다 ("동동해", 사용자) →
     /// 대신 그릴 글자나 조합 글자가 있는 동안 화면 주기마다 커서를 보고 맞춘다

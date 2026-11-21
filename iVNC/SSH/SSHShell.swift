@@ -148,7 +148,8 @@ final class SSHShell {
     }
 
     /// 같은 접속에 SFTP 채널을 하나 더 연다 (다시 로그인하지 않는다)
-    func openSFTP() async throws -> SFTPClient {
+    /// command: 다른 사용자 셸이 띄운 sftp-server 에 잇는 명령 (없으면 로그인 계정 sftp 서브시스템)
+    func openSFTP(command: String? = nil) async throws -> SFTPClient {
         guard let conn = connection else { throw ChannelError.ioOnClosedChannel }
         return try await conn.eventLoop.flatSubmit {
             conn.pipeline.handler(type: NIOSSHHandler.self).flatMap { ssh -> EventLoopFuture<SFTPClient> in
@@ -156,7 +157,7 @@ final class SSHShell {
                 ssh.createChannel(p) { child, _ in
                     child.eventLoop.makeCompletedFuture { try child.pipeline.syncOperations.addHandler(SFTPHandler()) }
                 }
-                return p.futureResult.flatMap { SFTPClient.start(on: $0) }
+                return p.futureResult.flatMap { SFTPClient.start(on: $0, command: command) }
             }
         }.get()
     }
@@ -191,6 +192,91 @@ final class SSHShell {
                 }.flatMap { output.futureResult }
             }
         }.get()
+    }
+
+    // MARK: 터미널 앞쪽 프로세스
+
+    /// 터미널 앞에서 지금 돌고 있는 것 (셸·vim·mysql·top …) 과 그 사용자
+    struct Foreground: Equatable {
+        let pid: Int
+        let comm: String
+        let uid: Int
+        let user: String
+        /// 그 프로세스 폴더 (다른 사용자 프로세스면 못 읽어 nil)
+        let directory: String?
+        /// 로그인 계정 uid
+        let loginUID: Int
+
+        static let shells: Set<String> = ["bash", "zsh", "sh", "dash", "fish", "ksh", "mksh", "ash", "tcsh", "csh", "busybox"]
+        var isShell: Bool { Self.shells.contains(comm) }
+        /// 로그인 계정과 다른 사용자 셸인지 (sudo su, su - ubuntu …)
+        var otherUser: Bool { uid != loginUID }
+
+        init?(line: Substring) {
+            let f = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+            guard f.count >= 6, let pid = Int(f[0]), let uid = Int(f[2]), let login = Int(f[5]) else { return nil }
+            self.pid = pid; comm = f[1]; self.uid = uid; user = f[3].isEmpty ? String(uid) : f[3]
+            directory = f[4].hasPrefix("/") ? f[4] : nil; loginUID = login
+        }
+    }
+
+    /// 앞쪽 프로세스 찾기 (리눅스 /proc). 표식(LC_IVNC_SESSION) 붙은 로그인 셸 → 그 터미널의 앞쪽 프로세스 그룹 →
+    /// 그 아래로 내려가며 자기 터미널의 앞쪽인 가장 깊은 프로세스 (sudo 가 새 pty 를 만드는 경우·sudo su 안의 셸·그 셸의 vim 까지).
+    /// 백그라운드 작업은 자기 터미널의 앞쪽이 아니라 빠진다. 줄 = pid|comm|uid|user|cwd|로그인uid
+    private func foregroundScript(loop: Bool) -> String {
+        let m = marker
+        return #"""
+        p=
+        for f in /proc/[0-9]*/environ; do
+          grep -qszx 'LC_IVNC_SESSION=\#(m)' "$f" || continue
+          q=${f#/proc/}; q=${q%/environ}
+          pp=$(awk '{print $4}' /proc/$q/stat 2>/dev/null)
+          grep -qszx 'LC_IVNC_SESSION=\#(m)' /proc/$pp/environ 2>/dev/null && continue
+          p=$q; break
+        done
+        [ -n "$p" ] || exit 0
+        me=$(id -u); last=
+        while [ -d /proc/$p ]; do
+          t=$(awk '{print $8}' /proc/$p/stat 2>/dev/null)
+          b=$(awk -v t="$t" 'FNR==1{f=FILENAME; sub(/^\/proc\//,"",f); sub(/\/stat$/,"",f); c=$0; sub(/^[^(]*\(/,"",c); sub(/\) .*$/,"",c); r=$0; sub(/^.*\) /,"",r); split(r,a," "); pp[f]=a[2]; tg[f]=a[6]; cm[f]=c}
+            END{n=1; q[1]=t; dp[t]=0; h=1; while(h<=n){x=q[h++]; for(k in pp) if(pp[k]==x){q[++n]=k; dp[k]=dp[x]+1}}
+                b=t; bd=-1; for(i=1;i<=n;i++){k=q[i]; if(tg[k]==k && dp[k]>bd){b=k; bd=dp[k]}} print b "|" cm[b]}' /proc/[0-9]*/stat 2>/dev/null)
+          x=${b%%|*}
+          u=$(awk '/^Uid:/{print $2}' /proc/$x/status 2>/dev/null)
+          n=$(id -nu "$u" 2>/dev/null)
+          d=$(readlink /proc/$x/cwd 2>/dev/null)
+          l="$b|$u|$n|$d|$me"
+          if [ "$l" != "$last" ]; then echo "$l"; last=$l; fi
+          \#(loop ? "sleep 1" : "break")
+        done
+        """#
+    }
+
+    /// 지금 앞쪽 프로세스 (한 번). 리눅스가 아니거나 모르면 nil
+    func foreground() async -> Foreground? {
+        guard let out = try? await exec(foregroundScript(loop: false)) else { return nil }
+        return out.split(separator: "\n").last.flatMap { Foreground(line: $0) }
+    }
+
+    /// 앞쪽 프로세스가 바뀔 때마다 알려 준다 (서버에서 1초마다 보고 바뀐 것만 보냄, 채널 하나). 접속이 끝나면 멈춘다
+    func watchForeground(_ onChange: @escaping (Foreground) -> Void) {
+        guard let conn = connection else { return }
+        let script = foregroundScript(loop: true)
+        conn.eventLoop.execute {
+            _ = conn.pipeline.handler(type: NIOSSHHandler.self).map { ssh in
+                let p = conn.eventLoop.makePromise(of: Channel.self)
+                ssh.createChannel(p) { child, _ in
+                    child.eventLoop.makeCompletedFuture {
+                        try child.pipeline.syncOperations.addHandler(LineStreamer { line in
+                            if let f = Foreground(line: line[...]) { DispatchQueue.main.async { onChange(f) } }
+                        })
+                    }
+                }
+                p.futureResult.whenSuccess { child in
+                    child.triggerUserOutboundEvent(SSHChannelRequestEvent.ExecRequest(command: script, wantReply: true), promise: nil)
+                }
+            }
+        }
     }
 
     /// 접속이 살아 있는지
@@ -471,6 +557,24 @@ private final class SSHTunnelData: ChannelDuplexHandler {
 }
 
 /// exec 채널의 출력을 모은다 (채널이 닫히면 끝)
+/// exec 채널 표준 출력을 줄마다 넘긴다
+private final class LineStreamer: ChannelInboundHandler {
+    typealias InboundIn = SSHChannelData
+    let onLine: (String) -> Void
+    private var pending: [UInt8] = []
+    init(_ onLine: @escaping (String) -> Void) { self.onLine = onLine }
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        let d = unwrapInboundIn(data)
+        guard d.type == .channel, case .byteBuffer(var buf) = d.data, let b = buf.readBytes(length: buf.readableBytes) else { return }
+        pending += b
+        while let i = pending.firstIndex(of: 10) {
+            onLine(String(decoding: pending[..<i], as: UTF8.self))
+            pending.removeSubrange(...i)
+        }
+    }
+}
+
 private final class ExecCollector: ChannelInboundHandler {
     typealias InboundIn = SSHChannelData
     let promise: EventLoopPromise<SSHShell.ExecResult>
