@@ -10,8 +10,8 @@ struct MacHomeView: View {
     @State private var adding = false
     /// 한 번 눌러 고른 컴퓨터 (두 번 누르거나 엔터로 접속)
     @State private var selected: UUID?
-    /// 끌어서 순서 바꾸는 중인 컴퓨터
-    @State private var dragging: UUID?
+    /// 끌어서 순서 바꾸기 (끄는 카드·마우스 자리·카드 자리)
+    @StateObject private var reorder = ComputerReorderState()
     @AppStorage(ComputerGroupKeys.screens) private var screensExpanded = true
     @AppStorage(ComputerGroupKeys.ssh) private var sshExpanded = true
     private let columns = [GridItem(.adaptive(minimum: 180, maximum: 280), spacing: 18)]
@@ -47,7 +47,7 @@ struct MacHomeView: View {
                                         .onTapGesture(count: 2) { open(c) }
                                         .simultaneousGesture(TapGesture().onEnded { selected = c.id })
                                         .contextMenu { menu(c) }
-                                        .reorderable(c, dragging: $dragging)
+                                        .reorderable(c, state: reorder)
                                 }
                             }
                         }
@@ -61,12 +61,13 @@ struct MacHomeView: View {
                                     .onTapGesture(count: 2) { open(c) }
                                     .simultaneousGesture(TapGesture().onEnded { selected = c.id })
                                     .contextMenu { menu(c) }
-                                    .reorderable(c, dragging: $dragging)
+                                    .reorderable(c, state: reorder)
                             }
                         }
                     }
                 }
                 .padding(20)
+                .coordinateSpace(.named(ComputerReorderState.space))
             }
         }
         // 빈 곳을 누르면 고르기 풀기, 엔터로 고른 컴퓨터 접속

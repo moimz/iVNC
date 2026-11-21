@@ -120,7 +120,8 @@ extension Computer {
     }
 }
 
-/// 끌어서 순서 바꾸기 (맥: 마우스로 끌기, 아이폰·아이패드: 길게 누른 뒤 끌기 — 움직이지 않으면 메뉴). 같은 묶음(화면 공유 / SSH) 안에서만.
+#if os(iOS)
+/// 끌어서 순서 바꾸기 (아이폰·아이패드: 길게 누른 뒤 끌기 — 움직이지 않으면 메뉴). 같은 묶음(화면 공유 / SSH) 안에서만.
 /// 끄는 동안 지나가는 자리마다 바로 옮겨서 놓을 곳이 보인다. 순서는 iCloud 로 다른 기기와 맞춘다 (ComputerStore.move)
 struct ComputerReorder: ViewModifier {
     let computer: Computer
@@ -162,3 +163,67 @@ extension View {
         modifier(ComputerReorder(computer: c, dragging: dragging))
     }
 }
+#else
+/// 맥: 끌어서 순서 바꾸기. 시스템 끌기는 놓으면 끌던 그림이 그 자리에서 바로 사라져 어색해서(사용자) 카드를 직접 움직인다:
+/// 끄는 동안 카드가 마우스를 따라오고(살짝 크게·그림자) 지나가는 자리마다 다른 카드가 비켜 주며, 놓으면 새 자리로 스르륵 들어간다.
+/// 같은 묶음(화면 공유 / SSH) 안에서만. 순서는 iCloud 로 다른 기기와 맞춘다 (ComputerStore.move)
+@MainActor
+final class ComputerReorderState: ObservableObject {
+    static let space = "computer-reorder"
+    @Published var dragging: UUID?
+    /// 마우스 자리 (space 좌표)
+    @Published var pointer: CGPoint = .zero
+    /// 잡은 점이 카드 왼쪽 위에서 떨어진 만큼
+    var grab: CGSize = .zero
+    /// 카드·줄의 배치 자리 (끄는 중 움직임은 빼고)
+    var frames: [UUID: CGRect] = [:]
+}
+
+struct ComputerReorder: ViewModifier {
+    let computer: Computer
+    @ObservedObject var state: ComputerReorderState
+    @EnvironmentObject private var store: ComputerStore
+
+    private var isDragging: Bool { state.dragging == computer.id }
+
+    private var offset: CGSize {
+        guard isDragging, let f = state.frames[computer.id] else { return .zero }
+        return CGSize(width: state.pointer.x - state.grab.width - f.minX, height: state.pointer.y - state.grab.height - f.minY)
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(ComputerReorderState.space)) } action: { state.frames[computer.id] = $0 }
+            .onDisappear { state.frames[computer.id] = nil }
+            .scaleEffect(isDragging ? 1.03 : 1)
+            .shadow(color: .black.opacity(isDragging ? 0.3 : 0), radius: isDragging ? 12 : 0, y: isDragging ? 6 : 0)
+            .offset(offset)
+            .zIndex(isDragging ? 1 : 0)
+            .gesture(
+                DragGesture(minimumDistance: 5, coordinateSpace: .named(ComputerReorderState.space))
+                    .onChanged { v in
+                        if state.dragging != computer.id {
+                            let f = state.frames[computer.id] ?? .zero
+                            state.grab = CGSize(width: v.startLocation.x - f.minX, height: v.startLocation.y - f.minY)
+                            state.dragging = computer.id
+                        }
+                        state.pointer = v.location
+                        // 마우스가 같은 묶음의 다른 카드 위에 오면 그 자리로
+                        guard let target = state.frames.first(where: { $0.key != computer.id && $0.value.contains(v.location) })?.key,
+                              let t = store.computers.first(where: { $0.id == target }),
+                              t.type.showsScreen == computer.type.showsScreen else { return }
+                        withAnimation(.easeInOut(duration: 0.2)) { store.move(computer.id, to: target) }
+                    }
+                    .onEnded { _ in
+                        withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) { state.dragging = nil }
+                    }
+            )
+    }
+}
+
+extension View {
+    func reorderable(_ c: Computer, state: ComputerReorderState) -> some View {
+        modifier(ComputerReorder(computer: c, state: state))
+    }
+}
+#endif

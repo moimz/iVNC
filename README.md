@@ -15,15 +15,17 @@
 ### 아이폰
 
 | 목록 | 열린 탭 · 서버 | 파인더 | 터미널 |
-|---|---|---|---|
+|:---:|:---:|:---:|:---:|
 | ![아이폰 컴퓨터 목록](docs/screenshots/iphone-home.png) | ![아이폰 열린 탭 · 서버 목록](docs/screenshots/iphone-menu.png) | ![아이폰 파인더](docs/screenshots/iphone-finder.png) | ![아이폰 SSH 터미널](docs/screenshots/iphone-terminal.png) |
 
 ### 아이패드
 
 | 목록 | 화면 공유 |
-|---|---|
+|:---:|:---:|
 | ![아이패드 컴퓨터 목록](docs/screenshots/ipad-home.png) | ![아이패드 화면 공유](docs/screenshots/ipad-screen.png) |
-| **파인더** | **터미널** |
+
+| 파인더 | 터미널 |
+|:---:|:---:|
 | ![아이패드 파인더](docs/screenshots/ipad-finder.png) | ![아이패드 SSH 터미널](docs/screenshots/ipad-terminal.png) |
 
 <sub>스크린샷의 서버·원격 화면은 시연용으로 만든 것입니다.</sub>
