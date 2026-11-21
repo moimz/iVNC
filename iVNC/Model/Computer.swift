@@ -135,6 +135,7 @@ final class ComputerStore: ObservableObject {
         }
         Keychain.migrateToSynchronizable()
         startCloudSync()
+        ThumbnailCloud.shared.start { [weak self] in self?.thumbnailsChanged() }
         #if DEBUG
         // 시뮬레이터 시험용: IVNC_SEED="이름|주소|포트|계정|암호" 로 실행하면 컴퓨터 하나를 넣는다
         if let seed = ProcessInfo.processInfo.environment["IVNC_SEED"]?.split(separator: "|", omittingEmptySubsequences: false),
@@ -468,7 +469,19 @@ enum Thumbnails {
         guard let small = ctx.makeImage(), let data = jpegData(small, quality: 0.8) else { return }
         try? data.write(to: url(computer: computer), options: .atomic)
         if let display { try? data.write(to: url(computer: computer, display: display), options: .atomic) }
+        ThumbnailCloud.shared.upload(computer: computer)
     }
+
+    /// iCloud 에 올릴 작은 그림 (긴 쪽 600px, JPEG 0.7)
+    static func cloudData(computer: UUID) -> Data? {
+        guard let src = CGImageSourceCreateWithURL(url(computer: computer) as CFURL, nil),
+              let img = CGImageSourceCreateThumbnailAtIndex(src, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                                                                     kCGImageSourceThumbnailMaxPixelSize: 600] as CFDictionary) else { return nil }
+        return jpegData(img, quality: 0.7)
+    }
+
+    /// 이 기기에 그 컴퓨터 썸네일이 있는지
+    static func exists(computer: UUID) -> Bool { FileManager.default.fileExists(atPath: url(computer: computer).path) }
 
     /// CGImage → JPEG (UIKit·AppKit 없이)
     static func jpegData(_ image: CGImage, quality: Double) -> Data? {
@@ -479,6 +492,7 @@ enum Thumbnails {
     }
 
     static func delete(computer: UUID) {
+        ThumbnailCloud.shared.remove(computer: computer)
         let prefix = computer.uuidString
         for f in (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
         where f.lastPathComponent.hasPrefix(prefix) {

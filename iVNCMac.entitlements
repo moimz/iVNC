@@ -9,5 +9,20 @@
 	<array>
 		<string>$(AppIdentifierPrefix)com.moimz.iVNC</string>
 	</array>
+	<!-- 썸네일만 iCloud Drive 앱 전용 폴더로 (iCloud.com.moimz.iVNC/Data/Thumbnails, 키-값 1MB 를 아끼려고) -->
+	<key>com.apple.developer.icloud-container-identifiers</key>
+	<array>
+		<string>iCloud.com.moimz.iVNC</string>
+	</array>
+	<key>com.apple.developer.ubiquity-container-identifiers</key>
+	<array>
+		<string>iCloud.com.moimz.iVNC</string>
+	</array>
+	<key>com.apple.developer.icloud-services</key>
+	<array>
+		<string>CloudDocuments</string>
+	</array>
+	<key>com.apple.developer.icloud-container-environment</key>
+	<string>Production</string>
 </dict>
 </plist>
