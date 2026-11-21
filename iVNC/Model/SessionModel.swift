@@ -67,10 +67,24 @@ final class SessionModel: ObservableObject {
     private var client: RemoteClient?
     private weak var store: ComputerStore?
 
+    /// 열린 원격 화면들 (맥 MCP 의 screenshot)
+    private static var all: [WeakSession] = []
+    private struct WeakSession { weak var model: SessionModel? }
+    static var openSessions: [SessionModel] { all.compactMap(\.model).filter { $0.phase == .viewing } }
+    /// 마지막으로 접속·선택한 화면
+    static weak var frontSession: SessionModel?
+
+    /// 지금 화면 그림
+    func snapshotImage() -> CGImage? {
+        guard hasImage, let fb = client?.framebuffer else { return nil }
+        return renderer.snapshot(fb)
+    }
+
     init(computer: Computer) {
         self.computer = computer
         renderer.onFirstImage = { [weak self] in self?.hasImage = true }
         mouseMode = MouseMode(rawValue: UserDefaults.standard.string(forKey: "mouseMode." + computer.id.uuidString) ?? "") ?? .touch
+        Self.all = Self.all.filter { $0.model != nil } + [WeakSession(model: self)]
     }
 
     /// 고성능 가상 디스플레이 크기 (배율 1 픽셀, 가로로 긴 쪽이 너비). 설정에서 해상도를 골랐으면 그것.
@@ -234,6 +248,7 @@ final class SessionModel: ObservableObject {
     }
 
     func select(_ d: RemoteDisplay) {
+        Self.frontSession = self
         saveThumbnail()
         selected = d
         phase = .viewing

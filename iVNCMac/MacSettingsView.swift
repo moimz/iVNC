@@ -18,6 +18,9 @@ struct MacSettingsView: View {
             Tab("SSH", systemImage: "terminal", value: "ssh") {
                 MacTerminalSettings().frame(width: Self.width, height: 720)
             }
+            Tab("MCP", systemImage: "point.3.connected.trianglepath.dotted", value: "mcp") {
+                MCPSettingsPage().frame(width: Self.width, height: 760)
+            }
         }
         .background(SettingsWindowStyler())
     }
@@ -128,5 +131,88 @@ final class RetilingTabView: NSTabView {
         if let selected { selectTabViewItem(selected) }
         needsLayout = true
         needsDisplay = true
+    }
+}
+
+/// 설정 > MCP: 켜기·상태·포트·범위·권한·주소 복사·최근 요청 (iSQL 과 같은 모양)
+struct MCPSettingsPage: View {
+    @ObservedObject private var mcp = MCPServer.shared
+    @State private var portText = ""
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("MCP 서버 켜기", isOn: $mcp.enabled)
+                LabeledContent("포트") {
+                    TextField("포트", text: $portText)
+                        .labelsHidden().frame(width: 80).multilineTextAlignment(.trailing)
+                        .onSubmit { if let p = Int(portText), (1024...65535).contains(p) { mcp.port = p } else { portText = String(mcp.port) } }
+                }
+                LabeledContent("상태") {
+                    switch mcp.status {
+                    case .stopped: Text("꺼짐").foregroundStyle(.secondary)
+                    case .running(let p): Label("듣는 중 (127.0.0.1:\(String(p)))", systemImage: "circle.fill").foregroundStyle(.green)
+                    case .failed(let e): Text(e).foregroundStyle(.red)
+                    }
+                }
+                LabeledContent("주소") {
+                    // 오른쪽 끝을 아래 "연결 명령 복사" 버튼과 맞춘다
+                    HStack(spacing: 8) {
+                        Text(mcp.endpoint).textSelection(.enabled).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+                        Button("복사") { copy(mcp.endpoint) }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+                LabeledContent("Claude Code") {
+                    Button("연결 명령 복사") { copy("claude mcp add --transport http ivnc \(mcp.endpoint)") }
+                }
+            } footer: {
+                Text("이 맥 안(127.0.0.1)에서만 받습니다. 암호와 키는 MCP 로 넘기지 않습니다.")
+            }
+            Section("접근 범위") {
+                Picker("접근 범위", selection: $mcp.scope) {
+                    ForEach(MCPScope.allCases) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.radioGroup)
+                .labelsHidden()
+                if mcp.scope == .all {
+                    Text("터미널이 열려 있지 않은 서버는 저장된 암호·키로 MCP 가 따로 접속합니다 (경유 서버 포함). 처음 접속하는 서버는 iVNC 에서 한 번 열어 서버 지문을 확인해 두세요.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Section("권한") {
+                Picker("권한", selection: $mcp.permission) {
+                    ForEach(MCPPermission.allCases) { p in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(p.label)
+                            Text(p.detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        }
+                        .tag(p)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+                .labelsHidden()
+            }
+            Section("최근 요청") {
+                if mcp.log.isEmpty {
+                    Text("아직 없습니다").foregroundStyle(.secondary)
+                } else {
+                    ForEach(mcp.log.prefix(8)) { e in
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(e.time.formatted(date: .omitted, time: .standard)).foregroundStyle(.secondary).monospacedDigit()
+                            Text(e.text).foregroundStyle(e.ok ? Color.primary : Color.red).lineLimit(2)
+                        }
+                        .font(.caption)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear { portText = String(mcp.port) }
+    }
+
+    private func copy(_ s: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(s, forType: .string)
     }
 }

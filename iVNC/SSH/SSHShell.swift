@@ -63,6 +63,11 @@ final class SSHShell {
         self.jumps = jumps
     }
 
+    /// 셸 없이 접속만 하는 모드 (MCP 가 명령·파일만 쓸 때). onConnected 가 불린다
+    var interactive = true
+
+    private struct ConnectedOnly: Error {}
+
     /// 지금 폴더에서 로그인 셸을 여는 명령 (root 로 이어 가려면 sudo -s: 암호는 사용자가 친다)
     static func startCommand(directory: String?, asRoot: Bool) -> String? {
         guard directory != nil || asRoot else { return nil }
@@ -98,6 +103,12 @@ final class SSHShell {
             guard let self else { return conn.eventLoop.makeFailedFuture(ChannelError.ioOnClosedChannel) }
             self.connection = conn
             conn.closeFuture.whenComplete { [weak self] _ in self?.finish(error: nil) }
+            // 셸이 필요 없으면 여기서 접속 완료로 (인증은 첫 채널을 열 때 끝까지 기다린다: NIOSSH 가 채널 열기를 인증 뒤로 미룬다)
+            if !self.interactive {
+                return conn.pipeline.handler(type: NIOSSHHandler.self).flatMap { _ in
+                    conn.eventLoop.makeFailedFuture(ConnectedOnly())
+                }
+            }
             return conn.pipeline.handler(type: NIOSSHHandler.self).flatMap { ssh in
                 let promise = conn.eventLoop.makePromise(of: Channel.self)
                 ssh.createChannel(promise) { child, type in
@@ -127,6 +138,8 @@ final class SSHShell {
             case .success:
                 DebugLog.write("SSH 셸 열림")
                 DispatchQueue.main.async { self?.onConnected?() }
+            case .failure(let e) where e is ConnectedOnly:
+                DispatchQueue.main.async { self?.onConnected?() }
             case .failure(let e):
                 DebugLog.write("SSH 실패: \(e)")
                 self?.finish(error: Self.describe(e))
@@ -148,23 +161,40 @@ final class SSHShell {
         }.get()
     }
 
+    struct ExecResult {
+        let stdout: String
+        let stderr: String
+        let exitStatus: Int?
+        let timedOut: Bool
+    }
+
     /// 서버에서 명령 하나를 실행해 표준 출력을 받는다 (같은 접속, 별도 채널)
-    func exec(_ command: String) async throws -> String {
+    func exec(_ command: String) async throws -> String { try await execFull(command).stdout }
+
+    /// 명령 하나 실행: 출력·오류·종료 코드. timeout 초가 지나면 채널을 닫는다
+    func execFull(_ command: String, timeout: Int = 60) async throws -> ExecResult {
         guard let conn = connection else { throw ChannelError.ioOnClosedChannel }
-        let bytes: [UInt8] = try await conn.eventLoop.flatSubmit {
-            conn.pipeline.handler(type: NIOSSHHandler.self).flatMap { ssh -> EventLoopFuture<[UInt8]> in
+        return try await conn.eventLoop.flatSubmit {
+            conn.pipeline.handler(type: NIOSSHHandler.self).flatMap { ssh -> EventLoopFuture<ExecResult> in
                 let opened = conn.eventLoop.makePromise(of: Channel.self)
-                let output = conn.eventLoop.makePromise(of: [UInt8].self)
+                let output = conn.eventLoop.makePromise(of: ExecResult.self)
+                let collector = ExecCollector(output)
                 ssh.createChannel(opened) { child, _ in
-                    child.eventLoop.makeCompletedFuture { try child.pipeline.syncOperations.addHandler(ExecCollector(output)) }
+                    child.eventLoop.makeCompletedFuture { try child.pipeline.syncOperations.addHandler(collector) }
                 }
                 return opened.futureResult.flatMap { child in
-                    child.triggerUserOutboundEvent(SSHChannelRequestEvent.ExecRequest(command: command, wantReply: true))
+                    child.eventLoop.scheduleTask(in: .seconds(Int64(timeout))) {
+                        collector.timedOut = true
+                        child.close(promise: nil)
+                    }
+                    return child.triggerUserOutboundEvent(SSHChannelRequestEvent.ExecRequest(command: command, wantReply: true))
                 }.flatMap { output.futureResult }
             }
         }.get()
-        return String(decoding: bytes, as: UTF8.self)
     }
+
+    /// 접속이 살아 있는지
+    var isOpen: Bool { connection?.isActive ?? false }
 
     /// 셸이 지금 있는 폴더 (리눅스: 표식이 붙은 로그인 셸 → 그 터미널의 앞쪽 프로세스 → /proc/…/cwd). 모르면 nil
     func currentDirectory() async -> String? { await currentState().directory }
@@ -443,9 +473,13 @@ private final class SSHTunnelData: ChannelDuplexHandler {
 /// exec 채널의 출력을 모은다 (채널이 닫히면 끝)
 private final class ExecCollector: ChannelInboundHandler {
     typealias InboundIn = SSHChannelData
-    let promise: EventLoopPromise<[UInt8]>
+    let promise: EventLoopPromise<SSHShell.ExecResult>
     var bytes: [UInt8] = []
-    init(_ p: EventLoopPromise<[UInt8]>) { promise = p }
+    var errBytes: [UInt8] = []
+    var status: Int?
+    /// 시간이 다 돼 닫았는지
+    var timedOut = false
+    init(_ p: EventLoopPromise<SSHShell.ExecResult>) { promise = p }
 
     func handlerAdded(context: ChannelHandlerContext) {
         context.channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { _ in }
@@ -453,17 +487,19 @@ private final class ExecCollector: ChannelInboundHandler {
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         let d = unwrapInboundIn(data)
-        guard d.type == .channel, case .byteBuffer(var buf) = d.data, let b = buf.readBytes(length: buf.readableBytes) else { return }
-        bytes += b
+        guard case .byteBuffer(var buf) = d.data, let b = buf.readBytes(length: buf.readableBytes) else { return }
+        if d.type == .stdErr { errBytes += b } else { bytes += b }
     }
 
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
+        if let e = event as? SSHChannelRequestEvent.ExitStatus { status = e.exitStatus }
         if let e = event as? ChannelEvent, case .inputClosed = e { context.close(promise: nil) }
         context.fireUserInboundEventTriggered(event)
     }
 
     func channelInactive(context: ChannelHandlerContext) {
-        promise.succeed(bytes)
+        promise.succeed(.init(stdout: String(decoding: bytes, as: UTF8.self), stderr: String(decoding: errBytes, as: UTF8.self),
+                              exitStatus: status, timedOut: timedOut))
         context.fireChannelInactive()
     }
 }

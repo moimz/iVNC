@@ -108,3 +108,13 @@ enum ComputerGroupKeys {
     static let screens = "home.group.screens.expanded"
     static let ssh = "home.group.ssh.expanded"
 }
+
+extension Computer {
+    /// 검색: 이름·주소·계정에 낱말이 모두 들어 있으면 (대소문자 무시, 띄어 쓴 낱말마다)
+    func matches(_ query: String) -> Bool {
+        let words = query.split(whereSeparator: \.isWhitespace)
+        guard !words.isEmpty else { return true }
+        let hay = [name, host, username].joined(separator: " ")
+        return words.allSatisfy { hay.localizedCaseInsensitiveContains($0) }
+    }
+}

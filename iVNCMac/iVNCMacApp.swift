@@ -15,6 +15,8 @@ struct iVNCMacApp: App {
         Window("iVNC", id: "home") {
             MacHomeView()
                 .environmentObject(store)
+                // MCP 서버 (설정 > MCP 에서 켰으면)
+                .onAppear { MCPServer.shared.store = store; MCPServer.shared.startIfEnabled() }
         }
         .defaultSize(width: 760, height: 520)
 

@@ -14,8 +14,10 @@ struct MacHomeView: View {
     @AppStorage(ComputerGroupKeys.ssh) private var sshExpanded = true
     private let columns = [GridItem(.adaptive(minimum: 180, maximum: 280), spacing: 18)]
 
-    private var screens: [Computer] { store.computers.filter { $0.type.showsScreen } }
-    private var servers: [Computer] { store.computers.filter { !$0.type.showsScreen } }
+    @State private var query = ""
+    private var searching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
+    private var screens: [Computer] { store.computers.filter { $0.type.showsScreen && $0.matches(query) } }
+    private var servers: [Computer] { store.computers.filter { !$0.type.showsScreen && $0.matches(query) } }
 
     var body: some View {
         ScrollView {
@@ -26,6 +28,8 @@ struct MacHomeView: View {
                     Text("오른쪽 위 + 를 눌러 맥·윈도우나 SSH 서버를 추가하세요.")
                 }
                 .padding(.top, 80)
+            } else if screens.isEmpty && servers.isEmpty {
+                ContentUnavailableView.search(text: query).padding(.top, 80)
             } else {
                 VStack(alignment: .leading, spacing: 16) {
                     // SSH 가 없으면 묶음 머리 없이 예전처럼 카드만
@@ -33,7 +37,7 @@ struct MacHomeView: View {
                         if !servers.isEmpty {
                             ComputerGroupHeader(title: "화면 공유", count: screens.count, expanded: $screensExpanded)
                         }
-                        if servers.isEmpty || screensExpanded {
+                        if servers.isEmpty || screensExpanded || searching {
                             LazyVGrid(columns: columns, spacing: 22) {
                                 ForEach(screens) { c in
                                     ComputerCard(computer: c, selected: selected == c.id)
@@ -48,7 +52,7 @@ struct MacHomeView: View {
                     if !servers.isEmpty {
                         ComputerGroupHeader(title: "SSH", count: servers.count, expanded: $sshExpanded)
                             .padding(.top, screens.isEmpty ? 0 : 8)
-                        if sshExpanded {
+                        if sshExpanded || searching {
                             SSHList(computers: servers) { c in
                                 SSHRow(computer: c, selected: selected == c.id)
                                     .onTapGesture(count: 2) { open(c) }
@@ -72,6 +76,7 @@ struct MacHomeView: View {
             return .handled
         }
         .navigationTitle("iVNC")
+        .searchable(text: $query, placement: .toolbar, prompt: "이름·주소 검색")
         // Dock 을 눌렀을 때 이 창을 다시 열 수 있게 맡겨 둔다
         .onAppear { HomeWindow.open = { [openWindow] in openWindow(id: "home") } }
         .toolbar {

@@ -19,6 +19,10 @@ final class TerminalWindowModel: ObservableObject {
     var onEmpty: (() -> Void)?
     /// 서버의 경유 서버들 (창이 컴퓨터 목록으로 채운다)
     var jumpChain: ((Computer) -> [Computer])?
+    /// 마지막으로 쓴 때 (MCP 가 활성 탭을 고를 때)
+    private(set) var lastUsed = Date()
+
+    init() { TerminalRegistry.shared.add(self) }
     /// 탭이 바뀌면(서버 지문 질문·상태·제목) 창도 다시 그린다. 안 그러면 지문 알림이 안 떠 "접속 중…" 에 멈춘다
     private var tabWatchers: [UUID: AnyCancellable] = [:]
 
@@ -53,11 +57,13 @@ final class TerminalWindowModel: ObservableObject {
         panes[i].tabs.insert(tab, at: at)
         panes[i].active = tab.id
         focused = i
+        lastUsed = Date()
         tab.connect()
         focus(tab)
     }
 
     func select(_ tab: TerminalTab) {
+        lastUsed = Date()
         guard let i = paneIndex(of: tab) else { return }
         panes[i].active = tab.id
         focused = i
@@ -119,6 +125,19 @@ final class TerminalWindowModel: ObservableObject {
         openLike(tab, pane: from == 0 ? 1 : 0)
     }
 
+    /// 서버의 새 터미널을 다른 칸에 (사이드바 "분할로 열기"). 칸이 하나면 오른쪽 칸을 만든다
+    func openInSplit(_ c: Computer) {
+        if panes.count == 1 { panes.append(Pane()) }
+        open(c, pane: focused == 0 ? 1 : 0)
+    }
+
+    /// 이 창에서 그 서버의 탭 (초점 칸의 활성 탭 → 초점 칸 → 아무 칸 순)
+    func tab(for c: Computer) -> TerminalTab? {
+        if let t = activeTab, t.computer.id == c.id { return t }
+        if panes.indices.contains(focused), let t = panes[focused].tabs.first(where: { $0.computer.id == c.id }) { return t }
+        return allTabs.first { $0.computer.id == c.id }
+    }
+
     func paneIndex(id: UUID) -> Int? { panes.firstIndex { $0.id == id } }
 
     func paneIndex(of tab: TerminalTab) -> Int? { panes.firstIndex { $0.tabs.contains { $0.id == tab.id } } }
@@ -141,44 +160,56 @@ struct TerminalWindowView: View {
     @EnvironmentObject private var store: ComputerStore
     @Environment(\.dismissWindow) private var dismissWindow
     @StateObject private var model = TerminalWindowModel()
+    /// 사이드바를 펼쳤는지 (창마다 기억, 새 창은 펼침)
+    @SceneStorage("terminal.sidebar") private var sidebarShown = true
 
     var body: some View {
-        HStack(spacing: 0) {
-            // 칸은 번호가 아니라 id 로 (칸이 사라질 때 없는 번호를 읽어 앱이 죽었다)
-            ForEach(model.panes) { pane in
-                if pane.id != model.panes.first?.id { Divider() }
-                TerminalPaneView(model: model, paneID: pane.id)
+        NavigationSplitView(columnVisibility: Binding(get: { sidebarShown ? .all : .detailOnly },
+                                                      set: { sidebarShown = $0 != .detailOnly })) {
+            TerminalSidebar(model: model)
+                .navigationSplitViewColumnWidth(min: 170, ideal: 220, max: 360)
+        } detail: {
+            HStack(spacing: 0) {
+                // 칸은 번호가 아니라 id 로 (칸이 사라질 때 없는 번호를 읽어 앱이 죽었다)
+                ForEach(model.panes) { pane in
+                    if pane.id != model.panes.first?.id { Divider() }
+                    TerminalPaneView(model: model, paneID: pane.id)
+                }
+            }
+            .frame(minWidth: 480, minHeight: 260)
+            // 오른쪽 버튼은 본문에 붙인다 (창 전체에 붙이면 사이드바가 있을 때 왼쪽으로 몰린다, iSQL 툴바 규칙)
+            .toolbar {
+                // 오른쪽 끝에 붙인다
+                ToolbarSpacer(.flexible)
+                // [터미널 | 파인더] (iSQL 의 데이터/구조처럼)
+                ToolbarItem(placement: .primaryAction) {
+                    Picker("보기", selection: Binding(get: { model.activeTab?.mode ?? .terminal },
+                                                     set: { model.activeTab?.setMode($0) })) {
+                        Label("터미널", systemImage: "apple.terminal").tag(TerminalTab.Mode.terminal).help("터미널 (⌘1)")
+                        Label("파인더", systemImage: "folder").tag(TerminalTab.Mode.files).help("파인더 · 파일 주고받기 (⌘2)")
+                    }
+                    .pickerStyle(.segmented)
+                    .labelStyle(.iconOnly)
+                    .disabled(model.activeTab == nil)
+                }
+                ToolbarSpacer(.fixed)
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button("새 탭", systemImage: "plus") {
+                        if let t = model.activeTab { model.openLike(t) }
+                    }
+                    .keyboardShortcut("t")
+                    .help("같은 서버 새 탭 (⌘T)")
+                }
             }
         }
-        .frame(minWidth: 480, minHeight: 260)
         .navigationTitle(model.activeTab?.displayTitle ?? "SSH")
+        .toolbar(removing: .title)
         .toolbar {
-            // 서버 메뉴: 둥근 유리 배경 없이 (iSQL 툴바 규칙)
+            // 제목이자 서버 바꾸기 (iSQL ServerSwitcher 와 같은 모양, 둥근 유리 배경 없이)
             ToolbarItem(placement: .navigation) {
-                ServerMenu(model: model, servers: store.computers.filter { $0.type == .ssh })
+                ServerMenu(model: model)
             }
             .sharedBackgroundVisibility(.hidden)
-            // 오른쪽 끝에 붙인다
-            ToolbarSpacer(.flexible)
-            // [터미널 | 파인더] (iSQL 의 데이터/구조처럼)
-            ToolbarItem(placement: .primaryAction) {
-                Picker("보기", selection: Binding(get: { model.activeTab?.mode ?? .terminal },
-                                                 set: { model.activeTab?.setMode($0) })) {
-                    Label("터미널", systemImage: "apple.terminal").tag(TerminalTab.Mode.terminal).help("터미널 (⌘1)")
-                    Label("파인더", systemImage: "folder").tag(TerminalTab.Mode.files).help("파인더 · 파일 주고받기 (⌘2)")
-                }
-                .pickerStyle(.segmented)
-                .labelStyle(.iconOnly)
-                .disabled(model.activeTab == nil)
-            }
-            ToolbarSpacer(.fixed)
-            ToolbarItemGroup(placement: .primaryAction) {
-                Button("새 탭", systemImage: "plus") {
-                    if let t = model.activeTab { model.openLike(t) }
-                }
-                .keyboardShortcut("t")
-                .help("같은 서버 새 탭 (⌘T)")
-            }
         }
         // ⌘W = 지금 탭 닫기 (마지막 탭이면 창도 닫힌다). 도구 막대에 숨겨 두면 빈 칸이 생겨 버튼이 오른쪽 끝에 안 붙었다
         .background {
@@ -324,16 +355,16 @@ private struct TabStripView: View {
                                 focused: model.focused == index, model: model)
                         .onDrag { NSItemProvider(object: t.id.uuidString as NSString) }
                         .onDrop(of: [.text], isTargeted: nil) { items in drop(items, before: t.id) }
-                    Divider().frame(height: 16)
                 }
                 // 빈 곳에 놓으면 끝으로
-                Color.clear.frame(width: 40, height: 30)
+                Color.clear.frame(width: 40, height: 36)
                     .contentShape(Rectangle())
                     .onDrop(of: [.text], isTargeted: nil) { items in drop(items, before: nil) }
             }
         }
-        .frame(height: 30)
-        .background(Color(nsColor: .windowBackgroundColor), ignoresSafeAreaEdges: [])
+        .frame(height: 36)
+        // 제목바와 다른 색 (iSQL TabBar 와 같은 값). 안전 영역까지 번지지 않게
+        .background(Color(nsColor: .underPageBackgroundColor).opacity(0.5), ignoresSafeAreaEdges: [])
     }
 
     private func drop(_ items: [NSItemProvider], before: UUID?) -> Bool {
@@ -365,6 +396,11 @@ private struct TabItemView: View {
                 .lineLimit(1)
                 .fontWeight(active && focused ? .semibold : .regular)
                 .foregroundStyle(tab.state == .connected ? .primary : .secondary)
+                .layoutPriority(1)
+            // 지금 폴더를 작게 (같은 서버 탭끼리 구분, 사용자). 길면 앞을 줄인다
+            if let dir = tab.workingDirectory {
+                Text(dir).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+            }
             // 이름은 왼쪽, 닫기는 오른쪽 끝 (가운데 정렬 대신)
             Spacer(minLength: 8)
             Button { model.close(tab) } label: { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)) }
@@ -373,14 +409,16 @@ private struct TabItemView: View {
                 .opacity(hover || active ? 1 : 0)
                 .help("탭 닫기 (⌘W)")
         }
-        .padding(.horizontal, 12)
-        .frame(height: 30)
-        .frame(minWidth: 110, maxWidth: 220)
-        // 색 배경은 기본으로 안전 영역(제목바)까지 칠한다 → 막는다 (iSQL 탭바와 같은 문제)
-        .background(active ? Color.primary.opacity(0.08) : Color.clear, ignoresSafeAreaEdges: [])
+        .padding(.leading, 12)
+        .padding(.trailing, 8)
+        .frame(height: 36)
+        .frame(minWidth: 110, maxWidth: 280)
+        // 고른 탭은 창 바탕색으로 떠 보이게 (iSQL TabItem). 색 배경이 제목바까지 번지지 않게
+        .background(active ? Color(nsColor: .windowBackgroundColor) : (hover ? Color.primary.opacity(0.05) : .clear), ignoresSafeAreaEdges: [])
         .overlay(alignment: .top) {
             if active && focused { Rectangle().fill(Color.accentColor).frame(height: 2) }
         }
+        .overlay(alignment: .trailing) { Rectangle().fill(Color.secondary.opacity(0.2)).frame(width: 1) }
         .contentShape(Rectangle())
         .onTapGesture { model.select(tab) }
         .onHover { hover = $0 }
@@ -398,39 +436,185 @@ private struct TabItemView: View {
     }
 }
 
-/// 제목바 왼쪽 서버 목록: 고른 서버의 새 터미널을 늘 새 탭으로
+/// 제목바의 서버 이름 (iSQL ServerSwitcher 와 같은 모양): 색 점 · 이름 · 계정@주소 · ⌄.
+/// 누르면 이 창에 열린 서버(고르면 그 탭으로)와 탭 동작. 전체 서버 목록은 왼쪽 사이드바에.
+/// SwiftUI Menu 는 라벨 모양을 마음대로 못 해서 글자 버튼 + AppKit 메뉴로
 private struct ServerMenu: View {
     @ObservedObject var model: TerminalWindowModel
-    let servers: [Computer]
+    @State private var hover = false
 
     var body: some View {
-        let current = model.activeTab?.computer
-        Menu {
-            Section("새 탭으로 열기") {
-                ForEach(servers) { c in
-                    Button { model.open(c) } label: {
-                        Label { Text(c.name + (c.id == current?.id ? "  ✓" : "")) } icon: { Image(nsImage: dot(c.sshColor)) }
+        Button(action: showMenu) {
+            HStack(spacing: 7) {
+                if let t = model.activeTab {
+                    Circle().fill(t.computer.sshColor?.color ?? .secondary).frame(width: 9, height: 9)
+                    Text(t.computer.name).font(.system(size: 15, weight: .semibold))
+                    Text(Self.address(t.computer)).font(.caption).foregroundStyle(.secondary)
+                    if !t.jumps.isEmpty {
+                        Image(systemName: "arrow.triangle.branch").font(.system(size: 10)).foregroundStyle(.secondary)
+                            .help(t.jumps.map(\.name).joined(separator: " → ") + " 경유")
                     }
+                } else {
+                    Text("SSH").font(.system(size: 15, weight: .semibold))
                 }
+                Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary)
             }
-        } label: {
-            HStack(spacing: 6) {
-                ServerIcon(color: current?.sshColor ?? .none, size: 18)
-                Text(current?.name ?? "SSH").fontWeight(.semibold)
-                Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-            }
+            .padding(.horizontal, 12)
+            .frame(height: 30)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hover ? 0.08 : 0)))
+            .padding(.leading, 2)
+            .contentShape(Rectangle())
         }
-        .menuIndicator(.hidden)
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
         .fixedSize()
-        .help("서버를 고르면 새 탭으로 엽니다")
+        .help("서버 변경")
     }
 
-    /// 메뉴에 그대로 보이는 서버 아이콘 (SwiftUI 메뉴는 그림을 단색 템플릿으로 바꾸므로 색이 남는 NSImage 로)
-    private func dot(_ c: ServerColor?) -> NSImage {
-        let r = ImageRenderer(content: ServerIcon(color: c ?? .none, size: 16))
-        r.scale = NSScreen.main?.backingScaleFactor ?? 2
-        let img = r.nsImage ?? NSImage()
-        img.isTemplate = false
-        return img
+    static func address(_ c: Computer) -> String {
+        let user = c.username.isEmpty ? "" : c.username + "@"
+        let port = c.port == Computer.Kind.ssh.defaultPort ? "" : ":\(c.port)"
+        return user + c.host + port
+    }
+
+    private func showMenu() {
+        let menu = NSMenu()
+        // 이 창에 열린 서버 (탭 순서, 같은 서버는 한 번)
+        var seen = Set<UUID>()
+        let open = model.allTabs.filter { seen.insert($0.computer.id).inserted }
+        if !open.isEmpty {
+            menu.addItem(.sectionHeader(title: "열린 서버"))
+            for t in open {
+                let c = t.computer
+                let item = MenuAction.item(c.name) { [model] in if let tab = model.tab(for: c) { model.select(tab) } }
+                item.subtitle = Self.address(c)
+                item.state = model.activeTab?.computer.id == c.id ? .on : .off
+                let color = c.sshColor?.color.map { NSColor($0) } ?? NSColor.tertiaryLabelColor
+                item.image = NSImage(systemSymbolName: "circle.fill", accessibilityDescription: nil)?
+                    .withSymbolConfiguration(.init(pointSize: 9, weight: .regular).applying(.init(paletteColors: [color])))
+                menu.addItem(item)
+            }
+        }
+        if let t = model.activeTab {
+            menu.addItem(.separator())
+            menu.addItem(MenuAction.item("같은 서버 새 탭") { [model] in model.openLike(t) })
+            menu.addItem(MenuAction.item("다시 접속") { t.disconnect(); t.connect() })
+            menu.addItem(MenuAction.item("탭 닫기") { [model] in model.close(t) })
+        }
+        if menu.items.isEmpty {
+            let none = NSMenuItem(title: "열린 서버 없음", action: nil, keyEquivalent: "")
+            none.isEnabled = false
+            menu.addItem(none)
+        }
+        // 버튼 바로 아래에
+        if let event = NSApp.currentEvent, let window = event.window, let view = window.contentView {
+            let p = view.convert(event.locationInWindow, from: nil)
+            menu.popUp(positioning: nil, at: NSPoint(x: p.x - 20, y: p.y - 18), in: view)
+        } else {
+            menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+        }
+    }
+}
+
+/// 닫는 블록을 가진 메뉴 항목 (iSQL MenuAction)
+final class MenuAction: NSObject {
+    let run: () -> Void
+    init(_ run: @escaping () -> Void) { self.run = run }
+    @objc func fire() { run() }
+
+    static func item(_ title: String, _ run: @escaping () -> Void) -> NSMenuItem {
+        let action = MenuAction(run)
+        let item = NSMenuItem(title: title, action: #selector(fire), keyEquivalent: "")
+        item.target = action
+        item.representedObject = action   // target 은 약한 참조라 항목이 붙잡아 둔다
+        return item
+    }
+}
+/// 터미널 창 왼쪽 SSH 서버 목록 (iSQL 사이드바처럼). 한 번 = 이 창의 그 서버 탭으로, 두 번·엔터 = 새 탭
+private struct TerminalSidebar: View {
+    @ObservedObject var model: TerminalWindowModel
+    @EnvironmentObject private var store: ComputerStore
+    @Environment(\.openWindow) private var openWindow
+    @State private var query = ""
+    @State private var selection: UUID?
+    @State private var editing: Computer?
+
+    private var servers: [Computer] { store.computers.filter { $0.type == .ssh } }
+    private var shown: [Computer] { servers.filter { $0.matches(query) } }
+
+    var body: some View {
+        List(selection: $selection) {
+            Section("SSH 서버") {
+                ForEach(shown) { c in
+                    SidebarRow(computer: c, jump: c.sshJump.flatMap { id in store.computers.first { $0.id == id }?.name },
+                               openCount: model.allTabs.filter { $0.computer.id == c.id }.count)
+                        .tag(c.id)
+                }
+            }
+        }
+        .listStyle(.sidebar)
+        .searchable(text: $query, placement: .sidebar, prompt: "검색")
+        .overlay {
+            if shown.isEmpty {
+                ContentUnavailableView(servers.isEmpty ? "SSH 서버가 없습니다" : "찾는 서버가 없습니다",
+                                       systemImage: servers.isEmpty ? "server.rack" : "magnifyingglass")
+            }
+        }
+        .contextMenu(forSelectionType: UUID.self) { ids in
+            if let c = server(ids.first) {
+                Button("새 탭으로 열기", systemImage: "plus.square.on.square") { model.open(c) }
+                Button("분할로 열기", systemImage: "rectangle.split.2x1") { model.openInSplit(c) }
+                Button("새 창으로 열기", systemImage: "macwindow.badge.plus") {
+                    openWindow(id: "terminal", value: TerminalWindowRequest(computer: c.id))
+                }
+                Divider()
+                Button("편집…", systemImage: "pencil") { editing = c }
+            }
+        } primaryAction: { ids in
+            if let c = server(ids.first) { model.open(c) }
+        }
+        // 한 번 누르면 이 창에 그 서버 탭이 있을 때 그리로
+        .onChange(of: selection) { _, id in
+            if let c = server(id), let t = model.tab(for: c), t.id != model.activeTab?.id { model.select(t) }
+        }
+        // 탭을 바꾸면 사이드바도 그 서버를 고른다
+        .onChange(of: model.activeTab?.computer.id, initial: true) { _, id in
+            if let id, selection != id { selection = id }
+        }
+        .sheet(item: $editing) { ComputerEditView(computer: $0).frame(minWidth: 460, minHeight: 520) }
+    }
+
+    private func server(_ id: UUID?) -> Computer? { id.flatMap { id in servers.first { $0.id == id } } }
+}
+
+private struct SidebarRow: View {
+    let computer: Computer
+    let jump: String?
+    let openCount: Int
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ServerIcon(color: computer.sshColor ?? .none, size: 22)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(computer.name).lineLimit(1)
+                Text(jump.map { "\($0) 경유 · \(address)" } ?? address)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            }
+            Spacer(minLength: 0)
+            if openCount > 0 {
+                HStack(spacing: 3) {
+                    Circle().fill(.green).frame(width: 6, height: 6)
+                    if openCount > 1 { Text("\(openCount)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary) }
+                }
+                .help("이 창에 열린 탭 \(openCount)개")
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var address: String {
+        let user = computer.username.isEmpty ? "" : computer.username + "@"
+        let port = computer.port == Computer.Kind.ssh.defaultPort ? "" : ":\(computer.port)"
+        return user + computer.host + port
     }
 }

@@ -1,4 +1,9 @@
 import SwiftUI
+#if canImport(AppKit)
+import AppKit
+#else
+import UIKit
+#endif
 
 /// 설정 > SSH: 맥 터미널 프로필처럼 [텍스트 | 윈도우 | 셸 | 키보드 | 고급].
 /// 맥은 상자 탭(BoxTabView), 아이폰·아이패드는 목록에서 하나씩 들어간다.
@@ -89,15 +94,23 @@ struct TerminalTextForm: View {
             }
             Section("서체") {
                 Picker("서체", selection: $fontFamily) {
-                    ForEach(TerminalSettings.monospacedFamilies, id: \.self) { f in
-                        Text(f.isEmpty ? "SF Mono (시스템)" : f).tag(f)
+                    let all = TerminalSettings.monospacedFamilies
+                    Text(TerminalSettings.familyTitle("")).tag("")
+                    // 앱에 넣은 글꼴 → 이 기기 글꼴 (구분선으로 나눔)
+                    Divider()
+                    ForEach(all.filter { TerminalSettings.bundledFamilies.contains($0) }, id: \.self) { f in
+                        Text(TerminalSettings.familyTitle(f)).tag(f)
+                    }
+                    Divider()
+                    ForEach(all.filter { !$0.isEmpty && !TerminalSettings.bundledFamilies.contains($0) }, id: \.self) { f in
+                        Text(TerminalSettings.familyTitle(f)).tag(f)
                     }
                 }
                 Stepper(value: $fontSize, in: 8...32, step: 1) {
                     LabeledContent("크기", value: "\(Int(fontSize))pt")
                 }
-                Text("가나다 ABC abc 0123 ~/.ssh $")
-                    .font(previewFont)
+                // 터미널처럼 칸에 맞춰 그린다 (한글은 2칸 가운데 — 글꼴에 한글이 없으면 글자 사이가 벌어져 보이는 것까지 같게)
+                TerminalCellText(text: "가나다 ABC abc 0123 ~/.ssh $", family: fontFamily, size: fontSize)
                     .foregroundStyle(Color(hex: textColor))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
@@ -139,9 +152,6 @@ struct TerminalTextForm: View {
         #endif
     }
 
-    private var previewFont: Font {
-        fontFamily.isEmpty ? .system(size: fontSize, design: .monospaced) : .custom(fontFamily, size: fontSize)
-    }
 
     private func resetColors() {
         background = D.background; opacity = 1; fontFamily = ""; fontSize = 13
@@ -321,5 +331,40 @@ struct TerminalAdvancedForm: View {
         #if os(macOS)
         .formStyle(.grouped)
         #endif
+    }
+}
+
+/// 터미널 칸에 맞춰 글자를 늘어놓는다 (서체 미리보기): 한 칸 = "W" 너비, 한글·한자는 2칸 가운데
+struct TerminalCellText: View {
+    let text: String
+    let family: String
+    let size: Double
+
+    var body: some View {
+        let cell = Self.cellWidth(family: family, size: size)
+        HStack(spacing: 0) {
+            ForEach(Array(text.enumerated()), id: \.offset) { _, ch in
+                Text(String(ch))
+                    .font(font)
+                    .fixedSize()
+                    .frame(width: CGFloat(TerminalSettings.cellCount(String(ch))) * cell)
+            }
+        }
+    }
+
+    private var font: Font {
+        _ = TerminalSettings.registerBundledFonts
+        return family.isEmpty ? .system(size: size, design: .monospaced) : .custom(family, size: size)
+    }
+
+    static func cellWidth(family: String, size: Double) -> CGFloat {
+        _ = TerminalSettings.registerBundledFonts
+        #if canImport(AppKit)
+        let f = (family.isEmpty ? nil : NSFont(name: family, size: size)) ?? .monospacedSystemFont(ofSize: size, weight: .regular)
+        #else
+        let f = (family.isEmpty ? nil : UIFont(name: family, size: size)) ?? .monospacedSystemFont(ofSize: size, weight: .regular)
+        #endif
+        let w = ("W" as NSString).size(withAttributes: [.font: f]).width
+        return (w * 2).rounded() / 2
     }
 }

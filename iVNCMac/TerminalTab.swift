@@ -33,7 +33,7 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, TerminalViewD
     /// 파인더 (처음 볼 때 만든다)
     private(set) lazy var files = FileSession(tab: self)
 
-    let view: TerminalView
+    let view: IMETerminalView
     private var shell: SSHShell?
     /// 파인더가 같은 접속에 SFTP·명령 채널을 연다
     var sshShell: SSHShell? { state == .connected ? shell : nil }
@@ -56,7 +56,7 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, TerminalViewD
         let options = TerminalOptions(cols: 80, rows: 24,
                                       termName: d.string(forKey: K.termType) ?? "xterm-256color",
                                       scrollback: limited ? lines : 1_000_000)
-        view = TerminalView(frame: NSRect(x: 0, y: 0, width: 720, height: 440), font: Self.font(), options: options)
+        view = IMETerminalView(frame: NSRect(x: 0, y: 0, width: 720, height: 440), font: Self.font(), options: options)
         super.init()
         view.terminalDelegate = self
         applySettings()
@@ -67,6 +67,7 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, TerminalViewD
     static func font() -> NSFont {
         let d = UserDefaults.standard
         let size = CGFloat(d.object(forKey: TerminalSettings.fontSize) as? Double ?? 13)
+        _ = TerminalSettings.registerBundledFonts
         let family = d.string(forKey: TerminalSettings.fontFamily) ?? ""
         if !family.isEmpty, let f = NSFont(name: family, size: size) { return f }
         return NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
@@ -110,7 +111,7 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, TerminalViewD
     var jumps: [Computer] = []
 
     /// 키체인에서 이 서버의 로그인 수단 (실패하면 안내 글)
-    private static func auth(for c: Computer) -> Result<SSHShell.Auth, AuthMessage> {
+    static func auth(for c: Computer) -> Result<SSHShell.Auth, AuthMessage> {
         let who = c.name
         if c.sshAuth == .key {
             guard let file = Keychain.sshKey(for: c.id) else { return .failure(.init(text: "\(who): 저장된 SSH 키가 없습니다. 서버 편집에서 키를 골라 주세요.")) }
@@ -148,10 +149,14 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, TerminalViewD
             self.hostKeyAnswer = answer
             self.hostKeyQuestion = q
         }
-        s.onData = { [weak self] bytes in self?.view.feed(byteArray: bytes[...]) }
+        s.onData = { [weak self] bytes in
+            self?.view.feed(byteArray: bytes[...])
+            self?.view.echoArrived()
+        }
         s.onConnected = { [weak self] in
             guard let self else { return }
             self.state = .connected
+            if self.osc7Path == nil && self.titlePath == nil { self.refreshDirectory(after: 1.5) }
             let cmd = (d.string(forKey: TerminalSettings.startupCommand) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             if !cmd.isEmpty { self.shell?.send(Array((cmd + "\r").utf8)[...]) }
         }
@@ -176,6 +181,7 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, TerminalViewD
     }
 
     func disconnect() {
+        directoryPoll?.cancel()
         if mode == .files || filesStarted { files.close() }
         shell?.onClose = nil
         shell?.close()
@@ -199,6 +205,41 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, TerminalViewD
         case .close: onRequestClose?(self)
         case .closeIfClean: if (status ?? 0) == 0 { onRequestClose?(self) }
         case .keep: break
+        }
+    }
+
+    // MARK: 지금 폴더 (탭에 작게)
+
+    /// 서버에 물어본 지금 폴더 (OSC 7·창 제목에 경로가 없는 셸일 때)
+    @Published private(set) var polledDirectory: String?
+    private var directoryPoll: Task<Void, Never>?
+
+    /// 탭에 작게 보일 지금 폴더: OSC 7 → 셸이 붙인 창 제목("root@sun: /var/www", 우분투 기본) → 엔터 뒤 서버에 물어본 값.
+    /// 홈은 ~ 로 줄인다
+    var workingDirectory: String? {
+        guard let path = osc7Path ?? titlePath ?? polledDirectory else { return nil }
+        let home = computer.username == "root" ? "/root" : "/home/\(computer.username)"
+        if path == home { return "~" }
+        if path.hasPrefix(home + "/") { return "~" + path.dropFirst(home.count) }
+        return path
+    }
+
+    private var osc7Path: String? { directory.flatMap { URL(string: $0)?.path }.flatMap { $0.isEmpty ? nil : $0 } }
+
+    private var titlePath: String? {
+        guard let r = remoteTitle.range(of: ": ", options: .backwards) else { return nil }
+        let p = String(remoteTitle[r.upperBound...]).trimmingCharacters(in: .whitespaces)
+        return p.hasPrefix("/") || p.hasPrefix("~") ? p : nil
+    }
+
+    /// 잠깐 뒤 서버에 지금 폴더를 묻는다 (명령마다 묻지 않게 엔터 뒤 0.8초 모아서)
+    private func refreshDirectory(after seconds: Double) {
+        directoryPoll?.cancel()
+        directoryPoll = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(seconds))
+            guard !Task.isCancelled, let shell = self?.sshShell else { return }
+            let st = await shell.currentState()
+            if !Task.isCancelled, let d = st.directory { self?.polledDirectory = d }
         }
     }
 
@@ -232,7 +273,11 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, TerminalViewD
     }
 
     nonisolated func send(source: TerminalView, data: ArraySlice<UInt8>) {
-        MainActor.assumeIsolated { shell?.send(data) }
+        MainActor.assumeIsolated {
+            shell?.send(data)
+            // 엔터를 쳤고 셸이 폴더를 알려 주지 않으면 (cd 했을 수 있으니) 서버에 묻는다
+            if data.contains(13) && osc7Path == nil && titlePath == nil { refreshDirectory(after: 0.8) }
+        }
     }
 
     nonisolated func scrolled(source: TerminalView, position: Double) {}
