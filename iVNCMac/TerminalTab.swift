@@ -8,6 +8,9 @@ struct TerminalWindowRequest: Codable, Hashable {
     var computer: UUID
     /// 다른 창에서 떼어 낸 탭 (있으면 새로 접속하지 않고 그 탭을 받는다)
     var adopt: UUID? = nil
+    /// 새 창(⌘N)을 이 폴더에서, root 셸이면 sudo -s 로
+    var directory: String? = nil
+    var asRoot = false
 }
 
 /// 터미널 탭 하나 = SSH 접속 하나 + SwiftTerm 화면 하나 (탭을 옮기거나 숨겨도 화면은 살려 둔다)
@@ -295,6 +298,13 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, TerminalViewD
         if path == home { return "~" }
         if path.hasPrefix(home + "/") { return "~" + path.dropFirst(home.count) }
         return path
+    }
+
+    /// 닫은 탭 다시 열기(⌘⇧T)에 쓸 자리: 폴더(절대 경로만) + root 셸이었는지
+    var restorePoint: (directory: String?, asRoot: Bool) {
+        let dir = [osc7Path, titlePath, foreground?.directory].compactMap { $0 }.first { $0.hasPrefix("/") }
+        let root = foreground.map { $0.otherUser && $0.uid == 0 } ?? false
+        return (dir, root)
     }
 
     private var osc7Path: String? { directory.flatMap { URL(string: $0)?.path }.flatMap { $0.isEmpty ? nil : $0 } }

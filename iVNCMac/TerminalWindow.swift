@@ -113,6 +113,7 @@ final class TerminalWindowModel: ObservableObject {
 
     func close(_ tab: TerminalTab) {
         guard let i = paneIndex(of: tab), let j = panes[i].tabs.firstIndex(where: { $0.id == tab.id }) else { return }
+        ClosedTabs.shared.remember(tab, in: self)
         tab.disconnect()
         tabWatchers[tab.id] = nil
         panes[i].tabs.remove(at: j)
@@ -128,7 +129,8 @@ final class TerminalWindowModel: ObservableObject {
     }
 
     func closeAll() {
-        for t in allTabs { t.disconnect() }
+        // 창을 닫을 때도 그 탭들을 기억한다 (⌘⇧T 로 하나씩 다시 열기)
+        for t in allTabs { ClosedTabs.shared.remember(t, in: self); t.disconnect() }
     }
 
     /// 탭 옮기기: 같은 칸 안 순서 바꾸기, 또는 다른 칸으로 (before 앞에, 없으면 끝에)
@@ -179,6 +181,14 @@ final class TerminalWindowModel: ObservableObject {
         return allTabs.first { $0.computer.id == c.id }
     }
 
+    /// ⌘[ · ⌘]: 초점 칸에서 이전·다음 탭 (끝에서 돌아간다)
+    func selectNeighbor(_ delta: Int) {
+        guard panes.indices.contains(focused) else { return }
+        let tabs = panes[focused].tabs
+        guard tabs.count > 1, let i = tabs.firstIndex(where: { $0.id == panes[focused].active }) else { return }
+        select(tabs[(i + delta + tabs.count) % tabs.count])
+    }
+
     func paneIndex(id: UUID) -> Int? { panes.firstIndex { $0.id == id } }
 
     func paneIndex(of tab: TerminalTab) -> Int? { panes.firstIndex { $0.tabs.contains { $0.id == tab.id } } }
@@ -194,6 +204,7 @@ struct TerminalWindowView: View {
     let request: TerminalWindowRequest
     @EnvironmentObject private var store: ComputerStore
     @Environment(\.dismissWindow) private var dismissWindow
+    @Environment(\.openWindow) private var openWindow
     @StateObject private var model = TerminalWindowModel()
     /// 사이드바를 펼쳤는지 (창마다 기억, 새 창은 펼침)
     @SceneStorage("terminal.sidebar") private var sidebarShown = true
@@ -242,7 +253,6 @@ struct TerminalWindowView: View {
                     Button("새 탭", systemImage: "plus") {
                         if let t = model.activeTab { model.openLike(t) }
                     }
-                    .keyboardShortcut("t")
                     .help("같은 서버 새 탭 (⌘T)")
                 }
             }
@@ -250,15 +260,8 @@ struct TerminalWindowView: View {
         .background(WindowGrabber { [weak model] w in model?.window = w })
         .navigationTitle(model.activeTab?.displayTitle ?? "SSH")
         .toolbar(removing: .title)
-        // ⌘W = 지금 탭 닫기 (마지막 탭이면 창도 닫힌다). 도구 막대에 숨겨 두면 빈 칸이 생겨 버튼이 오른쪽 끝에 안 붙었다
-        .background {
-            Group {
-                Button("탭 닫기") { if let t = model.activeTab { model.close(t) } }.keyboardShortcut("w")
-                Button("터미널") { model.activeTab?.setMode(.terminal) }.keyboardShortcut("1")
-                Button("파인더") { if let t = model.activeTab { Task { await t.requestFiles() } } }.keyboardShortcut("2")
-            }
-            .opacity(0).allowsHitTesting(false).accessibilityHidden(true)
-        }
+        // 단축키는 메뉴 막대에 (TerminalMenus.swift): 이 창이 앞에 있을 때 할 일을 넘긴다
+        .focusedSceneValue(\.terminalCommands, commands)
         .alert("지금 셸에서는 파인더로 바꿀 수 없습니다", isPresented: Binding(get: { blockedTab != nil }, set: { if !$0 { blockedTab?.filesBlocked = nil } })) {
             Button("확인", role: .cancel) { blockedTab?.filesBlocked = nil }
         } message: {
@@ -279,12 +282,41 @@ struct TerminalWindowView: View {
             model.jumpChain = { [store] c in store.jumpChain(for: c) }
             if model.allTabs.isEmpty, let id = request.adopt, let tab = TabTransfer.pending.removeValue(forKey: id) {
                 model.adopt(tab)
-            } else if model.allTabs.isEmpty, let c = store.computers.first(where: { $0.id == request.computer }) { model.open(c) }
+            } else if model.allTabs.isEmpty, let c = store.computers.first(where: { $0.id == request.computer }) {
+                model.open(c, directory: request.directory, asRoot: request.asRoot)
+            }
         }
         .onDisappear { model.closeAll() }
         .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
             // 설정 > SSH 를 바꾸면 열린 터미널에 바로
             for t in model.allTabs { t.applySettings() }
+        }
+    }
+
+    private var commands: TerminalCommands {
+        TerminalCommands(
+            newTab: { if let t = model.activeTab { model.openLike(t) } },
+            newWindow: { newWindow() },
+            closeTab: { if let t = model.activeTab { model.close(t) } },
+            showTerminal: { model.activeTab?.setMode(.terminal) },
+            showFiles: { if let t = model.activeTab { Task { await t.requestFiles() } } },
+            moveTab: { model.selectNeighbor($0) },
+            reconnect: { if let t = model.activeTab { t.disconnect(); t.connect() } },
+            hasTab: model.activeTab != nil,
+            tabCount: model.panes.indices.contains(model.focused) ? model.panes[model.focused].tabs.count : 0)
+    }
+
+    /// ⌘N: 같은 서버를 새 창으로, 지금 폴더에서 (root 셸이면 sudo -s) — ⌘T 와 같은 규칙
+    private func newWindow() {
+        guard let t = model.activeTab else { return }
+        let osc7 = t.directory.flatMap { URL(string: $0)?.path }.flatMap { $0.isEmpty ? nil : $0 }
+        guard let shell = t.sshShell else {
+            openWindow(id: "terminal", value: TerminalWindowRequest(computer: t.computer.id))
+            return
+        }
+        Task {
+            let st = await shell.currentState()
+            openWindow(id: "terminal", value: TerminalWindowRequest(computer: t.computer.id, directory: osc7 ?? st.directory, asRoot: st.root))
         }
     }
 
@@ -710,5 +742,37 @@ private struct SidebarRow: View {
         let user = computer.username.isEmpty ? "" : computer.username + "@"
         let port = computer.port == Computer.Kind.ssh.defaultPort ? "" : ":\(computer.port)"
         return user + computer.host + port
+    }
+}
+
+/// 최근 닫은 탭 (⌘⇧T 로 마지막 것부터 다시 연다, 사용자 2026-11-21).
+/// 셸은 닫으면 서버에서 끝나서 되살릴 수 없다 → 같은 서버를 그 폴더에서 새로 연다 (root 셸이었으면 sudo -s, ⌘T 와 같은 규칙)
+@MainActor
+final class ClosedTabs: ObservableObject {
+    static let shared = ClosedTabs()
+    struct Entry {
+        let computer: Computer
+        let directory: String?
+        let asRoot: Bool
+        weak var window: TerminalWindowModel?
+    }
+    @Published private(set) var entries: [Entry] = []
+    static let limit = 10
+
+    func remember(_ tab: TerminalTab, in model: TerminalWindowModel) {
+        let p = tab.restorePoint
+        entries.append(Entry(computer: tab.computer, directory: p.directory, asRoot: p.asRoot, window: model))
+        if entries.count > Self.limit { entries.removeFirst(entries.count - Self.limit) }
+    }
+
+    /// 마지막에 닫은 탭을 다시 연다. 그 창이 살아 있으면 그 창에, 아니면 새 창으로
+    func reopen(openWindow: OpenWindowAction) {
+        guard let e = entries.popLast() else { return }
+        if let m = e.window, !m.allTabs.isEmpty, let w = m.window, w.isVisible {
+            m.open(e.computer, directory: e.directory, asRoot: e.asRoot)
+            w.makeKeyAndOrderFront(nil)
+        } else {
+            openWindow(id: "terminal", value: TerminalWindowRequest(computer: e.computer.id, directory: e.directory, asRoot: e.asRoot))
+        }
     }
 }

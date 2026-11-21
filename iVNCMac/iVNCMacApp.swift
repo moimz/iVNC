@@ -41,6 +41,7 @@ struct iVNCMacApp: App {
             }
         }
         .defaultSize(width: 760, height: 480)
+        .commands { TerminalMenus() }
 
         Settings {
             MacSettingsView()
