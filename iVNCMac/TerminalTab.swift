@@ -159,8 +159,21 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, TerminalViewD
             self.hostKeyQuestion = q
         }
         s.onData = { [weak self] bytes in
-            self?.view.feed(byteArray: bytes[...])
-            self?.view.echoArrived()
+            guard let self else { return }
+            // 앱이 셸에 넣은 한 줄(통로 만들기)의 에코는 그리지 않는다: 첫 줄바꿈까지 버리고, 옛 프롬프트 줄을 지운 뒤
+            // 나머지(새 프롬프트)를 그 자리에 그린다 → 화면이 그대로 (사용자: 명령어가 보이는데 괜찮아?)
+            if let until = self.hideEchoUntil {
+                if Date() < until {
+                    guard let i = bytes.firstIndex(of: 0x0a) else { return }
+                    self.hideEchoUntil = nil
+                    self.view.feed(text: "\r\u{1b}[2K")
+                    if i + 1 < bytes.count { self.view.feed(byteArray: bytes[(i + 1)...]) }
+                    return
+                }
+                self.hideEchoUntil = nil
+            }
+            self.view.feed(byteArray: bytes[...])
+            self.view.echoArrived()
         }
         s.onConnected = { [weak self] in
             guard let self else { return }
@@ -172,6 +185,15 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, TerminalViewD
         s.onClose = { [weak self] error, status in self?.closed(error: error, status: status) }
         shell = s
         s.connect(cols: size.cols, rows: size.rows, keepAlive: d.object(forKey: TerminalSettings.keepAlive) as? Bool ?? true)
+    }
+
+    /// 앱이 셸에 한 줄 넣은 뒤 그 에코를 숨기는 동안 (넉넉히 2초)
+    private var hideEchoUntil: Date?
+
+    /// 셸에 앱이 만든 한 줄을 넣는다 (에코는 화면에 안 그림)
+    private func sendHidden(_ line: String) {
+        hideEchoUntil = Date().addingTimeInterval(2)
+        shell?.send(Array(line.utf8)[...])
     }
 
     /// 파인더를 한 번이라도 열었는지 (닫을 때 SFTP 도 닫는다)
@@ -210,20 +232,85 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, TerminalViewD
             // 그 셸에 한 줄 넣는 동안 사용자 입력을 막는다 (섞이지 않게)
             view.inputLocked = true
             let token = (UUID().uuidString + UUID().uuidString).replacingOccurrences(of: "-", with: "").lowercased()
-            shell.send(Array(Self.helperCommand(token: token, login: computer.username).utf8)[...])
+            sendHidden(Self.helperCommand(token: token, login: computer.username))
             files.useIdentity(user: f.user, bridge: Self.bridgeCommand(token: token))
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.view.inputLocked = false }
         }
         setMode(.files)
     }
 
-    /// 다른 사용자 셸에 넣는 한 줄: 무작위 폴더에 통로(FIFO) 둘을 만들고 그 셸 사용자로 sftp-server 를 띄운다.
+    // MARK: MCP root 실행 (사용자가 sudo su 해 둔 셸을 빌린다)
+
+    enum RootShellState: Equatable {
+        /// root 셸이 셸 프롬프트에서 비어 있음 → 빌릴 수 있다
+        case ready
+        /// root 셸이지만 지금은 못 씀 (이유)
+        case busy(String)
+        /// root 셸 아님
+        case notRoot
+        /// 모름 (접속 안 됨·리눅스 아님)
+        case unknown
+    }
+
+    /// 이 탭 앞쪽이 sudo su 등으로 들어간 root 셸인지 (서버에 물어본다)
+    func rootShellState() async -> RootShellState {
+        guard let shell = sshShell, let f = await shell.foreground() else { return .unknown }
+        foreground = f
+        guard f.uid == 0 && f.otherUser else { return .notRoot }
+        if !f.isShell { return .busy("터미널 앞에서 \(f.comm) 실행 중") }
+        if !promptIsEmpty() { return .busy("프롬프트에 입력하다 만 명령이 있음") }
+        return .ready
+    }
+
+    private struct Blocked: LocalizedError { let errorDescription: String? }
+
+    /// root 셸에 한 줄 넣어 통로를 만든다 (그동안 사용자 입력을 막는다). 통로 이름(token)을 돌려준다
+    private func injectRootHelper(_ make: (String) -> String) async throws -> (SSHShell, String) {
+        // 바로 앞 요청의 통로 한 줄이 아직 처리 중이면 잠깐 다르게 보일 수 있어 몇 번 다시 본다
+        var st = await rootShellState()
+        for _ in 0..<3 where st != .ready {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            st = await rootShellState()
+        }
+        guard st == .ready, let shell = sshShell else {
+            switch st {
+            case .busy(let why): throw Blocked(errorDescription: "\(computer.name) root 셸을 지금 쓸 수 없습니다: \(why).")
+            case .unknown: throw Blocked(errorDescription: "\(computer.name) 터미널의 셸 상태를 알 수 없습니다 (접속이 끊겼거나 서버가 답하지 않음).")
+            default: throw Blocked(errorDescription: "\(computer.name) 터미널이 지금 root 셸이 아닙니다 (exit 했나요?).")
+            }
+        }
+        view.inputLocked = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.view.inputLocked = false }
+        let token = (UUID().uuidString + UUID().uuidString).replacingOccurrences(of: "-", with: "").lowercased()
+        sendHidden(make(token))
+        return (shell, token)
+    }
+
+    /// root 셸이 띄운 bash 로 스크립트를 돌린다 (사용자 화면에는 통로 만드는 한 줄만, 명령·출력은 안 보임).
+    /// 결과의 stderr 끝에 "__IVNC_RC=종료코드" 줄이 붙는다
+    func rootExec(_ script: String, timeout: Int) async throws -> SSHShell.ExecResult {
+        let login = computer.username
+        let (shell, token) = try await injectRootHelper { token in
+            let d = "/tmp/.ivnc-\(token)"
+            let body = "d=\(d); mkdir -m 711 $d && mkfifo -m 600 $d/i $d/o $d/e && chown '\(login)' $d/i $d/o $d/e && "
+                + "b=$(command -v bash || echo sh) && ($b -s <$d/i >$d/o 2>$d/e &); sleep 3; rm -rf $d"
+            return " ( ( \(body) ) >/dev/null 2>&1 & )\r"
+        }
+        let d = "/tmp/.ivnc-\(token)"
+        let b64 = Data(script.utf8).base64EncodedString()
+        let bridge = "d=\(d); i=0; while [ ! -p $d/e ] && [ $i -lt 25 ]; do sleep 0.1; i=$((i+1)); done; "
+            + "cat $d/o & cat $d/e >&2 & printf '%s' '\(b64)' | base64 -d > $d/i; wait"
+        return try await shell.execFull(bridge, timeout: timeout)
+    }
+
+    /// 다른 사용자 셸에 넣는 한 줄:무작위 폴더에 통로(FIFO) 둘을 만들고 그 셸 사용자로 sftp-server 를 띄운다.
     /// 앞 공백 = bash 기록에 안 남김(ignorespace), 바깥 ( … & ) = 작업 번호 글이 안 뜸.
     /// root 면 통로 주인을 로그인 계정으로 바꿔 둘만 쓰고, 아니면 666 + 남이 목록을 못 보는 폴더(711) + 3초 뒤 이름 지움
     private static func helperCommand(token: String, login: String) -> String {
         let d = "/tmp/.ivnc-\(token)"
-        let body = "d=\(d); mkdir -m 711 $d && mkfifo -m 600 $d/i $d/o && { chown '\(login)' $d/i $d/o 2>/dev/null || chmod 666 $d/i $d/o; } && "
-            + "for s in /usr/lib/openssh/sftp-server /usr/libexec/openssh/sftp-server /usr/lib/ssh/sftp-server /usr/libexec/sftp-server; do [ -x $s ] && break; done; "
+        // sftp-server 가 없으면(시놀로지 등 sshd 내장 SFTP 만 쓰는 서버) 통로를 만들지 않는다 → 잇는 쪽이 기다리지 않고 바로 실패
+        let body = "d=\(d); for s in /usr/lib/openssh/sftp-server /usr/libexec/openssh/sftp-server /usr/lib/ssh/sftp-server /usr/libexec/sftp-server /usr/lib/sftp-server /usr/libexec/ssh/sftp-server; do [ -x $s ] && break; done; "
+            + "[ -x $s ] && mkdir -m 711 $d && mkfifo -m 600 $d/i $d/o && { chown '\(login)' $d/i $d/o 2>/dev/null || chmod 666 $d/i $d/o; } && "
             + "($s <$d/i >$d/o 2>/dev/null &); sleep 3; rm -rf $d"
         return " ( ( \(body) ) >/dev/null 2>&1 & )\r"
     }

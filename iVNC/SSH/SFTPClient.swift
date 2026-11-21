@@ -19,6 +19,8 @@ final class SFTPClient {
         var size: UInt64?
         var permissions: UInt32?
         var mtime: UInt32?
+        var uid: UInt32?
+        var gid: UInt32?
         var isDirectory: Bool { (permissions ?? 0) & 0o170000 == 0o040000 }
         var isSymlink: Bool { (permissions ?? 0) & 0o170000 == 0o120000 }
         var modified: Date? { mtime.map { Date(timeIntervalSince1970: TimeInterval($0)) } }
@@ -55,6 +57,8 @@ final class SFTPClient {
     /// 한 번에 읽고 쓰는 크기
     private(set) var readChunk = 32 * 1024
     private(set) var writeChunk = 32 * 1024
+    /// 서버가 알려 준 확장 (posix-rename@openssh.com 등)
+    private(set) var extensions: [String: String] = [:]
     /// 동시에 보내 두는 요청 바이트 (SSH 채널 창 8MB 를 넘지 않게)
     let bytesInFlight = 6 * 1024 * 1024
 
@@ -66,6 +70,22 @@ final class SFTPClient {
     /// 채널에 sftp 를 열고 버전을 맞춘다
     /// command 가 있으면 sftp 서브시스템 대신 그 명령(표준 입출력이 sftp-server 에 이어진 것)으로 연다
     static func start(on child: Channel, command: String? = nil) -> EventLoopFuture<SFTPClient> {
+        // 서버가 SFTP 에 답하지 않으면(시놀로지에서 SFTP 를 꺼 둔 경우 등) 끝없이 기다리지 않게 10초 뒤 닫는다
+        var finished = false
+        var timedOut = false
+        let timer = child.eventLoop.scheduleTask(in: .seconds(10)) {
+            if !finished { timedOut = true; child.close(promise: nil) }
+        }
+        return open(on: child, command: command).always { _ in
+            finished = true
+            timer.cancel()
+        }.flatMapErrorThrowing { error in
+            if timedOut { throw Failure(code: 99, message: "이 서버는 SFTP 에 응답하지 않습니다 (SFTP 가 꺼져 있을 수 있습니다).") }
+            throw error
+        }
+    }
+
+    private static func open(on child: Channel, command: String?) -> EventLoopFuture<SFTPClient> {
         child.pipeline.handler(type: SFTPHandler.self).flatMap { h in
             let client = SFTPClient(channel: child, handler: h)
             let request: Any = command.map { SSHChannelRequestEvent.ExecRequest(command: $0, wantReply: true) }
@@ -73,6 +93,7 @@ final class SFTPClient {
             return child.triggerUserOutboundEvent(request)
                 .flatMap { h.sendInit() }
                 .flatMap { exts -> EventLoopFuture<SFTPClient> in
+                    client.extensions = exts
                     guard exts["limits@openssh.com"] != nil else { return child.eventLoop.makeSucceededFuture(client) }
                     return h.request(200) { $0.writeSSHString("limits@openssh.com") }.map { r in
                         if case .extended(var b) = r,
@@ -129,6 +150,34 @@ final class SFTPClient {
     func remove(_ path: String) async throws { try await simple(13) { $0.writeSSHString(path) } }
     func rename(_ from: String, to: String) async throws { try await simple(18) { $0.writeSSHString(from); $0.writeSSHString(to) } }
 
+    /// 있는 파일 위로 바꿔치기 (OpenSSH posix-rename: 한 번에 바뀌어 중간에 빈 순간이 없다). 확장이 없으면 지우고 이름 바꾸기
+    func replace(_ from: String, to: String) async throws {
+        if extensions["posix-rename@openssh.com"] != nil {
+            try await simple(200) { $0.writeSSHString("posix-rename@openssh.com"); $0.writeSSHString(from); $0.writeSSHString(to) }
+        } else {
+            try? await remove(to)
+            try await rename(from, to: to)
+        }
+    }
+
+    /// 권한·소유자 바꾸기 (nil 은 그대로). 소유자는 숫자 uid/gid
+    func setstat(_ path: String, permissions: UInt32? = nil, uid: UInt32? = nil, gid: UInt32? = nil) async throws {
+        var flags: UInt32 = 0
+        if uid != nil || gid != nil { flags |= 0x2 }
+        if permissions != nil { flags |= 0x4 }
+        guard flags != 0 else { return }
+        var u = uid, g = gid
+        if flags & 0x2 != 0, u == nil || g == nil {
+            let cur = try await stat(path)
+            u = u ?? cur.uid; g = g ?? cur.gid
+        }
+        try await simple(9) { b in
+            b.writeSSHString(path); b.writeInteger(flags)
+            if flags & 0x2 != 0 { b.writeInteger(u ?? 0); b.writeInteger(g ?? 0) }
+            if let p = permissions { b.writeInteger(p & 0o7777) }
+        }
+    }
+
     /// 폴더째 지우기 (안쪽부터)
     func removeRecursive(_ e: Entry) async throws {
         if e.isDirectory && !e.attrs.isSymlink {
@@ -156,14 +205,15 @@ final class SFTPClient {
     }
 
     /// local 파일을 서버에 올린다
-    func upload(_ local: URL, to remote: String, progress: @escaping (Int) -> Void, isCancelled: @escaping () -> Bool) async throws {
+    /// createMode: 새로 만들 때 권한 (개인 키처럼 남이 보면 안 되는 파일은 처음부터 600 으로)
+    func upload(_ local: URL, to remote: String, createMode: UInt32? = nil, progress: @escaping (Int) -> Void, isCancelled: @escaping () -> Bool) async throws {
         let fd = Darwin.open(local.path, O_RDONLY)
         guard fd >= 0 else { throw CocoaError(.fileReadNoPermission) }
         defer { Darwin.close(fd) }
         var st = Darwin.stat()
         fstat(fd, &st)
         // 쓰기 + 만들기 + 비우기
-        let h = try await open(remote, flags: 0x02 | 0x08 | 0x10)
+        let h = try await open(remote, flags: 0x02 | 0x08 | 0x10, mode: createMode)
         defer { closeHandle(h) }
         let job = UploadJob(client: self, handle: h, fd: fd, size: Int(st.st_size), progress: progress, isCancelled: isCancelled)
         try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
@@ -186,9 +236,10 @@ final class SFTPClient {
         }
     }
 
-    fileprivate func open(_ path: String, flags: UInt32) async throws -> ByteBuffer {
+    fileprivate func open(_ path: String, flags: UInt32, mode: UInt32? = nil) async throws -> ByteBuffer {
         let r = try await handler.request(3) { b in
-            b.writeSSHString(path); b.writeInteger(flags); b.writeInteger(UInt32(0)) // 속성 없음
+            b.writeSSHString(path); b.writeInteger(flags)
+            if let mode { b.writeInteger(UInt32(0x4)); b.writeInteger(mode & 0o7777) } else { b.writeInteger(UInt32(0)) } // 속성
         }.get()
         guard case .handle(let h) = r else { throw Self.fail(r) }
         return h
@@ -535,7 +586,7 @@ final class SFTPHandler: ChannelDuplexHandler {
         var a = SFTPClient.Attrs()
         guard let flags = p.readInteger(as: UInt32.self) else { return a }
         if flags & 0x1 != 0 { a.size = p.readInteger(as: UInt64.self) }
-        if flags & 0x2 != 0 { _ = p.readInteger(as: UInt32.self); _ = p.readInteger(as: UInt32.self) }
+        if flags & 0x2 != 0 { a.uid = p.readInteger(as: UInt32.self); a.gid = p.readInteger(as: UInt32.self) }
         if flags & 0x4 != 0 { a.permissions = p.readInteger(as: UInt32.self) }
         if flags & 0x8 != 0 { _ = p.readInteger(as: UInt32.self); a.mtime = p.readInteger(as: UInt32.self) }
         if flags & 0x8000_0000 != 0, let n = p.readInteger(as: UInt32.self) {

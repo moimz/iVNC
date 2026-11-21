@@ -29,6 +29,13 @@ struct ComputerEditView: View {
     @State private var encoding = SSHEncoding.defaultID
     @State private var color = ServerColor.none
     @State private var jump: UUID?
+    /// SSH 접속 시험 (맥: 아래 막대 왼쪽)
+    @State private var test: TestState = .idle
+    @State private var testShell: SSHShell?
+    @State private var testHostKey: (q: SSHShell.HostKeyQuestion, answer: (Bool) -> Void)?
+    @State private var testDetail: String?
+
+    enum TestState: Equatable { case idle, testing, ok(String), failed }
 
     var body: some View {
         NavigationStack {
@@ -43,7 +50,13 @@ struct ComputerEditView: View {
                 .inlineTitle()
                 #endif
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("취소") { dismiss() } }
+                    #if os(macOS)
+                    // 맥 시트 아래 막대: destructiveAction 자리가 왼쪽 끝 (취소·저장은 오른쪽)
+                    if kind == .ssh {
+                        ToolbarItem(placement: .destructiveAction) { testButton }
+                    }
+                    #endif
+                    ToolbarItem(placement: .cancellationAction) { Button("취소") { testShell?.close(); dismiss() } }
                     ToolbarItem(placement: .confirmationAction) {
                         Button("저장") { save() }.disabled(host.trimmingCharacters(in: .whitespaces).isEmpty || needsKey)
                     }
@@ -68,6 +81,25 @@ struct ComputerEditView: View {
                     takeKey(url)
                 }
                 #endif
+                .alert("서버 지문 확인", isPresented: Binding(get: { testHostKey != nil }, set: { if !$0 { testHostKey?.answer(false); testHostKey = nil } })) {
+                    Button("믿고 계속") { testHostKey?.answer(true); testHostKey = nil }
+                    Button("취소", role: .cancel) { testHostKey?.answer(false); testHostKey = nil }
+                } message: {
+                    if let q = testHostKey?.q {
+                        Text((q.changed ? "⚠️ 서버 지문이 예전과 다릅니다. 중간에서 누가 가로채는 것일 수 있습니다.\n\n" : "처음 접속하는 서버입니다.\n\n")
+                             + "\(q.host)\n\(q.keyType) \(q.fingerprint)")
+                    }
+                }
+                .alert("접속하지 못했습니다", isPresented: Binding(get: { testDetail != nil }, set: { if !$0 { testDetail = nil } })) {
+                    Button("확인", role: .cancel) {}
+                } message: {
+                    Text(testDetail ?? "")
+                }
+                .onChange(of: host) { test = .idle }
+                .onChange(of: port) { test = .idle }
+                .onChange(of: username) { test = .idle }
+                .onChange(of: sshAuth) { test = .idle }
+                .onDisappear { testShell?.close() }
                 .alert("SSH 키를 쓸 수 없습니다", isPresented: Binding(get: { keyError != nil }, set: { if !$0 { keyError = nil } })) {
                     Button("확인", role: .cancel) {}
                 } message: {
@@ -296,6 +328,105 @@ struct ComputerEditView: View {
                 .labelsHidden()
                 .multilineTextAlignment(.trailing)
         }
+    }
+
+    // MARK: 접속 시험
+
+    @ViewBuilder private var testButton: some View {
+        HStack(spacing: 8) {
+            // 결과 글이 붙어도 버튼이 늘어나지 않게 (막대가 남는 폭을 이 묶음에 줘서 버튼이 길어졌다, 사용자)
+            Button("접속 시험") { runTest() }
+                .fixedSize()
+                .disabled(test == .testing || host.trimmingCharacters(in: .whitespaces).isEmpty || username.trimmingCharacters(in: .whitespaces).isEmpty || needsKey)
+            switch test {
+            case .idle: EmptyView()
+            case .testing: ProgressView().controlSize(.small)
+            case .ok(let who):
+                Label(who, systemImage: "checkmark.circle.fill").foregroundStyle(.green).labelStyle(.titleAndIcon)
+                    .fixedSize()
+                    .help(testHost)
+            case .failed:
+                Button { testDetail = lastTestError } label: {
+                    Label("실패", systemImage: "xmark.circle.fill").foregroundStyle(.red)
+                }
+                .buttonStyle(.plain)
+                .fixedSize()
+                .help(lastTestError)
+            }
+        }
+    }
+
+    @State private var lastTestError = ""
+    /// 접속 시험이 닿은 서버 이름 (hostname, 도움말로)
+    @State private var testHost = ""
+
+    /// 고른 계정·인증(입력 중인 값, 없으면 저장된 값)으로 접속해 whoami 까지 해 본다. 저장은 하지 않는다
+    private func runTest() {
+        testShell?.close()
+        let h = host.trimmingCharacters(in: .whitespaces)
+        let user = username.trimmingCharacters(in: .whitespaces)
+        func fail(_ m: String) { lastTestError = m; test = .failed; testDetail = m }
+        // 이 서버 인증
+        let auth: SSHShell.Auth
+        if sshAuth == .key {
+            guard let file = newKey ?? computer.flatMap({ Keychain.sshKey(for: $0.id) }) else { return fail("SSH 키를 골라 주세요.") }
+            let pass = !keyPassphrase.isEmpty ? keyPassphrase : (newKey == nil ? computer.flatMap { Keychain.sshKeyPassphrase(for: $0.id) } : nil)
+            do { auth = .key(try OpenSSHKey.ed25519(from: file, passphrase: pass)) } catch { return fail(error.localizedDescription) }
+        } else {
+            guard let pw = !password.isEmpty ? password : computer.flatMap({ Keychain.password(for: $0.id) }) else { return fail("비밀번호를 넣어 주세요.") }
+            auth = .password(pw)
+        }
+        // 경유 서버 (저장된 값으로)
+        var hops: [SSHShell.Hop] = []
+        if let jump, let j0 = store.computers.first(where: { $0.id == jump }) {
+            for j in store.jumpChain(for: j0) + [j0] {
+                switch Self.savedAuth(j) {
+                case .success(let a): hops.append(.init(host: j.host, port: j.port, username: j.username, auth: a, name: j.name))
+                case .failure(let m): return fail("경유 서버 \(j.name): \(m.text)")
+                }
+            }
+        }
+        test = .testing
+        let s = SSHShell(host: h, port: Int(port) ?? 22, username: user, auth: auth, term: "xterm-256color", jumps: hops)
+        s.interactive = false
+        s.onHostKeyQuestion = { q, answer in testHostKey = (q, answer) }
+        var finished = false
+        s.onConnected = {
+            Task { @MainActor in
+                // 인증은 첫 채널을 열 때 끝난다 → whoami 로 확인
+                do {
+                    let r = try await s.execFull("whoami; hostname", timeout: 15)
+                    let lines = r.stdout.split(separator: "\n").map(String.init)
+                    finished = true
+                    testHost = lines.dropFirst().first ?? h
+                    test = .ok("\(lines.first ?? user) 로 로그인됨")
+                } catch {
+                    finished = true
+                    fail("로그인하지 못했습니다: \(error.localizedDescription)")
+                }
+                s.close()
+            }
+        }
+        s.onClose = { err, _ in
+            guard !finished else { return }
+            finished = true
+            fail(err ?? "접속이 끊겼습니다.")
+        }
+        testShell = s
+        s.connect(cols: 80, rows: 24, keepAlive: false)
+    }
+
+    struct AuthMessage: Error { let text: String }
+
+    /// 저장된 인증 (경유 서버용)
+    private static func savedAuth(_ c: Computer) -> Result<SSHShell.Auth, AuthMessage> {
+        if c.sshAuth == .key {
+            guard let file = Keychain.sshKey(for: c.id) else { return .failure(.init(text: "저장된 SSH 키가 없습니다.")) }
+            do { return .success(.key(try OpenSSHKey.ed25519(from: file, passphrase: Keychain.sshKeyPassphrase(for: c.id)))) }
+            catch { return .failure(.init(text: error.localizedDescription)) }
+        }
+        guard let pw = Keychain.password(for: c.id) else { return .failure(.init(text: "저장된 비밀번호가 없습니다.")) }
+        return .success(.password(pw))
     }
 
     private func save() {

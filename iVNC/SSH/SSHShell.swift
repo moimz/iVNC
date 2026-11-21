@@ -196,31 +196,60 @@ final class SSHShell {
         let stderr: String
         let exitStatus: Int?
         let timedOut: Bool
+        /// 표준 출력 그대로 (파일 내용 받기)
+        var data = Data()
     }
 
     /// 서버에서 명령 하나를 실행해 표준 출력을 받는다 (같은 접속, 별도 채널)
     func exec(_ command: String) async throws -> String { try await execFull(command).stdout }
 
     /// 명령 하나 실행: 출력·오류·종료 코드. timeout 초가 지나면 채널을 닫는다
-    func execFull(_ command: String, timeout: Int = 60) async throws -> ExecResult {
+    /// input 이 있으면 표준 입력으로 보내고 닫는다 (SFTP 없이 파일 올리기: cat > 파일)
+    func execFull(_ command: String, input: Data? = nil, timeout: Int = 60) async throws -> ExecResult {
         guard let conn = connection else { throw ChannelError.ioOnClosedChannel }
         return try await conn.eventLoop.flatSubmit {
             conn.pipeline.handler(type: NIOSSHHandler.self).flatMap { ssh -> EventLoopFuture<ExecResult> in
-                let opened = conn.eventLoop.makePromise(of: Channel.self)
-                let output = conn.eventLoop.makePromise(of: ExecResult.self)
+                let loop = conn.eventLoop
+                let opened = loop.makePromise(of: Channel.self)
+                let output = loop.makePromise(of: ExecResult.self)
+                let result = loop.makePromise(of: ExecResult.self)
                 let collector = ExecCollector(output)
-                ssh.createChannel(opened) { child, _ in
-                    child.eventLoop.makeCompletedFuture { try child.pipeline.syncOperations.addHandler(collector) }
+                // 시간 제한은 채널 열기(인증·경유 통로가 덜 됐으면 여기서 기다린다)부터 센다 → 서버가 답하지 않아도 끝없이 기다리지 않는다
+                var child: Channel?
+                var done = false
+                func finish(_ r: Result<ExecResult, Error>) {
+                    guard !done else { return }
+                    done = true
+                    result.completeWith(r)
                 }
-                return opened.futureResult.flatMap { child in
-                    child.eventLoop.scheduleTask(in: .seconds(Int64(timeout))) {
-                        collector.timedOut = true
-                        child.close(promise: nil)
-                    }
-                    return child.triggerUserOutboundEvent(SSHChannelRequestEvent.ExecRequest(command: command, wantReply: true))
-                }.flatMap { output.futureResult }
+                let timer = loop.scheduleTask(in: .seconds(Int64(timeout))) {
+                    collector.timedOut = true
+                    if let child { child.close(promise: nil) } else { finish(.failure(ExecTimeout())) }
+                }
+                ssh.createChannel(opened) { ch, _ in
+                    ch.eventLoop.makeCompletedFuture { try ch.pipeline.syncOperations.addHandler(collector) }
+                }
+                opened.futureResult.flatMap { ch -> EventLoopFuture<Void> in
+                    if done { ch.close(promise: nil); return loop.makeSucceededVoidFuture() }
+                    child = ch
+                    let started = ch.triggerUserOutboundEvent(SSHChannelRequestEvent.ExecRequest(command: command, wantReply: true))
+                    guard let input else { return started }
+                    return started.flatMap {
+                        var b = ch.allocator.buffer(capacity: input.count)
+                        b.writeBytes(input)
+                        return ch.writeAndFlush(SSHChannelData(type: .channel, data: .byteBuffer(b)))
+                    }.flatMap { ch.close(mode: .output) }
+                }.flatMap { output.futureResult }.whenComplete { r in
+                    timer.cancel()
+                    finish(r)
+                }
+                return result.futureResult
             }
         }.get()
+    }
+
+    struct ExecTimeout: LocalizedError {
+        var errorDescription: String? { "서버가 시간 안에 답하지 않았습니다." }
     }
 
     // MARK: 터미널 앞쪽 프로세스
@@ -263,6 +292,7 @@ final class SSHShell {
           grep -qszx 'LC_IVNC_SESSION=\#(m)' /proc/$pp/environ 2>/dev/null && continue
           p=$q; break
         done
+        \#(Self.siblingFallback)
         [ -n "$p" ] || exit 0
         me=$(id -u); last=
         while [ -d /proc/$p ]; do
@@ -280,6 +310,10 @@ final class SSHShell {
         done
         """#
     }
+
+    /// 표식(LC_IVNC_SESSION)을 sshd 가 안 받는 서버(AcceptEnv 에 LC_* 없음)용: 같은 SSH 접속의 셸은 이 exec 채널과
+    /// 부모(sshd)가 같고 터미널(pts)이 붙어 있다 → 그것을 로그인 셸로 본다 (탭마다 접속이 따로라 하나뿐)
+    static let siblingFallback = #"[ -n "$p" ] || p=$(awk -v pp="$PPID" '$4==pp && $7!=0 {print $1; exit}' /proc/[0-9]*/stat 2>/dev/null)"#
 
     /// 지금 앞쪽 프로세스 (한 번). 리눅스가 아니거나 모르면 nil
     func foreground() async -> Foreground? {
@@ -319,17 +353,20 @@ final class SSHShell {
     func currentState() async -> (directory: String?, root: Bool) {
         let m = marker
         let script = """
+        p=
         for f in /proc/[0-9]*/environ; do
           grep -qszx 'LC_IVNC_SESSION=\(m)' "$f" || continue
-          p=${f#/proc/}; p=${p%/environ}
-          pp=$(awk '{print $4}' /proc/$p/stat 2>/dev/null)
+          q=${f#/proc/}; q=${q%/environ}
+          pp=$(awk '{print $4}' /proc/$q/stat 2>/dev/null)
           grep -qszx 'LC_IVNC_SESSION=\(m)' /proc/$pp/environ && continue
-          t=$(awk '{print $8}' /proc/$p/stat 2>/dev/null)
-          readlink /proc/$t/cwd 2>/dev/null || readlink /proc/$p/cwd
-          awk '/^Uid:/{print $2}' /proc/$t/status 2>/dev/null
-          id -u
-          break
+          p=$q; break
         done
+        \(Self.siblingFallback)
+        [ -n "$p" ] || exit 0
+        t=$(awk '{print $8}' /proc/$p/stat 2>/dev/null)
+        readlink /proc/$t/cwd 2>/dev/null || readlink /proc/$p/cwd
+        awk '/^Uid:/{print $2}' /proc/$t/status 2>/dev/null
+        id -u
         """
         guard let out = try? await exec(script) else { return (nil, false) }
         let lines = out.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
@@ -642,7 +679,7 @@ private final class ExecCollector: ChannelInboundHandler {
 
     func channelInactive(context: ChannelHandlerContext) {
         promise.succeed(.init(stdout: String(decoding: bytes, as: UTF8.self), stderr: String(decoding: errBytes, as: UTF8.self),
-                              exitStatus: status, timedOut: timedOut))
+                              exitStatus: status, timedOut: timedOut, data: Data(bytes)))
         context.fireChannelInactive()
     }
 }

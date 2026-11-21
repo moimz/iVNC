@@ -356,6 +356,7 @@ final class MCPServer: ObservableObject {
     // MARK: 도구 목록
 
     private static let serverArg: [String: Any] = ["type": "string", "description": "서버 이름 또는 id (list_servers). 범위가 '지금 활성 탭의 서버만' 이면 생략 가능"]
+    private static let rootArg: [String: Any] = ["type": "boolean", "description": "true 면 root 로. 방법은 iVNC 가 고른다: root 로 접속하는 서버면 그대로, 아니면 열린 터미널의 root 셸(sudo su 해 둔 것)을 빌리고, 그것도 없으면 암호 없는 sudo. 다 안 되면 root 를 쓸 수 없다고 거절한다(로그인 계정으로 대신 하지 않음). 먼저 list_servers 의 root 를 본다"]
 
     /// server_info 가 돌리는 조회 묶음. 명령은 앱이 만든 고정된 읽기 명령뿐이라 권한·확인 없이 실행한다
     private static let infoTopics: [(key: String, title: String, command: String)] = [
@@ -400,7 +401,7 @@ final class MCPServer: ObservableObject {
             "lines": ["type": "integer", "description": "logs 주제: 줄 수 (기본 100, 최대 1000)"],
          ]]],
         ["name": "list_servers",
-         "description": "iVNC 가 MCP 에 열어 준 SSH 서버 목록(열린 터미널 탭·활성 탭 표시), 원격 화면 세션 목록, 지금 설정(접근 범위·권한)",
+         "description": "iVNC 가 MCP 에 열어 준 SSH 서버 목록(열린 터미널 탭·활성 탭 표시), 원격 화면 세션 목록, 지금 설정(접근 범위·권한). 서버마다 root 상태: root = direct(root 로 접속) · root_shell(열린 터미널에 바로 빌릴 수 있는 root 셸) · root_shell_busy(root 셸이 있지만 지금은 못 씀) · sudo(암호 없는 sudo) · none(root 못 씀: 사용자에게 터미널에서 sudo su 해 달라고 한다) · unknown(접속 안 돼 모름). root 가 필요한 일은 이걸 보고 as_root 로 부른다",
          "inputSchema": ["type": "object", "properties": [String: Any]()]],
         ["name": "run_command",
          "description": "서버에서 셸 명령 하나 실행 (사용자 터미널과 별도 채널, 화면에 안 보임). 조회 명령(ls·cat·grep·df·ps·git status 등)은 바로, 그 밖은 권한에 따라 거절되거나 사용자 확인 뒤 실행. 결과: 종료 코드·표준 출력·표준 오류. 서버 현황 조회는 server_info 를 먼저 쓴다",
@@ -409,6 +410,7 @@ final class MCPServer: ObservableObject {
             "command": ["type": "string"],
             "cwd": ["type": "string", "description": "이 폴더에서 실행"],
             "timeout_seconds": ["type": "integer", "description": "기본 60, 최대 600"],
+            "as_root": rootArg,
          ], "required": ["command"]]],
         ["name": "read_terminal",
          "description": "열린 터미널 탭에 보이는 화면과 스크롤백의 마지막 lines 줄 (기본 120, 최대 3000). '이 에러 뭐야?' 처럼 사용자가 보고 있는 화면을 볼 때",
@@ -417,11 +419,11 @@ final class MCPServer: ObservableObject {
          "description": "열린 터미널 탭(그 서버의 활성 탭)에 글자를 입력한다. 사용자가 보는 화면에 그대로 쳐진다. enter=true 면 끝에 엔터. 늘 위험한 동작으로 본다",
          "inputSchema": ["type": "object", "properties": ["server": serverArg, "text": ["type": "string"], "enter": ["type": "boolean"]], "required": ["text"]]],
         ["name": "list_files",
-         "description": "서버 폴더의 파일 목록 (SFTP): 이름·종류·크기·수정 시각·권한",
-         "inputSchema": ["type": "object", "properties": ["server": serverArg, "path": ["type": "string", "description": "없으면 홈"]]]],
+         "description": "서버 폴더의 파일 목록 (SFTP): 이름·종류·크기·수정 시각·권한·소유자",
+         "inputSchema": ["type": "object", "properties": ["server": serverArg, "path": ["type": "string", "description": "없으면 홈"], "as_root": rootArg]]],
         ["name": "read_file",
          "description": "서버 파일 내용 (SFTP, UTF-8 글자). max_bytes 기본 200000, 최대 2000000",
-         "inputSchema": ["type": "object", "properties": ["server": serverArg, "path": ["type": "string"], "max_bytes": ["type": "integer"]], "required": ["path"]]],
+         "inputSchema": ["type": "object", "properties": ["server": serverArg, "path": ["type": "string"], "max_bytes": ["type": "integer"], "as_root": rootArg], "required": ["path"]]],
         ["name": "write_file",
          "description": "서버 파일에 내용을 쓴다 (있으면 덮어씀). 위험한 동작",
          "inputSchema": ["type": "object", "properties": ["server": serverArg, "path": ["type": "string"], "content": ["type": "string"]], "required": ["path", "content"]]],
@@ -429,11 +431,23 @@ final class MCPServer: ObservableObject {
          "description": "서버 파일이나 폴더(안쪽까지)를 지운다. 위험한 동작",
          "inputSchema": ["type": "object", "properties": ["server": serverArg, "path": ["type": "string"]], "required": ["path"]]],
         ["name": "upload",
-         "description": "이 맥 파일을 서버로 올린다 (SFTP 파이프라이닝). 위험한 동작",
-         "inputSchema": ["type": "object", "properties": ["server": serverArg, "local_path": ["type": "string"], "remote_path": ["type": "string"]], "required": ["local_path", "remote_path"]]],
+         "description": "이 맥 파일이나 폴더(안쪽까지)를 서버로 올린다. 위험한 동작이지만 아래 일을 모두 묶어 한 번만 허락받는다: "
+            + "임시 이름으로 올린 뒤 한 번에 바꿔치기(도중에 실패해도 원래 파일은 그대로), 바꾸는 파일의 권한·소유자 유지(mode·owner 로 바꿀 수 있음), "
+            + "원래 파일을 서버에 '이름.bak-날짜시각' 으로 남기기(backup, 기본 켬), 원래 파일을 먼저 이 맥으로 받아 두기(backup_to_mac). "
+            + "인증서 갱신처럼 root 파일을 바꿀 때는 as_root=true. 서비스 다시 읽기(nginx -t && systemctl reload nginx 등)는 run_command 에 as_root=true 로",
+         "inputSchema": ["type": "object", "properties": [
+            "server": serverArg,
+            "local_path": ["type": "string", "description": "이 맥 파일 또는 폴더"],
+            "remote_path": ["type": "string", "description": "서버에 놓일 경로. 파일을 올릴 때 이미 있는 폴더를 주면 그 안에 같은 이름으로. 폴더를 올리면 그 폴더 자리(있으면 안에 합침)"],
+            "mode": ["type": "string", "description": "권한 8진수 (예: 644, 600). 없으면 바꾸는 파일 것을 유지, 새 파일은 서버 기본"],
+            "owner": ["type": "string", "description": "소유자 '사용자' 또는 '사용자:그룹' (root 셸에서만 바꿀 수 있음). 없으면 바꾸는 파일 것을 유지"],
+            "backup": ["type": "boolean", "description": "원래 파일을 서버에 '이름.bak-날짜시각' 으로 남김 (기본 true)"],
+            "backup_to_mac": ["type": "string", "description": "원래 파일을 바꾸기 전에 이 맥의 이 폴더로 받아 둔다 (없으면 만듦)"],
+            "as_root": rootArg,
+         ], "required": ["local_path", "remote_path"]]],
         ["name": "download",
-         "description": "서버 파일을 이 맥으로 받는다. 이 맥에 같은 파일이 있으면 덮어쓰기라 위험한 동작으로 본다",
-         "inputSchema": ["type": "object", "properties": ["server": serverArg, "remote_path": ["type": "string"], "local_path": ["type": "string"]], "required": ["remote_path", "local_path"]]],
+         "description": "서버 파일이나 폴더(안쪽까지)를 이 맥으로 받는다. local_path 가 이미 있는 폴더면 그 안에 같은 이름으로. 이 맥 파일을 덮어쓰게 되면 위험한 동작으로 본다",
+         "inputSchema": ["type": "object", "properties": ["server": serverArg, "remote_path": ["type": "string"], "local_path": ["type": "string"], "as_root": rootArg], "required": ["remote_path", "local_path"]]],
         ["name": "screenshot",
          "description": "열려 있는 원격 화면(맥 화면 공유·윈도우 원격 데스크톱) 창의 지금 화면 그림. computer 가 없으면 지금 앞에 있는 화면 창(없으면 첫 창)",
          "inputSchema": ["type": "object", "properties": ["computer": ["type": "string", "description": "컴퓨터 이름 또는 id"]]]],
@@ -450,20 +464,28 @@ final class MCPServer: ObservableObject {
         func text(_ s: String) -> [[String: Any]] { [["type": "text", "text": s]] }
         switch name {
         case "list_servers":
-            return text(json(listServers()))
+            return text(json(await listServers()))
 
         case "run_command":
             let cmd = try string(a, "command")
             let t = try target(a)
-            let full = (a["cwd"] as? String).map { "cd -- '\($0.replacingOccurrences(of: "'", with: "'\\''"))' && " + cmd } ?? cmd
-            try await allow(server: t, action: cmd, danger: CommandSafety.check(full))
-            let shell = try await connection(t)
+            let cwd = a["cwd"] as? String
+            let full = cwd.map { "cd -- '\($0.replacingOccurrences(of: "'", with: "'\\''"))' && " + cmd } ?? cmd
             let timeout = min(max(a["timeout_seconds"] as? Int ?? 60, 1), 600)
-            let r = try await shell.execFull(full, timeout: timeout)
-            note("\(t.name): \(cmd.prefix(60))")
-            var out: [String: Any] = ["exit_code": r.exitStatus.map { $0 as Any } ?? NSNull(),
-                                      "stdout": Self.clip(r.stdout), "stderr": Self.clip(r.stderr)]
-            if r.timedOut { out["timed_out"] = true }
+            guard a["as_root"] as? Bool ?? false, t.computer.username != "root" else {
+                try await allow(server: t, action: cmd, danger: CommandSafety.check(full))
+                let shell = try await connection(t)
+                let r = try await shell.execFull(full, timeout: timeout)
+                note("\(t.name): \(cmd.prefix(60))")
+                return text(json(Self.execOut(r)))
+            }
+            // root: 방법을 먼저 정하고(안 되면 여기서 거절) 묻는다
+            let runner = try await rootRunner(t, try await rootRoute(t))
+            try await allow(server: t, action: "(\(runner.how)) " + cmd, danger: CommandSafety.check(full).map { "\($0), root 로 실행" })
+            let r = try await runner.run(full, timeout)
+            note("\(t.name): (\(runner.how)) \(cmd.prefix(60))")
+            var out = Self.execOut(r)
+            out["as"] = runner.how
             return text(json(out))
 
         case "server_info":
@@ -523,26 +545,44 @@ final class MCPServer: ObservableObject {
 
         case "list_files":
             let t = try target(a)
-            let sftp = try await sftp(t)
+            if let root = try await stagedRoot(t, a) {
+                let path = (a["path"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "/root"
+                let out = try await rootOK(root, "ls -la -- \(Self.q(path))")
+                note("\(t.name): (\(root.how)) 목록 \(path)")
+                return text(json(["path": path, "as_user": "root", "via": root.how, "listing": Self.clip(out)]))
+            }
+            let fc = try await fileClient(t, a)
+            defer { fc.finish() }
+            let sftp = fc.client
             var path = a["path"] as? String ?? ""
             if path.isEmpty { path = try await sftp.realpath(".") }
             let list = try await sftp.list(path)
+            let names = await Owners.load(sftp)
             let f = ISO8601DateFormatter()
-            return text(json(["path": path, "entries": list.sorted { $0.name < $1.name }.map { e -> [String: Any] in
+            var out: [String: Any] = ["path": path, "entries": list.sorted { $0.name < $1.name }.map { e -> [String: Any] in
                 ["name": e.name, "type": e.isDirectory ? "dir" : e.attrs.isSymlink ? "link" : "file",
                  "size": e.attrs.size.map { $0 as Any } ?? NSNull(),
                  "modified": e.attrs.modified.map { f.string(from: $0) as Any } ?? NSNull(),
-                 "permissions": FileLook.permissions(e.attrs.permissions)]
-            }]))
+                 "permissions": FileLook.permissions(e.attrs.permissions),
+                 "owner": names.describe(e.attrs)]
+            }]
+            if let who = fc.user { out["as_user"] = who }
+            return text(json(out))
 
         case "read_file":
             let t = try target(a)
             let path = try string(a, "path")
             let max = min(max(a["max_bytes"] as? Int ?? 200_000, 1), 2_000_000)
-            let sftp = try await sftp(t)
+            if let root = try await stagedRoot(t, a) {
+                let out = try await rootOK(root, "f=\(Self.q(path)); [ -f \"$f\" ] || { echo \"파일이 아닙니다: $f\" >&2; exit 1; }; head -c \(max) -- \"$f\"")
+                note("\(t.name): (\(root.how)) 읽기 \(path)")
+                return text(out)
+            }
+            let fc = try await fileClient(t, a)
+            defer { fc.finish() }
             let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             defer { try? FileManager.default.removeItem(at: tmp) }
-            try await sftp.download(path, to: tmp, progress: { _ in }, isCancelled: { false })
+            try await fc.client.download(path, to: tmp, progress: { _ in }, isCancelled: { false })
             let data = try Data(contentsOf: tmp)
             note("\(t.name): 읽기 \(path)")
             let body = String(decoding: data.prefix(max), as: UTF8.self)
@@ -572,25 +612,10 @@ final class MCPServer: ObservableObject {
             return text("지웠습니다: \(path)")
 
         case "upload":
-            let t = try target(a)
-            let local = URL(fileURLWithPath: (try string(a, "local_path") as NSString).expandingTildeInPath)
-            let remote = try string(a, "remote_path")
-            try await allow(server: t, action: "올리기: \(local.path) → \(remote)", danger: "서버에 쓰기")
-            let sftp = try await sftp(t)
-            try await sftp.upload(local, to: remote, progress: { _ in }, isCancelled: { false })
-            note("\(t.name): 올리기 \(remote)")
-            return text("올렸습니다: \(remote)")
+            return text(try await upload(a))
 
         case "download":
-            let t = try target(a)
-            let remote = try string(a, "remote_path")
-            let local = URL(fileURLWithPath: (try string(a, "local_path") as NSString).expandingTildeInPath)
-            let exists = FileManager.default.fileExists(atPath: local.path)
-            try await allow(server: t, action: "받기: \(remote) → \(local.path)", danger: exists ? "이 맥 파일 덮어쓰기" : nil)
-            let sftp = try await sftp(t)
-            try await sftp.download(remote, to: local, progress: { _ in }, isCancelled: { false })
-            note("\(t.name): 받기 \(remote)")
-            return text("받았습니다: \(local.path)")
+            return text(try await download(a))
 
         case "screenshot":
             let s = try screenSession(a)
@@ -604,6 +629,660 @@ final class MCPServer: ObservableObject {
         default:
             throw Failure("모르는 도구: \(name)")
         }
+    }
+
+    // MARK: 파일 올리기·받기
+
+    /// 파일 도구가 쓸 SFTP. as_root 면 root 로 연 것 (따로 연 것은 다 쓰면 닫는다)
+    private struct FileClient {
+        let client: SFTPClient
+        /// root 로 연 경우 "root"
+        let user: String?
+        let temporary: Bool
+        func finish() { if temporary { client.close() } }
+    }
+
+    /// 로그인 계정 SFTP (as_root 이고 root 로 접속하는 서버면 그게 곧 root). 다른 root 방법은 stagedRoot 로
+    private func fileClient(_ t: Target, _ a: [String: Any]) async throws -> FileClient {
+        let root = (a["as_root"] as? Bool ?? false) && t.computer.username == "root"
+        return FileClient(client: try await sftp(t), user: root ? "root" : nil, temporary: false)
+    }
+
+    /// as_root 인데 로그인 계정이 root 가 아니면: root 를 얻는 방법(없으면 여기서 거절). 아니면 nil
+    private func stagedRoot(_ t: Target, _ a: [String: Any]) async throws -> RootRunner? {
+        guard a["as_root"] as? Bool ?? false, t.computer.username != "root" else { return nil }
+        return try await rootRunner(t, try await rootRoute(t))
+    }
+
+    /// root 로 셸 스크립트를 돌리는 방법 하나 (root 셸 빌리기 · sudo -n · root 접속)
+    private struct RootRunner {
+        let how: String
+        let run: (_ script: String, _ timeout: Int) async throws -> SSHShell.ExecResult
+    }
+
+    private func rootRunner(_ t: Target, _ route: RootRoute) async throws -> RootRunner {
+        switch route {
+        case .direct:
+            let shell = try await connection(t)
+            return RootRunner(how: "root") { script, timeout in try await shell.execFull(script, timeout: timeout) }
+        case .sudo:
+            let shell = try await connection(t)
+            return RootRunner(how: "sudo") { script, timeout in try await shell.execFull("sudo -n sh -c \(Self.q(script))", timeout: timeout) }
+        case .shell(let tab):
+            return RootRunner(how: "root 셸") { script, timeout in
+                var r = try await tab.rootExec("{\n\(script)\n} </dev/null\nprintf '\\n__IVNC_RC=%s\\n' \"$?\" >&2\n", timeout: timeout)
+                // 끝 줄의 종료 코드를 꺼낸다
+                if let m = r.stderr.range(of: #"\n?__IVNC_RC=(\d+)\n?$"#, options: .regularExpression) {
+                    r = .init(stdout: r.stdout, stderr: String(r.stderr[..<m.lowerBound]), exitStatus: Int(r.stderr[m].filter(\.isNumber)), timedOut: r.timedOut)
+                } else {
+                    r = .init(stdout: r.stdout, stderr: r.stderr, exitStatus: nil, timedOut: r.timedOut)
+                }
+                return r
+            }
+        }
+    }
+
+    /// 셸 따옴표 ('…')
+    private static func q(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+
+    /// root 스크립트를 돌려 실패하면 던진다
+    private func rootOK(_ r: RootRunner, _ script: String, timeout: Int = 60) async throws -> String {
+        let out = try await r.run(script, timeout)
+        if out.timedOut { throw Failure("root 명령이 시간 안에 끝나지 않았습니다.") }
+        guard out.exitStatus == 0 else {
+            throw Failure(out.stderr.split(separator: "\n").filter { !$0.hasPrefix("Could not chdir") }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "root 명령이 실패했습니다 (종료 코드 \(out.exitStatus.map(String.init) ?? "?")).")
+        }
+        return out.stdout
+    }
+
+    /// 로그인 계정으로 서버 파일 쓰기·읽기. 보통 SFTP, SFTP 가 응답하지 않는 서버(시놀로지에서 SFTP 를 꺼 둔 경우 등)만 명령 채널 cat
+    private struct LoginIO {
+        let put: (_ local: URL, _ remote: String, _ transfer: Transfer) async throws -> Void
+        let get: (_ remote: String, _ local: URL) async throws -> Void
+    }
+
+    /// SFTP 가 응답하지 않았던 접속 (같은 접속에서는 다시 10초 기다리지 않는다)
+    private var sftpDead: Set<ObjectIdentifier> = []
+
+    private func loginIO(_ t: Target) async throws -> LoginIO {
+        let shell = try await connection(t)
+        let key = ObjectIdentifier(shell)
+        if !sftpDead.contains(key) {
+            do {
+                let c = try await sftp(t)
+                return LoginIO(put: { local, remote, tr in
+                    try await c.upload(local, to: remote, createMode: 0o600, progress: tr.add, isCancelled: tr.isCancelled)
+                }, get: { remote, local in
+                    try await c.download(remote, to: local, progress: { _ in }, isCancelled: { false })
+                })
+            } catch {
+                sftpDead.insert(key)
+                note("\(t.name): SFTP 응답 없음 → 명령 채널로 주고받음", ok: false)
+            }
+        }
+        return LoginIO(put: { local, remote, tr in
+            let data = try Data(contentsOf: local)
+            let r = try await shell.execFull("umask 077; cat > \(Self.q(remote))", input: data, timeout: 600)
+            guard r.exitStatus == 0, !r.timedOut else { throw Failure("서버에 쓰지 못했습니다: \(r.stderr.prefix(200))") }
+            tr.add(data.count)
+        }, get: { remote, local in
+            let r = try await shell.execFull("cat -- \(Self.q(remote))", timeout: 600)
+            guard r.exitStatus == 0, !r.timedOut else { throw Failure("읽지 못했습니다: \(r.stderr.prefix(200))") }
+            try r.data.write(to: local)
+        })
+    }
+
+    /// 로그인 계정의 남이 못 보는 임시 폴더 (서버 /tmp)
+    private func loginStage(_ t: Target) async throws -> String {
+        let r = try await connection(t).execFull("umask 077; mktemp -d /tmp/.ivnc-stage-XXXXXXXX", timeout: 20)
+        guard let d = r.stdout.split(separator: "\n").last.map(String.init), d.hasPrefix("/tmp/.ivnc-stage-") else { throw Failure("서버에 임시 폴더를 만들지 못했습니다.") }
+        return d
+    }
+
+    // MARK: root
+
+    /// root 를 얻는 방법 (iVNC 가 고른다)
+    private enum RootRoute {
+        /// root 로 접속하는 서버
+        case direct
+        /// 열린 터미널의 root 셸을 빌림
+        case shell(TerminalTab)
+        /// 암호 없는 sudo
+        case sudo
+    }
+
+    /// 그 서버의 열린 탭 (활성 탭 먼저)
+    private func tabs(of c: Computer) -> [TerminalTab] {
+        let reg = TerminalRegistry.shared
+        let all = reg.openTabs.filter { $0.computer.id == c.id && $0.sshShell != nil }
+        guard let act = reg.activeTab, act.computer.id == c.id else { return all }
+        return [act] + all.filter { $0 !== act }
+    }
+
+    /// 열린 탭들의 root 셸 상태
+    private func rootShells(_ c: Computer) async -> [(tab: TerminalTab, state: TerminalTab.RootShellState)] {
+        var out: [(TerminalTab, TerminalTab.RootShellState)] = []
+        for tab in tabs(of: c) {
+            let st = await tab.rootShellState()
+            if st == .ready || { if case .busy = st { return true } else { return false } }() { out.append((tab, st)) }
+        }
+        return out
+    }
+
+    /// 지금 있는 접속으로 암호 없는 sudo 가 되는지 (접속이 없고 connect 가 false 면 nil: 이것 때문에 새로 접속하지 않는다).
+    /// connect 가 true 인데 접속·응답이 안 되면 그 이유를 던진다 (VPN 이 꺼진 경우 등을 "sudo 안 됨"으로 잘못 알리지 않게)
+    private func sudoWorks(_ t: Target, connect: Bool) async throws -> Bool? {
+        let open = (t.tab?.sshShell?.isOpen ?? false) || (background[t.computer.id]?.isOpen ?? false)
+        guard open || connect else { return nil }
+        let shell: SSHShell
+        do { shell = try await connection(t) } catch { if connect { throw error } else { return nil } }
+        do {
+            let r = try await shell.execFull("sudo -n true 2>/dev/null && echo ok", timeout: 10)
+            if r.timedOut { throw SSHShell.ExecTimeout() }
+            return r.stdout.contains("ok")
+        } catch {
+            if !connect { return nil }
+            throw Failure("\(t.name) 가 답하지 않습니다 (\(error.localizedDescription)). 네트워크(VPN 등)가 연결돼 있는지 사용자에게 확인해 달라고 하세요.")
+        }
+    }
+
+    private func rootRoute(_ t: Target) async throws -> RootRoute {
+        if t.computer.username == "root" { return .direct }
+        let shells = await rootShells(t.computer)
+        if let ready = shells.first(where: { $0.state == .ready }) { return .shell(ready.tab) }
+        if try await sudoWorks(t, connect: true) == true { return .sudo }
+        let busy = shells.compactMap { s -> String? in if case .busy(let why) = s.state { return why } else { return nil } }
+        if !busy.isEmpty {
+            throw Failure("\(t.name) 의 root 셸을 지금 쓸 수 없습니다 (\(busy.joined(separator: ", "))). 그 터미널을 셸 프롬프트로 돌려 달라고 사용자에게 부탁하세요.")
+        }
+        throw Failure("\(t.name) 에서 root 를 쓸 수 없습니다: \(t.computer.username) 로 접속하고, 열린 터미널에 root 셸이 없고, 암호 없는 sudo 도 안 됩니다. 사용자에게 \(t.name) 터미널에서 sudo su 해 달라고 부탁하세요.")
+    }
+
+    /// list_servers 에 붙일 root 상태
+    private func rootInfo(_ c: Computer) async -> [String: Any] {
+        if c.username == "root" { return ["root": "direct", "root_hint": "root 로 접속하는 서버. as_root 로 바로 된다"] }
+        let shells = await rootShells(c)
+        var d: [String: Any] = ["root_shells": shells.map { s -> [String: Any] in
+            if case .busy(let why) = s.state { return ["ready": false, "reason": why] }
+            return ["ready": true]
+        }]
+        let reg = TerminalRegistry.shared
+        let tab = (reg.activeTab?.computer.id == c.id ? reg.activeTab : nil) ?? reg.openTabs.first { $0.computer.id == c.id && $0.sshShell != nil }
+        let sudo = (try? await sudoWorks(Target(computer: c, tab: tab), connect: false)) ?? nil
+        d["sudo_nopasswd"] = sudo.map { $0 as Any } ?? NSNull()
+        if shells.contains(where: { $0.state == .ready }) {
+            d["root"] = "root_shell"; d["root_hint"] = "열린 터미널의 root 셸을 빌린다. as_root 로 된다"
+        } else if sudo == true {
+            d["root"] = "sudo"; d["root_hint"] = "암호 없는 sudo. as_root 로 된다"
+        } else if !shells.isEmpty {
+            d["root"] = "root_shell_busy"; d["root_hint"] = "root 셸이 있지만 지금은 못 씀. 사용자에게 그 터미널을 셸 프롬프트로 돌려 달라고 한다"
+        } else if sudo == nil {
+            d["root"] = "unknown"; d["root_hint"] = "접속돼 있지 않아 모름. as_root 로 부르면 접속해서 확인한다"
+        } else {
+            d["root"] = "none"; d["root_hint"] = "root 못 씀. 사용자에게 터미널에서 sudo su 해 달라고 한다"
+        }
+        return d
+    }
+
+    /// 서버의 사용자·그룹 이름 (/etc/passwd · /etc/group 을 SFTP 로 읽음: root 셸 SFTP 에서도 된다)
+    private struct Owners {
+        var users: [UInt32: String] = [:]
+        var groups: [UInt32: String] = [:]
+
+        static func load(_ c: SFTPClient) async -> Owners {
+            var o = Owners()
+            for (path, isUser) in [("/etc/passwd", true), ("/etc/group", false)] {
+                let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                defer { try? FileManager.default.removeItem(at: tmp) }
+                guard (try? await c.download(path, to: tmp, progress: { _ in }, isCancelled: { false })) != nil,
+                      let s = try? String(contentsOf: tmp, encoding: .utf8) else { continue }
+                for line in s.split(separator: "\n") {
+                    let f = line.split(separator: ":", omittingEmptySubsequences: false)
+                    guard f.count >= 3, let id = UInt32(f[2]) else { continue }
+                    if isUser { o.users[id] = String(f[0]) } else { o.groups[id] = String(f[0]) }
+                }
+            }
+            return o
+        }
+
+        func describe(_ a: SFTPClient.Attrs) -> Any {
+            guard let u = a.uid else { return NSNull() }
+            return "\(users[u] ?? String(u)):\(a.gid.map { groups[$0] ?? String($0) } ?? "?")"
+        }
+
+        /// "사용자" · "사용자:그룹" · ":그룹" · 숫자 → uid, gid (nil = 그대로)
+        func resolve(_ text: String) throws -> (uid: UInt32?, gid: UInt32?) {
+            let parts = text.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+            func id(_ name: String, _ map: [UInt32: String], _ what: String) throws -> UInt32? {
+                if name.isEmpty { return nil }
+                if let n = UInt32(name) { return n }
+                guard let k = map.first(where: { $0.value == name })?.key else { throw Failure("서버에 '\(name)' \(what)가 없습니다.") }
+                return k
+            }
+            return (try id(parts[0], users, "사용자"), parts.count > 1 ? try id(parts[1], groups, "그룹") : nil)
+        }
+    }
+
+    private static func parseMode(_ s: String) throws -> UInt32 {
+        guard let v = UInt32(s.trimmingCharacters(in: .whitespaces), radix: 8), v <= 0o7777 else { throw Failure("mode 는 644 같은 8진수여야 합니다: \(s)") }
+        return v
+    }
+
+    private static func stamp() -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyyMMdd-HHmmss"
+        return f.string(from: Date())
+    }
+
+    private static func short(_ path: String) -> String { (path as NSString).abbreviatingWithTildeInPath }
+
+    /// 올릴 파일 하나
+    private struct Placement {
+        let local: URL
+        let remote: String
+        let size: Int64
+        /// 바꿀 원래 파일 (없으면 새 파일)
+        let existing: SFTPClient.Attrs?
+        /// 원래 파일을 받아 둘 이 맥 경로
+        let macCopy: URL?
+    }
+
+    private func upload(_ a: [String: Any]) async throws -> String {
+        let t = try target(a)
+        let local = URL(fileURLWithPath: (try string(a, "local_path") as NSString).expandingTildeInPath).standardizedFileURL
+        var remote = try string(a, "remote_path")
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: local.path, isDirectory: &isDir) else { throw Failure("이 맥에 없습니다: \(local.path)") }
+        let mode = try (a["mode"] as? String).flatMap { $0.isEmpty ? nil : $0 }.map(Self.parseMode)
+        let ownerText = (a["owner"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        let keepBackup = a["backup"] as? Bool ?? true
+        let macFolder = (a["backup_to_mac"] as? String).flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
+        if let root = try await stagedRoot(t, a) {
+            return try await uploadStaged(t, root: root, local: local, isDir: isDir.boolValue, remote: remote, mode: mode, owner: ownerText, keepBackup: keepBackup, macFolder: macFolder)
+        }
+
+        let fc = try await fileClient(t, a)
+        defer { fc.finish() }
+        let sftp = fc.client
+        let names = await Owners.load(sftp)
+        let owner = try ownerText.map { try names.resolve($0) }
+
+        // 파일 하나를 이미 있는 폴더에 주면 그 안에
+        if !isDir.boolValue, let st = try? await sftp.stat(remote), st.isDirectory {
+            remote = SFTPClient.join(remote, local.lastPathComponent)
+        }
+        let stamp = Self.stamp()
+        let macRoot = macFolder?.appendingPathComponent("\(t.name) \(stamp)")
+
+        // 올릴 목록 (폴더면 안쪽까지)과 만들 폴더
+        var files: [(URL, String)] = []
+        var dirs: [String] = []
+        if isDir.boolValue {
+            dirs.append(remote)
+            let base = local.path
+            let e = FileManager.default.enumerator(at: local, includingPropertiesForKeys: [.isDirectoryKey])
+            while let u = e?.nextObject() as? URL {
+                let rel = String(u.standardizedFileURL.path.dropFirst(base.count + 1))
+                if rel.split(separator: "/").contains(where: { $0 == ".DS_Store" }) { continue }
+                let r = SFTPClient.join(remote, rel)
+                if (try? u.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true { dirs.append(r) } else { files.append((u, r)) }
+            }
+        } else {
+            files.append((local, remote))
+        }
+        guard !files.isEmpty else { throw Failure("올릴 파일이 없습니다.") }
+
+        var plan: [Placement] = []
+        for (u, r) in files {
+            let existing = try? await sftp.stat(r)
+            if existing?.isDirectory == true { throw Failure("서버에 같은 이름의 폴더가 있습니다: \(r)") }
+            let size = Int64((try? u.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+            var mac: URL?
+            if existing != nil, let macRoot {
+                let rel = isDir.boolValue ? String(r.dropFirst(remote.count + 1)) : (r as NSString).lastPathComponent
+                mac = macRoot.appendingPathComponent(rel)
+            }
+            plan.append(Placement(local: u, remote: r, size: size, existing: existing, macCopy: mac))
+        }
+
+        // 한 번에 묻기
+        let replaced = plan.filter { $0.existing != nil }.count
+        var lines = ["올리기\(fc.user.map { " (\($0) 권한)" } ?? ""): \(Self.short(local.path)) → \(remote)"
+                     + (isDir.boolValue ? " (파일 \(plan.count)개)" : "")]
+        if replaced > 0 {
+            var r = "바꾸는 파일 \(replaced)개"
+            if keepBackup { r += " · 서버에 .bak-\(stamp) 로 남김" }
+            if let macRoot { r += " · 먼저 이 맥 \(Self.short(macRoot.path)) 로 받아 둠" }
+            if !keepBackup && macRoot == nil { r += " · 백업 없음" }
+            lines.append(r)
+        }
+        lines.append("권한: " + (mode.map { String($0, radix: 8) } ?? (replaced > 0 ? "원래 파일 것 유지" : "서버 기본"))
+                     + " · 소유자: " + (ownerText ?? (replaced > 0 ? "원래 파일 것 유지" : "그대로")))
+        try await allow(server: t, action: lines.joined(separator: "\n"),
+                        danger: replaced > 0 ? "서버 파일 \(replaced)개 바꾸기" : "서버에 쓰기")
+
+        for d in dirs { try? await sftp.mkdir(d) } // 이미 있으면 그대로
+        if owner != nil { for d in dirs { try? await sftp.setstat(d, uid: owner?.uid, gid: owner?.gid) } }
+
+        let g = TransferCenter.shared.begin(.upload, names: [local.lastPathComponent], server: t.name)
+        for p in plan {
+            let backupPath = keepBackup && p.existing != nil ? p.remote + ".bak-\(stamp)" : nil
+            g.add(Transfer(name: (p.remote as NSString).lastPathComponent, upload: true, total: p.size) { tr in
+                try await Self.place(p, sftp: sftp, mode: mode, owner: owner, backupPath: backupPath, ownerText: ownerText, transfer: tr)
+            })
+        }
+        g.preparing = false
+        await TransferCenter.shared.run(g, parallel: 2)
+
+        // 결과
+        var out: [String] = []
+        for (p, tr) in zip(plan, g.items) {
+            if case .failed(let why) = tr.state { out.append("실패 \(p.remote): \(why)"); continue }
+            guard tr.state == .done else { out.append("취소 \(p.remote)"); continue }
+            let st = try? await sftp.stat(p.remote)
+            var l = "\(p.existing != nil ? "바꿈" : "새로") \(p.remote) \(FileLook.permissions(st?.permissions)) \(st.map { "\(names.describe($0))" } ?? "")"
+            if keepBackup && p.existing != nil { l += " (원래 파일: \(p.remote).bak-\(stamp))" }
+            out.append(l)
+        }
+        if let macRoot, replaced > 0 { out.append("원래 파일을 이 맥에 받아 둠: \(macRoot.path)") }
+        let failed = g.failedCount
+        note("\(t.name): 올리기 \(remote)\(failed > 0 ? " (실패 \(failed))" : "")", ok: failed == 0)
+        if out.count > 40 { out = Array(out.prefix(40)) + ["… 외 \(out.count - 40)개"] }
+        let head = failed == 0 ? "올렸습니다." : "일부 실패했습니다 (\(failed)개). 실패한 파일의 원래 파일은 그대로입니다."
+        return head + "\n" + out.joined(separator: "\n")
+    }
+
+    /// 파일 하나 놓기: (이 맥으로 원래 파일 받기) → 임시 이름으로 올리기(처음부터 600) → 소유자·권한 → 원래 파일을 .bak 로 → 임시를 제 이름으로.
+    /// 도중에 실패하면 임시 파일을 지우고 원래 파일은 그대로 둔다
+    nonisolated private static func place(_ p: Placement, sftp: SFTPClient, mode: UInt32?, owner: (uid: UInt32?, gid: UInt32?)?,
+                                          backupPath: String?, ownerText: String?, transfer tr: Transfer) async throws {
+        if let mac = p.macCopy {
+            try FileManager.default.createDirectory(at: mac.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try await sftp.download(p.remote, to: mac, progress: { _ in }, isCancelled: { false })
+            if (p.existing?.permissions ?? 0) & 0o004 == 0 { chmod(mac.path, 0o600) } // 남이 못 읽던 파일(개인 키 등)은 이 맥에서도
+        }
+        let dir = (p.remote as NSString).deletingLastPathComponent
+        let tmp = SFTPClient.join(dir.isEmpty ? "." : dir, "." + (p.remote as NSString).lastPathComponent + ".ivnc-" + UUID().uuidString.prefix(8).lowercased())
+        do {
+            try await sftp.upload(p.local, to: tmp, createMode: 0o600, progress: tr.add, isCancelled: tr.isCancelled)
+            // 소유자 먼저 (chown 이 setuid 비트를 지울 수 있어 권한은 뒤에)
+            let wantUID = owner?.uid ?? p.existing?.uid, wantGID = owner?.gid ?? p.existing?.gid
+            if wantUID != nil || wantGID != nil {
+                let now = try await sftp.stat(tmp)
+                if (wantUID != nil && wantUID != now.uid) || (wantGID != nil && wantGID != now.gid) {
+                    do { try await sftp.setstat(tmp, uid: wantUID, gid: wantGID) } catch {
+                        throw Failure("소유자를 \(ownerText ?? "원래 파일 것")으로 바꾸지 못했습니다. as_root=true 로 해 보세요.")
+                    }
+                }
+            }
+            // 권한: 준 것 → 원래 파일 것 → 새 파일은 보통 644
+            let perm = mode ?? p.existing?.permissions.map { $0 & 0o7777 } ?? 0o644
+            try await sftp.setstat(tmp, permissions: perm)
+            if let backupPath {
+                try await sftp.rename(p.remote, to: backupPath)
+                do { try await sftp.rename(tmp, to: p.remote) } catch {
+                    try? await sftp.rename(backupPath, to: p.remote) // 되돌리기
+                    throw error
+                }
+            } else {
+                try await sftp.replace(tmp, to: p.remote)
+            }
+        } catch {
+            try? await sftp.remove(tmp)
+            throw error
+        }
+    }
+
+    /// root 올리기 (로그인 계정이 root 가 아닐 때): 로그인 계정 SFTP 로 남이 못 보는 임시 폴더에 올리고, root 가 명령으로
+    /// 원래 파일 백업·이 맥으로 줄 복사·소유자·권한·제자리 바꿔치기를 한다. sftp-server 가 없는 서버(시놀로지 등)에서도 된다
+    private func uploadStaged(_ t: Target, root: RootRunner, local: URL, isDir: Bool, remote: String, mode: UInt32?, owner: String?,
+                              keepBackup: Bool, macFolder: URL?) async throws -> String {
+        let q = Self.q
+        if let owner, owner.range(of: #"^[A-Za-z0-9._-]*(:[A-Za-z0-9._-]*)?$"#, options: .regularExpression) == nil {
+            throw Failure("owner 가 이상합니다: \(owner)")
+        }
+        var remote = remote
+        // 올릴 목록
+        var files: [(local: URL, remote: String)] = []
+        var dirs: [String] = []
+        if isDir {
+            dirs.append(remote)
+            let e = FileManager.default.enumerator(at: local, includingPropertiesForKeys: [.isDirectoryKey])
+            while let u = e?.nextObject() as? URL {
+                let rel = String(u.standardizedFileURL.path.dropFirst(local.path.count + 1))
+                if rel.split(separator: "/").contains(where: { $0 == ".DS_Store" }) { continue }
+                let r = SFTPClient.join(remote, rel)
+                if (try? u.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true { dirs.append(r) } else { files.append((u, r)) }
+            }
+        } else {
+            files.append((local, remote))
+        }
+        guard !files.isEmpty else { throw Failure("올릴 파일이 없습니다.") }
+
+        // 원래 파일 (root 로 stat: uid gid 권한 종류). 파일 하나를 이미 있는 폴더에 주면 그 안에 → 한 번에 묻는다
+        var statScript = files.map { "stat -c '%u %g %a %F' -- \(q($0.remote)) 2>/dev/null || echo none" }.joined(separator: "\n")
+        if !isDir {
+            let inside = SFTPClient.join(remote, local.lastPathComponent)
+            statScript = "if [ -d \(q(remote)) ]; then echo D; stat -c '%u %g %a %F' -- \(q(inside)) 2>/dev/null || echo none; else echo F; \(statScript); fi"
+        }
+        var lines = try await rootOK(root, statScript).split(separator: "\n").map(String.init)
+        if !isDir, let first = lines.first {
+            if first == "D" { remote = SFTPClient.join(remote, local.lastPathComponent); files = [(local, remote)] }
+            lines.removeFirst()
+        }
+        guard lines.count == files.count else { throw Failure("원래 파일 정보를 읽지 못했습니다.") }
+        var existing: [(uid: String, gid: String, mode: String)?] = []
+        for (i, l) in lines.enumerated() {
+            let f = l.split(separator: " ", maxSplits: 3).map(String.init)
+            if f.count >= 4 {
+                if f[3].contains("directory") { throw Failure("서버에 같은 이름의 폴더가 있습니다: \(files[i].remote)") }
+                existing.append((f[0], f[1], f[2]))
+            } else {
+                existing.append(nil)
+            }
+        }
+
+        // 한 번에 묻기
+        let stamp = Self.stamp()
+        let macRoot = macFolder?.appendingPathComponent("\(t.name) \(stamp)")
+        let replaced = existing.compactMap { $0 }.count
+        var ask = ["올리기 (\(root.how)): \(Self.short(local.path)) → \(remote)" + (isDir ? " (파일 \(files.count)개)" : "")]
+        if replaced > 0 {
+            var r = "바꾸는 파일 \(replaced)개"
+            if keepBackup { r += " · 서버에 .bak-\(stamp) 로 남김" }
+            if let macRoot { r += " · 먼저 이 맥 \(Self.short(macRoot.path)) 로 받아 둠" }
+            if !keepBackup && macRoot == nil { r += " · 백업 없음" }
+            ask.append(r)
+        }
+        ask.append("권한: " + (mode.map { String($0, radix: 8) } ?? (replaced > 0 ? "원래 파일 것 유지" : "644"))
+                   + " · 소유자: " + (owner ?? (replaced > 0 ? "원래 파일 것 유지" : "root")))
+        try await allow(server: t, action: ask.joined(separator: "\n"), danger: replaced > 0 ? "서버 파일 \(replaced)개 바꾸기 (root)" : "서버에 쓰기 (root)")
+
+        // 1) 로그인 계정 임시 폴더에 올리기 (⇅ 전송 내역)
+        let stage = try await loginStage(t)
+        let login = t.computer.username
+        let shell = try await connection(t)
+        defer { Task { _ = try? await shell.execFull("rm -rf -- \(q(stage))", timeout: 30) } }
+        let io = try await loginIO(t)
+        let g = TransferCenter.shared.begin(.upload, names: [local.lastPathComponent], server: t.name)
+        for (i, f) in files.enumerated() {
+            let size = Int64((try? f.local.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+            let dst = SFTPClient.join(stage, "f\(i)")
+            g.add(Transfer(name: (f.remote as NSString).lastPathComponent, upload: true, total: size) { tr in
+                try await io.put(f.local, dst, tr)
+            })
+        }
+        g.preparing = false
+        await TransferCenter.shared.run(g, parallel: 2)
+        if g.failedCount > 0 || g.items.contains(where: { $0.state != .done }) {
+            let why = g.items.compactMap { tr -> String? in if case .failed(let w) = tr.state { return "\(tr.name): \(w)" } else { return nil } }
+            throw Failure("임시 폴더에 올리지 못해 서버 파일은 그대로입니다.\n" + why.prefix(10).joined(separator: "\n"))
+        }
+
+        // 2) 원래 파일을 이 맥으로 (root 가 임시 폴더에 복사해 로그인 계정에게 넘김)
+        if let macRoot, replaced > 0 {
+            let cp = files.indices.compactMap { i -> String? in
+                existing[i] == nil ? nil : "cp -p -- \(q(files[i].remote)) \(q(stage))/o\(i) && chown \(q(login)) \(q(stage))/o\(i)"
+            }.joined(separator: " &&\n")
+            _ = try await rootOK(root, cp, timeout: 600)
+            for i in files.indices where existing[i] != nil {
+                let rel = isDir ? String(files[i].remote.dropFirst(remote.count + 1)) : (files[i].remote as NSString).lastPathComponent
+                let dst = macRoot.appendingPathComponent(rel)
+                try FileManager.default.createDirectory(at: dst.deletingLastPathComponent(), withIntermediateDirectories: true)
+                do { try await io.get(SFTPClient.join(stage, "o\(i)"), dst) }
+                catch { throw Failure("원래 파일을 이 맥으로 받지 못해 바꾸지 않았습니다: \(files[i].remote)") }
+                if let m = existing[i].flatMap({ UInt32($0.mode, radix: 8) }), m & 0o004 == 0 { chmod(dst.path, 0o600) }
+            }
+        }
+
+        // 3) root 가 제자리에 놓기: 같은 폴더 임시 이름에 600 으로 복사 → 소유자·권한 → (원래 파일 .bak) → 바꿔치기. 실패하면 원래 그대로
+        var script = """
+        place() {
+          src=$1; dst=$2; own=$3; mod=$4; bak=$5
+          tmp="$(dirname -- "$dst")/.$(basename -- "$dst").ivnc-$$"
+          ( umask 077; cp -- "$src" "$tmp" ) || return 1
+          if [ -n "$own" ]; then chown -- "$own" "$tmp" || { rm -f -- "$tmp"; return 1; }; fi
+          chmod -- "$mod" "$tmp" || { rm -f -- "$tmp"; return 1; }
+          if [ -n "$bak" ]; then
+            mv -- "$dst" "$bak" || { rm -f -- "$tmp"; return 1; }
+            mv -- "$tmp" "$dst" || { mv -- "$bak" "$dst"; rm -f -- "$tmp"; return 1; }
+          else
+            mv -f -- "$tmp" "$dst" || { rm -f -- "$tmp"; return 1; }
+          fi
+        }
+
+        """
+        for d in dirs {
+            script += "mkdir -p -- \(q(d))" + (owner.map { " && chown -- \(q($0)) \(q(d))" } ?? "") + "\n"
+        }
+        for (i, f) in files.enumerated() {
+            let ex = existing[i]
+            let own = owner ?? ex.map { "\($0.uid):\($0.gid)" } ?? ""
+            let mod = mode.map { String($0, radix: 8) } ?? ex?.mode ?? "644"
+            let bak = keepBackup && ex != nil ? f.remote + ".bak-\(stamp)" : ""
+            script += "if e=$(place \(q(stage))/f\(i) \(q(f.remote)) \(q(own)) \(q(mod)) \(q(bak)) 2>&1); then echo \"ok \(i) $(stat -c '%A %U:%G' -- \(q(f.remote)))\"; else echo \"fail \(i) $e\" | tr '\\n' ' '; echo; fi\n"
+        }
+        let placed = try await root.run(script, 600)
+        var out: [String] = []
+        var failed = 0
+        for line in placed.stdout.split(separator: "\n") {
+            let parts = line.split(separator: " ", maxSplits: 2).map(String.init)
+            guard parts.count >= 2, let i = Int(parts[1]), i < files.count else { continue }
+            let f = files[i]
+            if parts[0] == "ok" {
+                var l = "\(existing[i] != nil ? "바꿈" : "새로") \(f.remote) \(parts.count > 2 ? parts[2] : "")"
+                if keepBackup && existing[i] != nil { l += " (원래 파일: \(f.remote).bak-\(stamp))" }
+                out.append(l)
+            } else {
+                failed += 1
+                out.append("실패 \(f.remote): \(parts.count > 2 ? parts[2] : "")")
+            }
+        }
+        if out.isEmpty { throw Failure("root 로 놓는 단계 결과를 받지 못했습니다. " + placed.stderr.prefix(500)) }
+        if let macRoot, replaced > 0 { out.append("원래 파일을 이 맥에 받아 둠: \(macRoot.path)") }
+        note("\(t.name): (\(root.how)) 올리기 \(remote)\(failed > 0 ? " (실패 \(failed))" : "")", ok: failed == 0)
+        if out.count > 40 { out = Array(out.prefix(40)) + ["… 외 \(out.count - 40)개"] }
+        return (failed == 0 ? "올렸습니다 (\(root.how))." : "일부 실패했습니다 (\(failed)개). 실패한 파일의 원래 파일은 그대로입니다.") + "\n" + out.joined(separator: "\n")
+    }
+
+    /// root 받기 (로그인 계정이 root 가 아닐 때): root 가 남이 못 보는 임시 폴더에 cp -a 하고 로그인 계정에게 넘김 →
+    /// 명령 채널 cat 으로 받고(SFTP 없이) 임시 폴더를 지운다
+    private func downloadStaged(_ t: Target, root: RootRunner, remote: String, local: URL) async throws -> String {
+        let q = Self.q
+        let login = t.computer.username
+        let s = try await rootOK(root, "umask 077; s=$(mktemp -d /tmp/.ivnc-dl-XXXXXXXX) && cp -a -- \(q(remote)) \"$s/\" && chown -R \(q(login)) \"$s\" && echo \"$s\"", timeout: 600)
+            .split(separator: "\n").last.map(String.init) ?? ""
+        guard s.hasPrefix("/tmp/.ivnc-dl-") else { throw Failure("root 로 임시 복사를 하지 못했습니다.") }
+        let shell = try await connection(t)
+        defer { Task { _ = try? await shell.execFull("rm -rf -- \(q(s))", timeout: 30) } }
+        // 받을 목록: 권한(8진) 크기 상대 경로
+        let name = (remote as NSString).lastPathComponent
+        let list = try await shell.execFull("cd \(q(s)) && find \(q(name)) -type f -exec stat -c '%a %s %n' {} +", timeout: 120)
+        guard list.exitStatus == 0 else { throw Failure("받을 목록을 읽지 못했습니다: \(list.stderr.prefix(200))") }
+        var isDir: ObjCBool = false
+        _ = FileManager.default.fileExists(atPath: local.path, isDirectory: &isDir)
+        // local 이 있는 폴더면 그 안에 name 으로, 아니면 local 자체가 받을 이름
+        let into = isDir.boolValue
+        var files: [(rel: String, mode: UInt32, size: Int64, dst: URL)] = []
+        for line in list.stdout.split(separator: "\n") {
+            let f = line.split(separator: " ", maxSplits: 2).map(String.init)
+            guard f.count == 3, let m = UInt32(f[0], radix: 8) else { continue }
+            let rel = f[2]
+            let dst: URL
+            if into { dst = local.appendingPathComponent(rel) }
+            else { dst = rel == name ? local : local.appendingPathComponent(String(rel.dropFirst(name.count + 1))) }
+            files.append((rel, m, Int64(f[1]) ?? 0, dst))
+        }
+        guard !files.isEmpty else { throw Failure("받을 파일이 없습니다: \(remote)") }
+        let overwrite = files.filter { FileManager.default.fileExists(atPath: $0.dst.path) }.count
+        try await allow(server: t, action: "받기 (\(root.how)): \(remote) → \(Self.short((into ? local.appendingPathComponent(name) : local).path))" + (files.count > 1 ? " (파일 \(files.count)개)" : ""),
+                        danger: overwrite > 0 ? "이 맥 파일 \(overwrite)개 덮어쓰기" : nil)
+        let io = try await loginIO(t)
+        let g = TransferCenter.shared.begin(.download, names: [name], server: t.name)
+        for f in files {
+            g.add(Transfer(name: f.dst.lastPathComponent, upload: false, total: f.size) { tr in
+                try FileManager.default.createDirectory(at: f.dst.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try await io.get(SFTPClient.join(s, f.rel), f.dst)
+                if f.mode & 0o004 == 0 { chmod(f.dst.path, 0o600) } // 남이 못 읽던 파일은 이 맥에서도
+                tr.add(Int(f.size))
+            })
+        }
+        g.preparing = false
+        await TransferCenter.shared.run(g, parallel: 2)
+        let failed = g.items.compactMap { tr -> String? in if case .failed(let why) = tr.state { return "실패 \(tr.name): \(why)" } else { return nil } }
+        note("\(t.name): (\(root.how)) 받기 \(remote)\(failed.isEmpty ? "" : " (실패 \(failed.count))")", ok: failed.isEmpty)
+        let shown = into ? local.appendingPathComponent(name) : local
+        return failed.isEmpty ? "받았습니다 (\(root.how)): \(shown.path)" + (files.count > 1 ? " (파일 \(files.count)개)" : "")
+                              : "일부 실패했습니다: \(shown.path)\n" + failed.prefix(30).joined(separator: "\n")
+    }
+
+    private func download(_ a: [String: Any]) async throws -> String {
+        let t = try target(a)
+        let remote = try string(a, "remote_path")
+        var local = URL(fileURLWithPath: (try string(a, "local_path") as NSString).expandingTildeInPath)
+        if let root = try await stagedRoot(t, a) { return try await downloadStaged(t, root: root, remote: remote, local: local) }
+        let fc = try await fileClient(t, a)
+        defer { fc.finish() }
+        let sftp = fc.client
+        let source = remote
+        let st = try await sftp.stat(source)
+        var isDir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: local.path, isDirectory: &isDir), isDir.boolValue {
+            local = local.appendingPathComponent((remote as NSString).lastPathComponent)
+        }
+        // 받을 목록 (폴더면 안쪽까지)
+        var files: [(remote: String, local: URL, attrs: SFTPClient.Attrs)] = []
+        var dirs: [URL] = []
+        func walk(_ r: String, _ l: URL) async throws {
+            dirs.append(l)
+            for e in try await sftp.list(r) {
+                if e.attrs.isSymlink { continue }
+                if e.isDirectory { try await walk(e.path, l.appendingPathComponent(e.name)) }
+                else { files.append((e.path, l.appendingPathComponent(e.name), e.attrs)) }
+            }
+        }
+        if st.isDirectory { try await walk(source, local) } else { files.append((source, local, st)) }
+        let overwrite = files.filter { FileManager.default.fileExists(atPath: $0.local.path) }.count
+        try await allow(server: t, action: "받기\(fc.user.map { " (\($0) 권한)" } ?? ""): \(remote) → \(Self.short(local.path))"
+                        + (st.isDirectory ? " (파일 \(files.count)개)" : ""),
+                        danger: overwrite > 0 ? "이 맥 파일 \(overwrite)개 덮어쓰기" : nil)
+        for d in dirs { try FileManager.default.createDirectory(at: d, withIntermediateDirectories: true) }
+        if !st.isDirectory { try FileManager.default.createDirectory(at: local.deletingLastPathComponent(), withIntermediateDirectories: true) }
+
+        let g = TransferCenter.shared.begin(.download, names: [(remote as NSString).lastPathComponent], server: t.name)
+        for f in files {
+            g.add(Transfer(name: f.local.lastPathComponent, upload: false, total: Int64(f.attrs.size ?? 0)) { tr in
+                try await sftp.download(f.remote, to: f.local, progress: tr.add, isCancelled: tr.isCancelled)
+                if (f.attrs.permissions ?? 0) & 0o004 == 0 { chmod(f.local.path, 0o600) } // 남이 못 읽던 파일은 이 맥에서도
+            })
+        }
+        g.preparing = false
+        await TransferCenter.shared.run(g, parallel: 2)
+        let failed = g.items.compactMap { tr -> String? in if case .failed(let why) = tr.state { return "실패 \(tr.name): \(why)" } else { return nil } }
+        note("\(t.name): 받기 \(remote)\(failed.isEmpty ? "" : " (실패 \(failed.count))")", ok: failed.isEmpty)
+        return (failed.isEmpty ? "받았습니다: \(local.path)" + (st.isDirectory ? " (파일 \(files.count)개)" : "")
+                               : "일부 실패했습니다: \(local.path)\n" + failed.prefix(30).joined(separator: "\n"))
     }
 
     // MARK: 권한·확인
@@ -714,9 +1393,14 @@ final class MCPServer: ObservableObject {
         s.onHostKeyQuestion = { _, answer in answer(false) }
         try await withCheckedThrowingContinuation { (k: CheckedContinuation<Void, Error>) in
             var done = false
+            // 로그인·경유 통로가 30초 안에 안 되면 그만둔다 (끝없이 기다리지 않게. VPN 이 꺼져 배스천에 닿지 않는 경우 등, 사용자)
+            let via = hops.isEmpty ? "" : " (경유: \(hops.map(\.name).joined(separator: " → ")))"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
+                if !done { done = true; s.onClose = nil; s.close(); k.resume(throwing: Failure("\(t.name) 에 30초 안에 접속하지 못했습니다\(via). 네트워크(VPN 등)가 연결돼 있는지 사용자에게 확인해 달라고 하세요.")) }
+            }
             s.onConnected = { if !done { done = true; k.resume() } }
             s.onClose = { err, _ in
-                if !done { done = true; k.resume(throwing: Failure((err ?? "접속하지 못했습니다.") + " (처음 접속하는 서버면 iVNC 에서 한 번 열어 서버 지문을 확인하세요)")) }
+                if !done { done = true; k.resume(throwing: Failure("\(t.name)\(via): " + (err ?? "접속하지 못했습니다.") + " 네트워크(VPN 등)가 연결돼 있는지 사용자에게 확인해 달라고 하세요. 처음 접속하는 서버면 iVNC 에서 한 번 열어 서버 지문을 확인해야 합니다.")) }
             }
             s.connect(cols: 80, rows: 24, keepAlive: true)
         }
@@ -752,21 +1436,25 @@ final class MCPServer: ObservableObject {
 
     // MARK: 도우미
 
-    private func listServers() -> [String: Any] {
+    private func listServers() async -> [String: Any] {
         let reg = TerminalRegistry.shared
         let allowed = Set(allowedServers().map(\.id))
         let active = reg.activeTab?.computer.id
+        var servers: [[String: Any]] = []
+        for c in sshServers where allowed.contains(c.id) {
+            var d: [String: Any] = ["name": c.name, "id": c.id.uuidString, "user": c.username, "host": c.host, "port": c.port,
+                                    "open_tabs": reg.openTabs.filter { $0.computer.id == c.id }.count,
+                                    "connected": reg.openTabs.contains { $0.computer.id == c.id && $0.sshShell != nil } || (background[c.id]?.isOpen ?? false),
+                                    "active": c.id == active]
+            if let via = store?.jumpChain(for: c), !via.isEmpty { d["via"] = via.map(\.name) }
+            d.merge(await rootInfo(c)) { a, _ in a }
+            servers.append(d)
+        }
         return [
             "scope": scope.label,
             "permission": permission.label,
             "permission_detail": permission.detail,
-            "servers": sshServers.filter { allowed.contains($0.id) }.map { c -> [String: Any] in
-                var d: [String: Any] = ["name": c.name, "id": c.id.uuidString, "user": c.username, "host": c.host, "port": c.port,
-                                        "open_tabs": reg.openTabs.filter { $0.computer.id == c.id }.count,
-                                        "active": c.id == active]
-                if let via = store?.jumpChain(for: c), !via.isEmpty { d["via"] = via.map(\.name) }
-                return d
-            },
+            "servers": servers,
             "screens": SessionModel.openSessions.map { ["name": $0.computer.name, "id": $0.computer.id.uuidString] },
         ]
     }
@@ -774,6 +1462,13 @@ final class MCPServer: ObservableObject {
     private func string(_ a: [String: Any], _ key: String) throws -> String {
         guard let v = a[key] as? String else { throw Failure("\(key) 가 필요합니다.") }
         return v
+    }
+
+    private static func execOut(_ r: SSHShell.ExecResult) -> [String: Any] {
+        var out: [String: Any] = ["exit_code": r.exitStatus.map { $0 as Any } ?? NSNull(),
+                                  "stdout": clip(r.stdout), "stderr": clip(r.stderr)]
+        if r.timedOut { out["timed_out"] = true }
+        return out
     }
 
     private static func clip(_ s: String, max: Int = 100_000) -> String {
@@ -873,4 +1568,8 @@ private struct HTTPRequest {
         headers = h
         body = data.subdata(in: bodyStart..<(bodyStart + length))
     }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }
