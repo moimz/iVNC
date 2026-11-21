@@ -7,6 +7,13 @@ import QuickLook
 // 아이패드 파인더의 "이 iPad" 칸 (2026-11-21 사용자: 파인더 안에서 아이패드 파일 | 서버 파일, 넓으면 나란히·좁으면 전환).
 // 앱 문서 폴더에서 시작한다 (파일 앱 "나의 iPad › iVNC" 에도 보임). "다른 폴더 열기…" 로 파일 앱의 다른 폴더(iCloud Drive 등)도.
 
+/// 파인더 글자에 쓰는 기기 이름·그림 (아이폰에서는 "iPhone", 사용자)
+enum Device {
+    static var isPhone: Bool { UIDevice.current.userInterfaceIdiom == .phone }
+    static var name: String { isPhone ? "iPhone" : "iPad" }
+    static var symbol: String { isPhone ? "iphone" : "ipad" }
+}
+
 /// 이 iPad 쪽 파일 (작업 공간에 하나, 탭끼리 같이 쓴다)
 @MainActor
 final class MobileLocalFiles: ObservableObject {
@@ -92,7 +99,7 @@ final class MobileLocalFiles: ObservableObject {
     }
 
     func title(_ u: URL) -> String {
-        if u.standardizedFileURL.path == root.standardizedFileURL.path { return isDocuments ? "나의 iPad › iVNC" : rootName }
+        if u.standardizedFileURL.path == root.standardizedFileURL.path { return isDocuments ? "나의 \(Device.name) › iVNC" : rootName }
         return u.lastPathComponent
     }
 
@@ -163,13 +170,11 @@ final class MobileLocalFiles: ObservableObject {
 }
 
 /// 파인더 칸 하나의 제목 줄 (사용자: 칸마다 제목 줄 — 왼쪽 ‹ 위 폴더, 가운데 지금 경로(누르면 상위 폴더로), 오른쪽 선택·올리기·⋯)
-extension EnvironmentValues {
-    /// 파인더 칸 제목 줄 유리 버튼 높이 (PaneTitleBar 가 ‹ 버튼을 재서 넣는다)
-    @Entry var paneButtonHeight: CGFloat = 34
-}
-
 struct PaneTitleBar<Ancestors: View, Trailing: View>: View {
-    var switcher: AnyView?
+    /// 좁을 때 [이 iPhone | 서버] 전환 (제목 메뉴 아래쪽에, 사용자). nil 이면 두 칸이 나란히라 전환 없음
+    var showServer: Binding<Bool>?
+    /// 이 칸이 서버 칸인지 (제목 앞 아이콘·메뉴 체크)
+    var isServer = false
     let title: String
     let subtitle: String
     let canGoUp: Bool
@@ -180,12 +185,30 @@ struct PaneTitleBar<Ancestors: View, Trailing: View>: View {
     @ViewBuilder let trailing: Trailing
     /// ‹ 유리 버튼의 실제 높이. [iPad|서버] 전환을 같은 높이로 (창 크기에 따라 시스템이 유리 버튼 높이를 바꾼다)
     @State private var buttonHeight: CGFloat = 34
+    @State private var leadingWidth: CGFloat = 0
+    @State private var trailingWidth: CGFloat = 0
 
     var body: some View {
         ZStack {
             // 가운데: 전체 경로 한 줄, 길면 가운데를 … 로 (사용자). 누르면 상위 폴더 목록
-            Menu { ancestors } label: {
+            Menu {
+                ancestors
+                if let showServer {
+                    Divider()
+                    // 다른 쪽 파일로 (지금 보는 쪽에 체크)
+                    Picker("보기", selection: showServer) {
+                        Label("\(Device.name) 파일 보기", systemImage: Device.symbol).tag(false)
+                        Label("서버 파일 보기", systemImage: "server.rack").tag(true)
+                    }
+                    .pickerStyle(.inline)
+                }
+            } label: {
                 HStack(spacing: 4) {
+                    // 전환할 수 있을 때는 지금 어느 쪽인지 제목 앞 아이콘으로
+                    if showServer != nil {
+                        Image(systemName: isServer ? "server.rack" : Device.symbol)
+                            .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                    }
                     Text(subtitle).font(.headline).lineLimit(1).truncationMode(.middle)
                     Image(systemName: "chevron.down").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
                 }
@@ -197,15 +220,21 @@ struct PaneTitleBar<Ancestors: View, Trailing: View>: View {
             }
             // 메뉴 글자가 강조색(파랑)으로 물들지 않게 — 제목은 보통 글자색
             .tint(.primary)
+            // 제목은 양옆 버튼 묶음 사이 빈 곳의 가운데 (겹치지 않게, 좁은 아이폰에서도 그 사이를 다 쓴다)
+            .padding(.leading, leadingWidth + 4)
+            .padding(.trailing, trailingWidth + 4)
             HStack(spacing: 8) {
-                if let switcher { switcher.environment(\.paneButtonHeight, buttonHeight) }
+              HStack(spacing: 8) {
                 Button(action: goUp) { Image(systemName: "chevron.backward").frame(width: 20, height: 20) }
                     .buttonBorderShape(.circle)
                     .onGeometryChange(for: CGFloat.self, of: \.size.height) { buttonHeight = $0 }
                     .disabled(!canGoUp)
                     .accessibilityLabel("위 폴더")
                 if loading { ProgressView().controlSize(.small) }
+              }
+              .onGeometryChange(for: CGFloat.self, of: \.size.width) { leadingWidth = $0 }
                 Spacer()
+              HStack(spacing: 8) {
                 if selecting {
                     // 선택 중: [모두 선택] [완료] — 완료가 맨 오른쪽 파란 강조 버튼 (inPlayer·사진 앱처럼)
                     trailing
@@ -216,11 +245,12 @@ struct PaneTitleBar<Ancestors: View, Trailing: View>: View {
                         .tint(.accentColor)
                         .buttonBorderShape(.capsule)
                 } else {
-                    Button { withAnimation { selecting = true } } label: { Text("선택").frame(height: 20.5) }
-                        .buttonBorderShape(.capsule)
+                    // 선택은 ⋯ 메뉴 안으로 (사용자: 좁아서)
                     trailing
                         .buttonBorderShape(.circle)
                 }
+              }
+              .onGeometryChange(for: CGFloat.self, of: \.size.width) { trailingWidth = $0 }
             }
             // 앱 제목 줄의 시스템 버튼과 같은 유리 버튼, 흰 글자
             .buttonStyle(.glass)
@@ -313,55 +343,25 @@ struct MobileFinderView: View {
             .background(Color(uiColor: .systemBackground))
     }
 
+    /// 폭은 onGeometryChange 로 잰다: GeometryReader 안에서 [iPad|서버] 를 바꾸면 버튼만 바뀌고 칸이 안 바뀌었다 (아이폰)
+    @State private var width: CGFloat = 0
+
     private var content: some View {
-        GeometryReader { geo in
-            if geo.size.width >= Self.twoPaneWidth {
+        Group {
+            if width >= Self.twoPaneWidth {
                 HStack(spacing: 0) {
                     MobileLocalPaneView(local: local, files: files).frame(maxWidth: .infinity)
                     Divider()
                     MobileFileBrowserView(files: files, connected: connected, local: local).frame(maxWidth: .infinity)
                 }
             } else if showServer {
-                MobileFileBrowserView(files: files, connected: connected, local: local, switcher: AnyView(switcher))
+                MobileFileBrowserView(files: files, connected: connected, local: local, showServer: $showServer)
             } else {
-                MobileLocalPaneView(local: local, files: files, switcher: AnyView(switcher))
+                MobileLocalPaneView(local: local, files: files, showServer: $showServer)
             }
         }
-    }
-
-    /// [iPad | 서버] 전환: 분할 Picker 는 옆 유리 버튼보다 작아 보여서(사용자) 앱 제목 줄 [터미널|파인더] 처럼
-    /// 유리 캡슐 하나에 아이콘 둘, 지금 보는 쪽만 파랗게. 높이는 옆 ‹ 버튼과 같게
-    private var switcher: some View {
-        PaneSwitcher(showServer: $showServer)
-    }
-}
-
-/// [iPad | 서버] 전환. 높이는 제목 줄 ‹ 버튼에 맞춘다 (사용자: 옆 버튼과 높이가 같아야)
-private struct PaneSwitcher: View {
-    @Binding var showServer: Bool
-    @Environment(\.paneButtonHeight) private var height
-
-    var body: some View {
-        HStack(spacing: 0) {
-            side("ipad", server: false, label: "이 iPad")
-            side("server.rack", server: true, label: "서버")
-        }
-        .padding(.horizontal, 4)
-        .glassEffect(.regular.interactive(), in: .capsule)
-        .fixedSize()
-    }
-
-    private func side(_ symbol: String, server: Bool, label: String) -> some View {
-        Button { withAnimation(.snappy(duration: 0.2)) { showServer = server } } label: {
-            Image(systemName: symbol)
-                .font(.system(size: 17))
-                .foregroundStyle(showServer == server ? Color.accentColor : Color.primary)
-                .frame(width: max(40, height * 1.15), height: height)
-                .contentShape(.rect)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(label)
-        .accessibilityAddTraits(showServer == server ? .isSelected : [])
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .onGeometryChange(for: CGFloat.self, of: \.size.width) { width = $0 }
     }
 }
 
@@ -369,7 +369,7 @@ private struct PaneSwitcher: View {
 struct MobileLocalPaneView: View {
     @ObservedObject var local: MobileLocalFiles
     let files: MobileFileSession
-    var switcher: AnyView? = nil
+    var showServer: Binding<Bool>? = nil
     @State private var picking = false
     @State private var preview: URL?
     @State private var sharing: URL?
@@ -438,14 +438,14 @@ struct MobileLocalPaneView: View {
             Button("만들기") { local.makeFolder(nameInput) }
             Button("취소", role: .cancel) {}
         }
-        .alert("선택한 \(selection.count)개를 이 iPad 에서 지울까요?", isPresented: $deletingMany) {
+        .alert("선택한 \(selection.count)개를 이 \(Device.name) 에서 지울까요?", isPresented: $deletingMany) {
             Button("삭제", role: .destructive) {
                 for u in selection { try? FileManager.default.removeItem(at: u) }
                 selection = []; selecting = false; local.refresh()
             }
             Button("취소", role: .cancel) {}
         } message: { Text("되돌릴 수 없습니다.") }
-        .alert("이 iPad 에서 지울까요?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
+        .alert("이 \(Device.name) 에서 지울까요?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
             Button("삭제", role: .destructive) { if let e = deleting { local.delete(e) } }
             Button("취소", role: .cancel) {}
         } message: {
@@ -455,7 +455,7 @@ struct MobileLocalPaneView: View {
 
     // 제목 줄: ‹ 위 폴더 · 지금 경로(누르면 상위 폴더로) · 선택 · ⋯
     private var header: some View {
-        PaneTitleBar(switcher: switcher,
+        PaneTitleBar(showServer: showServer, isServer: false,
                      title: local.title(local.dir),
                      subtitle: local.displayPath,
                      canGoUp: local.ancestors.count > 1,
@@ -478,12 +478,14 @@ struct MobileLocalPaneView: View {
                 .disabled(local.visible.isEmpty)
             } else {
                 Menu {
+                    Button("선택", systemImage: "checkmark.circle") { withAnimation { selecting = true } }
+                    Divider()
                     Toggle("숨김 파일 보기", isOn: $local.showHidden)
                     Button("새 폴더", systemImage: "folder.badge.plus") { nameInput = ""; newFolder = true }
                     Button("새로 고침", systemImage: "arrow.clockwise") { local.refresh() }
                     Divider()
                     Button("다른 폴더 열기…", systemImage: "folder") { picking = true }
-                    if !local.isDocuments { Button("나의 iPad › iVNC 로", systemImage: "ipad") { local.useDocuments() } }
+                    if !local.isDocuments { Button("나의 \(Device.name) › iVNC 로", systemImage: Device.symbol) { local.useDocuments() } }
                 } label: { Image(systemName: "ellipsis").frame(width: 20, height: 20) }
             }
         }

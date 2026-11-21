@@ -52,9 +52,11 @@ final class MobileTerminalWorkspace: ObservableObject {
 }
 
 /// 고른 탭의 터미널을 보여 주는 칸. 탭마다 화면을 살려 두고 고른 것만 보인다 (맥 PaneHost 와 같은 방식)
-private struct WorkspaceTerminalHost: UIViewRepresentable {
+struct WorkspaceTerminalHost: UIViewRepresentable {
     let tabs: [MobileTerminalSession]
     let active: UUID?
+    /// 고른 탭에 키보드를 올린다 (아이폰은 옆 메뉴가 열려 있는 동안 끈다)
+    var focus = true
 
     final class Box: UIView {
         override func layoutSubviews() {
@@ -78,7 +80,8 @@ private struct WorkspaceTerminalHost: UIViewRepresentable {
         }
         if let t = tabs.first(where: { $0.id == active }) {
             box.backgroundColor = t.view.nativeBackgroundColor
-            DispatchQueue.main.async { if !t.view.isFirstResponder { _ = t.view.becomeFirstResponder() } }
+            if focus { DispatchQueue.main.async { if !t.view.isFirstResponder { _ = t.view.becomeFirstResponder() } } }
+            else { for t in tabs where t.view.isFirstResponder { _ = t.view.resignFirstResponder() } }
         }
     }
 }
@@ -91,14 +94,22 @@ struct MobileTerminalWorkspaceView: View {
     @State private var query = ""
     @State private var editing: Computer?
     @State private var confirmClose = false
+    @Environment(\.horizontalSizeClass) private var sizeClass
 
     private var servers: [Computer] { store.computers.filter { $0.type == .ssh && $0.matches(query) } }
 
     var body: some View {
-        NavigationSplitView {
-            sidebar
-        } detail: {
-            detail
+        Group {
+            if sizeClass == .compact {
+                // 아이폰(좁은 창): 탭 줄 대신 옆 메뉴에 열린 탭 + 서버 목록 (MobilePhoneWorkspace.swift)
+                PhoneWorkspaceLayout(workspace: workspace, requestClose: requestClose, edit: { editing = $0 })
+            } else {
+                NavigationSplitView {
+                    sidebar
+                } detail: {
+                    detail
+                }
+            }
         }
         // 터미널 바탕이 어두워서 작업 공간 전체를 어두운 모양으로
         .preferredColorScheme(.dark)
@@ -113,9 +124,10 @@ struct MobileTerminalWorkspaceView: View {
             }
         }
         .sheet(item: $editing) { ComputerEditView(computer: $0) }
-        .confirmationDialog("열린 터미널 \(workspace.tabs.count)개의 접속을 모두 끊을까요?", isPresented: $confirmClose, titleVisibility: .visible) {
-            Button("모두 끊고 닫기", role: .destructive) { workspace.closeAll(); dismiss() }
+        // alert: 아이폰 confirmationDialog 는 취소 버튼을 숨겨(바깥을 눌러야 닫힘) 취소가 안 보였다 (사용자)
+        .alert("열린 터미널 \(workspace.tabs.count)개의 접속을 모두 끊을까요?", isPresented: $confirmClose) {
             Button("취소", role: .cancel) {}
+            Button("모두 끊고 닫기", role: .destructive) { workspace.closeAll(); dismiss() }
         }
         .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
             for t in workspace.tabs { t.applySettings() }
@@ -144,9 +156,7 @@ struct MobileTerminalWorkspaceView: View {
         .toolbar {
             // 닫기 = 모든 터미널 접속을 끊고 컴퓨터 목록으로 (사용자: 뒤로 가기 대신 닫기)
             ToolbarItem(placement: .topBarLeading) {
-                Button("닫기", systemImage: "xmark") {
-                    if workspace.tabs.count > 1 { confirmClose = true } else { workspace.closeAll(); dismiss() }
-                }
+                Button("닫기", systemImage: "xmark", action: requestClose)
             }
         }
     }
@@ -234,6 +244,11 @@ struct MobileTerminalWorkspaceView: View {
         .background(Color(white: 0.12), ignoresSafeAreaEdges: [])
     }
 
+    /// 닫기: 탭이 둘 이상이면 물어보고, 모든 접속을 끊고 컴퓨터 목록으로
+    private func requestClose() {
+        if workspace.tabs.count > 1 { confirmClose = true } else { workspace.closeAll(); dismiss() }
+    }
+
     private var questionTab: MobileTerminalSession? { workspace.tabs.first { $0.hostKeyQuestion != nil } }
     private var hostKeyTitle: String { questionTab?.hostKeyQuestion?.changed == true ? "서버 지문이 바뀌었습니다" : "처음 접속하는 서버입니다" }
 
@@ -245,7 +260,7 @@ struct MobileTerminalWorkspaceView: View {
 }
 
 /// 사이드바 한 줄 (맥 사이드바와 같은 모양)
-private struct WorkspaceServerRow: View {
+struct WorkspaceServerRow: View {
     let computer: Computer
     let openCount: Int
 
@@ -310,7 +325,7 @@ private struct WorkspaceTabItem: View {
 }
 
 /// 접속 중·끊김 표시
-private struct WorkspaceStatus: View {
+struct WorkspaceStatus: View {
     @ObservedObject var session: MobileTerminalSession
     var body: some View {
         switch session.state {

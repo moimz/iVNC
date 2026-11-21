@@ -8,12 +8,9 @@ struct HomeView: View {
     @State private var adding = false
     @State private var settings = false
     @State private var connecting: Computer?
-    /// 연 SSH 터미널 (아이폰: 한 화면)
-    @State private var terminal: Computer?
-    /// 아이패드: 맥 터미널 창 같은 작업 공간 (사이드바 + 탭). 닫으면 모든 접속을 끊는다
+    /// SSH 작업 공간: 아이패드는 맥 터미널 창처럼 사이드바 + 탭, 아이폰은 옆 메뉴(열린 탭 + 서버). 닫으면 모든 접속을 끊는다
     @StateObject private var workspace = MobileTerminalWorkspace()
     @State private var showWorkspace = false
-    @Environment(\.horizontalSizeClass) private var sizeClass
     @AppStorage(ComputerGroupKeys.screens) private var screensExpanded = true
     @AppStorage(ComputerGroupKeys.ssh) private var sshExpanded = true
     private let columns = [GridItem(.adaptive(minimum: 170, maximum: 320), spacing: 16)]
@@ -76,19 +73,14 @@ struct HomeView: View {
             .sheet(isPresented: $settings) { SettingsView() }
             .sheet(item: $editing) { ComputerEditView(computer: $0) }
             .fullScreenCover(item: $connecting) { SessionView(computer: $0) }
-            .fullScreenCover(item: $terminal) { c in MobileTerminalScreen(computer: c, jumps: store.jumpChain(for: c)) }
             .fullScreenCover(isPresented: $showWorkspace) { MobileTerminalWorkspaceView(workspace: workspace).environmentObject(store) }
         }
     }
 
-    /// SSH 서버 누름: 아이패드(넓은 화면)는 작업 공간에서 그 서버 탭으로, 아이폰은 한 화면 터미널
+    /// SSH 서버 누름: 작업 공간에서 그 서버 탭으로 (없으면 새 탭). 화면 모양은 작업 공간이 크기에 따라 고른다
     private func openSSH(_ c: Computer) {
-        if sizeClass == .regular {
-            workspace.show(c, jumps: store.jumpChain(for: c))
-            showWorkspace = true
-        } else {
-            terminal = c
-        }
+        workspace.show(c, jumps: store.jumpChain(for: c))
+        showWorkspace = true
     }
 
     @ViewBuilder private func menu(_ c: Computer) -> some View {

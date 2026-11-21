@@ -195,7 +195,7 @@ struct MobileFileBrowserView: View {
     /// 이 iPad 칸 ("iPad로 받기" 의 받을 곳)
     var local: MobileLocalFiles?
     /// 좁을 때 위 줄 왼쪽의 [iPad | 서버] 전환 (파인더가 넣어 준다)
-    var switcher: AnyView? = nil
+    var showServer: Binding<Bool>? = nil
     @State private var importing = false
     @State private var preview: URL?
     @State private var sharing: URL?
@@ -285,7 +285,7 @@ struct MobileFileBrowserView: View {
 
     // 제목 줄: ‹ 위 폴더 · 지금 경로(누르면 상위 폴더로) · 선택 · 올리기 · ⋯
     private var header: some View {
-        PaneTitleBar(switcher: switcher,
+        PaneTitleBar(showServer: showServer, isServer: true,
                      title: files.path.isEmpty ? "서버" : (files.path == "/" ? "/" : (files.path as NSString).lastPathComponent),
                      subtitle: files.path.isEmpty ? "접속 중…" : files.path,
                      canGoUp: files.ancestors.count > 1,
@@ -312,6 +312,8 @@ struct MobileFileBrowserView: View {
                 .disabled(files.visible.isEmpty)
             } else {
                 Menu {
+                    Button("선택", systemImage: "checkmark.circle") { withAnimation { selecting = true } }
+                    Divider()
                     Button("파일 앱에서 업로드…", systemImage: "square.and.arrow.up") { importing = true }
                         .disabled(files.path.isEmpty)
                     Divider()
