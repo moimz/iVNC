@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// 컴퓨터 목록의 묶음 머리 (누르면 접었다 폈다). 아이폰·아이패드·맥 공용
 struct ComputerGroupHeader: View {
@@ -116,5 +117,48 @@ extension Computer {
         guard !words.isEmpty else { return true }
         let hay = [name, host, username].joined(separator: " ")
         return words.allSatisfy { hay.localizedCaseInsensitiveContains($0) }
+    }
+}
+
+/// 끌어서 순서 바꾸기 (맥: 마우스로 끌기, 아이폰·아이패드: 길게 누른 뒤 끌기 — 움직이지 않으면 메뉴). 같은 묶음(화면 공유 / SSH) 안에서만.
+/// 끄는 동안 지나가는 자리마다 바로 옮겨서 놓을 곳이 보인다. 순서는 iCloud 로 다른 기기와 맞춘다 (ComputerStore.move)
+struct ComputerReorder: ViewModifier {
+    let computer: Computer
+    @Binding var dragging: UUID?
+    @EnvironmentObject private var store: ComputerStore
+
+    func body(content: Content) -> some View {
+        content
+            .onDrag {
+                dragging = computer.id
+                return NSItemProvider(object: computer.id.uuidString as NSString)
+            }
+            .onDrop(of: [.text], delegate: Drop(target: computer, dragging: $dragging, store: store))
+    }
+
+    private struct Drop: DropDelegate {
+        let target: Computer
+        @Binding var dragging: UUID?
+        let store: ComputerStore
+
+        func dropEntered(info: DropInfo) {
+            guard let id = dragging, id != target.id,
+                  let moving = store.computers.first(where: { $0.id == id }),
+                  moving.type.showsScreen == target.type.showsScreen else { return }
+            withAnimation(.easeInOut(duration: 0.2)) { store.move(id, to: target.id) }
+        }
+
+        func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+
+        func performDrop(info: DropInfo) -> Bool {
+            dragging = nil
+            return true
+        }
+    }
+}
+
+extension View {
+    func reorderable(_ c: Computer, dragging: Binding<UUID?>) -> some View {
+        modifier(ComputerReorder(computer: c, dragging: dragging))
     }
 }

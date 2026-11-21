@@ -176,6 +176,16 @@ final class ComputerStore: ObservableObject {
         return chain
     }
 
+    /// 끌어 놓기로 순서 바꾸기: id 를 target 자리로 (아래로 끌면 target 뒤, 위로 끌면 앞). 같은 묶음 안에서만 부른다
+    func move(_ id: UUID, to target: UUID) {
+        guard id != target, let from = computers.firstIndex(where: { $0.id == id }),
+              let to = computers.firstIndex(where: { $0.id == target }) else { return }
+        let c = computers.remove(at: from)
+        guard let t = computers.firstIndex(where: { $0.id == target }) else { computers.insert(c, at: from); return }
+        computers.insert(c, at: from < to ? t + 1 : t)
+        orderChanged()
+    }
+
     func markConnected(_ id: UUID) {
         guard let i = computers.firstIndex(where: { $0.id == id }) else { return }
         computers[i].lastConnected = Date()
@@ -256,8 +266,57 @@ final class ComputerStore: ObservableObject {
         cloud.synchronize()
     }
 
+    // MARK: 순서 (iCloud 키 "computerOrder" 하나: 바꾼 시각 + id 순서. 더 늦게 바꾼 쪽을 쓴다)
+
+    private struct CloudOrder: Codable {
+        var updatedAt: Date
+        var ids: [String]
+    }
+    private static let orderKey = "computerOrder"
+    private static let orderTimeKey = "computerOrder.updatedAt"
+    private var orderUpload: DispatchWorkItem?
+
+    private func orderChanged() {
+        persist()
+        UserDefaults.standard.set(Date(), forKey: Self.orderTimeKey)
+        // 끄는 동안 여러 번 바뀌니 잠깐 모았다가 올린다
+        orderUpload?.cancel()
+        let w = DispatchWorkItem { [weak self] in self?.uploadOrder() }
+        orderUpload = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: w)
+    }
+
+    private func uploadOrder() {
+        guard let t = UserDefaults.standard.object(forKey: Self.orderTimeKey) as? Date else { return }
+        let o = CloudOrder(updatedAt: t, ids: computers.map(\.id.uuidString))
+        if let data = try? JSONEncoder().encode(o) { cloud.set(data, forKey: Self.orderKey) }
+        cloud.synchronize()
+    }
+
+    /// iCloud 순서가 이 기기 것보다 새로우면 따른다 (거기 없는 컴퓨터는 지금 순서대로 뒤에). 이 기기 것이 새로우면 올린다
+    private func mergeOrder() {
+        let localTime = UserDefaults.standard.object(forKey: Self.orderTimeKey) as? Date
+        guard let data = cloud.data(forKey: Self.orderKey), let o = try? JSONDecoder().decode(CloudOrder.self, from: data) else {
+            if localTime != nil { uploadOrder() }
+            return
+        }
+        if let localTime, localTime > o.updatedAt { uploadOrder(); return }
+        let rank = Dictionary(o.ids.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+        let sorted = computers.enumerated().sorted { a, b in
+            let ra = rank[a.element.id.uuidString] ?? (o.ids.count + a.offset)
+            let rb = rank[b.element.id.uuidString] ?? (o.ids.count + b.offset)
+            return ra < rb
+        }.map(\.element)
+        UserDefaults.standard.set(o.updatedAt, forKey: Self.orderTimeKey)
+        if sorted.map(\.id) != computers.map(\.id) {
+            computers = sorted
+            persist()
+        }
+    }
+
     /// 다른 기기에서 바뀐 것을 받는다
     private func mergeFromCloud() {
+        defer { mergeOrder() }
         var changed = false
         for key in cloud.dictionaryRepresentation.keys where key.hasPrefix(Self.cloudPrefix) {
             guard let data = cloud.data(forKey: key), let e = try? JSONDecoder().decode(CloudEntry.self, from: data) else { continue }

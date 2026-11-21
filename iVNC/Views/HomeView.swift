@@ -8,6 +8,8 @@ struct HomeView: View {
     @State private var adding = false
     @State private var settings = false
     @State private var connecting: Computer?
+    /// 길게 눌러 끌어서 순서 바꾸는 중인 컴퓨터
+    @State private var dragging: UUID?
     /// SSH 작업 공간: 아이패드는 맥 터미널 창처럼 사이드바 + 탭, 아이폰은 옆 메뉴(열린 탭 + 서버). 닫으면 모든 접속을 끊는다
     @StateObject private var workspace = MobileTerminalWorkspace()
     @State private var showWorkspace = false
@@ -41,6 +43,7 @@ struct HomeView: View {
                                         Button { connecting = c } label: { ComputerCard(computer: c) }
                                             .buttonStyle(.plain)
                                             .contextMenu { menu(c) }
+                                            .reorderable(c, dragging: $dragging)
                                     }
                                 }
                             }
@@ -53,6 +56,7 @@ struct HomeView: View {
                                     Button { openSSH(c) } label: { SSHRow(computer: c) }
                                         .buttonStyle(.plain)
                                         .contextMenu { menu(c) }
+                                        .reorderable(c, dragging: $dragging)
                                 }
                             }
                         }

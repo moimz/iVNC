@@ -34,8 +34,12 @@ final class IMETerminalView: TerminalView {
         if pending.isEmpty { lastCaret = caret?.origin }
         super.insertText(string, replacementRange: replacementRange)
         marked = ""
-        // 줄바꿈·제어 문자는 커서를 엉뚱하게 옮기니 예측을 접는다
-        if text.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }) {
+        // 줄바꿈·제어 문자는 커서를 엉뚱하게 옮기니 예측을 접는다.
+        // 백스페이스를 누르는 중에 확정된 글자도 그리지 않는다: 맥 한글 입력기는 마지막 자모("ㅇ")를 지울 때 그 자모를
+        // 확정(insertText)한 뒤 백스페이스를 보낸다. 서버 에코("ㅇ")와 지우기가 함께 와 커서가 그대로라 에코가 안 온 줄 알고
+        // 1.5초 동안 "ㅇ" 을 대신 그리고 있었다 (사용자: ㅇ 이 늦게 사라짐, 2026-11-22 입력기 호출 기록으로 확인)
+        let duringBackspace = NSApp.currentEvent.map { $0.type == .keyDown && $0.keyCode == 51 } ?? false
+        if duringBackspace || text.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }) {
             clearPending()
         } else {
             pending += Array(text)
