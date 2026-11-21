@@ -1,8 +1,22 @@
 # iVNC
 
-아이폰·아이패드·맥에서 **맥(화면 공유)**과 **윈도우(원격 데스크톱)**에 접속하는 원격 화면 앱입니다.
+아이폰·아이패드·맥에서 **맥(화면 공유)**과 **윈도우(원격 데스크톱)**에 접속하고, **SSH 터미널과 파일 주고받기**까지 하는 원격 앱입니다.
 
-*A remote screen app for iPhone, iPad and Mac that connects to macOS Screen Sharing (VNC/ARD, including High Performance mode) and Windows Remote Desktop (RDP).*
+*A remote access app for iPhone, iPad and Mac: macOS Screen Sharing (VNC/ARD, including High Performance mode), Windows Remote Desktop (RDP), and an SSH terminal with an SFTP file browser.*
+
+![아이패드 SSH 터미널](docs/screenshots/ipad-terminal.png)
+
+| 맥 | 아이패드 |
+|---|---|
+| ![맥 SSH 터미널](docs/screenshots/mac-terminal.png) | ![아이패드 화면 공유](docs/screenshots/ipad-screen.png) |
+| ![맥 파인더](docs/screenshots/mac-finder.png) | ![아이패드 파인더](docs/screenshots/ipad-finder.png) |
+| ![맥 컴퓨터 목록](docs/screenshots/mac-home.png) | ![아이패드 컴퓨터 목록](docs/screenshots/ipad-home.png) |
+
+| 아이폰 | | | |
+|---|---|---|---|
+| ![컴퓨터 목록](docs/screenshots/iphone-home.png) | ![터미널](docs/screenshots/iphone-terminal.png) | ![열린 탭 · 서버 목록](docs/screenshots/iphone-menu.png) | ![파인더](docs/screenshots/iphone-finder.png) |
+
+<sub>스크린샷의 서버·원격 화면은 시연용으로 만든 것입니다.</sub>
 
 ## 기능
 
@@ -20,10 +34,20 @@
 - 한/영 맞추기, 원격 커서 모양, 클립보드 공유(글자·그림)
 - 처음 본 인증서는 기억하고, 바뀌면 묻기
 
+**SSH 터미널 · 파인더**
+- 탭으로 여러 서버를 함께 열기 (맥: 창·분할·탭 끌기, 아이패드: 사이드바 + 탭 줄, 아이폰: 옆 메뉴에 열린 탭 · 서버 목록)
+- 비밀번호 또는 키 파일 인증, 경유 서버(배스천), 서버마다 색 표시, 문자 인코딩
+- 한글 입력이 맥 기본 터미널처럼 자연스럽게, 특수 키 줄(⌃ ⌥ ⇥ 화살표 F1–F12)
+- 파인더: 이 기기 ↔ 서버 두 칸, 끌어서 업로드 · 다운로드, 폴더째 옮기기, 이름 바꾸기 · 삭제
+- 전송 내역(⇅): 한 번에 보낸 묶음과 파일마다 진행 막대, 남은 파일 수 배지
+- 터미널에서 `sudo su` 로 바꾼 사용자 그대로 파일을 다룸 (맥)
+- 맥: MCP 서버 — AI 에이전트가 허락 받은 범위에서 명령 실행 · 파일 읽기/쓰기
+
 **공통**
 - 아이폰·아이패드: 터치 모드와 트랙패드 모드, 화면 확대·이동, 특수 키 줄
 - 맥: 키를 원격으로 바로 보내거나(⌨︎) 이 맥에서 조합해 보내기(가), 시스템 단축키(⌘Tab 등)를 원격으로 보내기
-- 원격 화면 해상도 설정, 컴퓨터 목록 iCloud 동기화, 암호는 키체인에 저장
+- 원격 화면 해상도 설정, 컴퓨터 목록 · SSH 설정 iCloud 동기화(글자 크기는 기기마다), 암호와 SSH 키는 iCloud 키체인
+- 서버 지문은 기기마다 따로 확인
 
 ## 요구 사항
 
@@ -59,6 +83,9 @@ Scripts/rdp/pack-xcframework.sh
 |---|---|
 | [FreeRDP](https://github.com/FreeRDP/FreeRDP) 3.33.1 | Apache 2.0 |
 | [OpenSSL](https://github.com/openssl/openssl) 3.5.9 | Apache 2.0 |
+| [SwiftNIO SSH](https://github.com/apple/swift-nio-ssh) · [SwiftNIO](https://github.com/apple/swift-nio) | Apache 2.0 |
+| [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) | MIT |
+| [Sparkle](https://github.com/sparkle-project/Sparkle) (맥 자동 업데이트) | MIT |
 
 고지 전문은 [iVNC/App/OpenSourceLicenses.txt](iVNC/App/OpenSourceLicenses.txt) (앱 설정 > 오픈 소스 라이선스) 에 있습니다.
 
