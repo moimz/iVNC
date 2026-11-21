@@ -7,8 +7,71 @@ import UIKit
 #endif
 
 /// SSH 터미널 모양·동작 설정 (맥 터미널 앱의 프로필 하나와 같은 내용, 프로필 목록은 두지 않는다).
-/// 기기마다 UserDefaults 에 저장한다 (iCloud 동기화 안 함: 기기마다 화면과 글자 크기가 달라서).
+/// 기기마다 UserDefaults 에 저장하고, 글자 크기만 빼고 iCloud 로 맞춘다 (TerminalSettingsSync, 사용자 2026-11-21:
+/// 화면 크기가 달라 글자 크기만 기기마다).
 /// 터미널 화면은 아직 없다 — 값은 터미널을 만들 때 읽는다.
+/// SSH 설정을 iCloud 키-값 저장소로 맥·아이폰·아이패드가 같이 쓴다 (글자 크기 제외).
+/// 켤 때: iCloud 에 있으면 받고, 없는 것만 올린다. 그 뒤로는 이 기기에서 바꾸면 올리고, 다른 기기에서 바뀌면 받는다.
+/// 기본값으로 되돌린 것(키가 지워진 것)은 넘기지 않는다 — 다른 기기 설정을 지워 버릴 수 있어서
+@MainActor
+final class TerminalSettingsSync {
+    static let shared = TerminalSettingsSync()
+    private let cloud = NSUbiquitousKeyValueStore.default
+    private let defaults = UserDefaults.standard
+    private var applying = false
+    private var started = false
+
+    private static func synced(_ key: String) -> Bool {
+        key.hasPrefix("terminal.") && key != TerminalSettings.fontSize
+    }
+
+    func start() {
+        guard !started else { return }
+        started = true
+        cloud.synchronize()
+        // 받기
+        apply(cloud.dictionaryRepresentation.keys.filter(Self.synced))
+        // iCloud 에 없는 것만 올리기
+        for (k, v) in defaults.dictionaryRepresentation() where Self.synced(k) && cloud.object(forKey: k) == nil {
+            cloud.set(v, forKey: k)
+        }
+        cloud.synchronize()
+        NotificationCenter.default.addObserver(forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification, object: cloud, queue: .main) { [weak self] n in
+            let keys = (n.userInfo?[NSUbiquitousKeyValueStoreChangedKeysKey] as? [String]) ?? []
+            MainActor.assumeIsolated { self?.apply(keys.filter(Self.synced)) }
+        }
+        NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: defaults, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.push() }
+        }
+    }
+
+    private func apply(_ keys: [String]) {
+        guard !keys.isEmpty else { return }
+        applying = true
+        defer { applying = false }
+        for k in keys {
+            guard let v = cloud.object(forKey: k) else { continue }
+            if !Self.same(defaults.object(forKey: k), v) { defaults.set(v, forKey: k) }
+        }
+    }
+
+    /// 이 기기에서 바뀐 값만 올린다
+    private func push() {
+        guard !applying else { return }
+        var changed = false
+        for (k, v) in defaults.dictionaryRepresentation() where Self.synced(k) && !Self.same(cloud.object(forKey: k), v) {
+            cloud.set(v, forKey: k)
+            changed = true
+        }
+        if changed { cloud.synchronize() }
+    }
+
+    private static func same(_ a: Any?, _ b: Any?) -> Bool {
+        guard let a = a as? NSObject, let b = b as? NSObject else { return a == nil && b == nil }
+        return a.isEqual(b)
+    }
+}
+
 enum TerminalSettings {
     private static let p = "terminal."
 

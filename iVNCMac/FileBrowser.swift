@@ -276,30 +276,36 @@ final class FileSession: ObservableObject {
     /// 이 맥 파일·폴더를 서버 폴더로 (폴더는 안까지)
     func upload(_ urls: [URL], to dir: String) {
         guard let client else { return }
+        // 한 번에 시킨 것은 전송 내역에서 한 묶음 (제목 줄 ⇅)
+        let g = TransferCenter.shared.begin(.upload, names: urls.map(\.lastPathComponent), server: serverName)
         Task {
             for u in urls {
                 let isDir = (try? u.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
                 if isDir {
-                    await uploadFolder(u, to: SFTPClient.join(dir, u.lastPathComponent), client: client)
+                    await uploadFolder(u, to: SFTPClient.join(dir, u.lastPathComponent), client: client, group: g)
                 } else {
                     enqueue(Transfer(name: u.lastPathComponent, upload: true, total: Self.fileSize(u)) { t in
                         try await client.upload(u, to: SFTPClient.join(dir, u.lastPathComponent), progress: t.add, isCancelled: t.isCancelled)
-                    })
+                    }, group: g)
                 }
             }
+            g.preparing = false
         }
     }
 
-    private func uploadFolder(_ u: URL, to remotePath: String, client: SFTPClient) async {
+    /// 전송 내역에 보일 서버 이름
+    private var serverName: String { tab?.computer.name ?? "" }
+
+    private func uploadFolder(_ u: URL, to remotePath: String, client: SFTPClient, group g: TransferGroup) async {
         try? await client.mkdir(remotePath) // 이미 있으면 실패해도 그대로 쓴다
         let items = (try? FileManager.default.contentsOfDirectory(at: u, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
         for c in items {
             if (try? c.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false {
-                await uploadFolder(c, to: SFTPClient.join(remotePath, c.lastPathComponent), client: client)
+                await uploadFolder(c, to: SFTPClient.join(remotePath, c.lastPathComponent), client: client, group: g)
             } else {
                 enqueue(Transfer(name: c.lastPathComponent, upload: true, total: Self.fileSize(c)) { t in
                     try await client.upload(c, to: SFTPClient.join(remotePath, c.lastPathComponent), progress: t.add, isCancelled: t.isCancelled)
-                })
+                }, group: g)
             }
         }
     }
@@ -307,25 +313,27 @@ final class FileSession: ObservableObject {
     /// 서버 파일·폴더를 이 맥 폴더로
     func download(_ items: [FileItem], to dir: URL) {
         guard let client else { return }
+        let g = TransferCenter.shared.begin(.download, names: items.map(\.name), server: serverName)
         Task {
             for e in items {
                 if e.isDirectory {
-                    await downloadFolder(e.id, to: dir.appendingPathComponent(e.name), client: client)
+                    await downloadFolder(e.id, to: dir.appendingPathComponent(e.name), client: client, group: g)
                 } else {
-                    enqueueDownload(e.id, name: e.name, size: e.size ?? 0, to: dir.appendingPathComponent(e.name), client: client)
+                    enqueueDownload(e.id, name: e.name, size: e.size ?? 0, to: dir.appendingPathComponent(e.name), client: client, group: g)
                 }
             }
+            g.preparing = false
         }
     }
 
-    private func downloadFolder(_ path: String, to local: URL, client: SFTPClient) async {
+    private func downloadFolder(_ path: String, to local: URL, client: SFTPClient, group g: TransferGroup) async {
         try? FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
         guard let items = try? await client.list(path) else { return }
         for c in items {
             if c.isDirectory {
-                await downloadFolder(c.path, to: local.appendingPathComponent(c.name), client: client)
+                await downloadFolder(c.path, to: local.appendingPathComponent(c.name), client: client, group: g)
             } else {
-                enqueueDownload(c.path, name: c.name, size: Int64(c.attrs.size ?? 0), to: local.appendingPathComponent(c.name), client: client)
+                enqueueDownload(c.path, name: c.name, size: Int64(c.attrs.size ?? 0), to: local.appendingPathComponent(c.name), client: client, group: g)
             }
         }
     }
@@ -333,43 +341,47 @@ final class FileSession: ObservableObject {
     /// 다른 탭(서버)의 항목을 이 서버 폴더로 (폴더째, 이 맥 디스크를 거치지 않음)
     func relay(_ items: [FileItem], from source: FileSession, to dir: String) {
         guard let dst = client, let src = source.client, source !== self else { return }
+        let g = TransferCenter.shared.begin(.relay, names: items.map(\.name), server: "\(source.serverName) → \(serverName)")
         Task {
             for e in items {
                 if e.isDirectory {
-                    await relayFolder(e.id, name: e.name, src: src, dst: dst, to: dir)
+                    await relayFolder(e.id, name: e.name, src: src, dst: dst, to: dir, group: g)
                 } else {
-                    enqueueRelay(e.id, name: e.name, size: e.size ?? 0, src: src, dst: dst, to: SFTPClient.join(dir, e.name))
+                    enqueueRelay(e.id, name: e.name, size: e.size ?? 0, src: src, dst: dst, to: SFTPClient.join(dir, e.name), group: g)
                 }
             }
+            g.preparing = false
         }
     }
 
-    private func relayFolder(_ path: String, name: String, src: SFTPClient, dst: SFTPClient, to dir: String) async {
+    private func relayFolder(_ path: String, name: String, src: SFTPClient, dst: SFTPClient, to dir: String, group g: TransferGroup) async {
         let target = SFTPClient.join(dir, name)
         try? await dst.mkdir(target)
         guard let items = try? await src.list(path) else { return }
         for c in items {
             if c.isDirectory {
-                await relayFolder(c.path, name: c.name, src: src, dst: dst, to: target)
+                await relayFolder(c.path, name: c.name, src: src, dst: dst, to: target, group: g)
             } else {
-                enqueueRelay(c.path, name: c.name, size: Int64(c.attrs.size ?? 0), src: src, dst: dst, to: SFTPClient.join(target, c.name))
+                enqueueRelay(c.path, name: c.name, size: Int64(c.attrs.size ?? 0), src: src, dst: dst, to: SFTPClient.join(target, c.name), group: g)
             }
         }
     }
 
-    private func enqueueRelay(_ path: String, name: String, size: Int64, src: SFTPClient, dst: SFTPClient, to target: String) {
+    private func enqueueRelay(_ path: String, name: String, size: Int64, src: SFTPClient, dst: SFTPClient, to target: String, group g: TransferGroup) {
         enqueue(Transfer(name: name, upload: true, total: size, relay: true) { t in
             try await SFTPClient.relay(from: src, path, size: UInt64(size), to: dst, target, progress: t.add, isCancelled: t.isCancelled)
-        })
+        }, group: g)
     }
 
-    private func enqueueDownload(_ path: String, name: String, size: Int64, to local: URL, client: SFTPClient) {
+    private func enqueueDownload(_ path: String, name: String, size: Int64, to local: URL, client: SFTPClient, group g: TransferGroup) {
         enqueue(Transfer(name: name, upload: false, total: size) { t in
             try await client.download(path, to: local, progress: t.add, isCancelled: t.isCancelled)
-        })
+        }, group: g)
     }
 
-    private func enqueue(_ t: Transfer) {
+    private func enqueue(_ t: Transfer, group g: TransferGroup) {
+        g.add(t)
+        guard t.state == .waiting else { return } // 묶음을 이미 취소했으면 넣지 않는다
         transfers.append(t)
         startTicker()
         runNext()
@@ -438,33 +450,7 @@ final class FileSession: ObservableObject {
     static func fileSize(_ u: URL) -> Int64 { Int64((try? u.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
 }
 
-/// 파일 하나 옮기기. 받은 바이트는 이벤트 루프에서 늘고 화면은 타이머로 읽는다
-final class Transfer: Identifiable, @unchecked Sendable {
-    enum State: Equatable { case waiting, running, done, cancelled, failed(String) }
-    let id = UUID()
-    let name: String
-    let upload: Bool
-    /// 서버 → 서버
-    let relay: Bool
-    let total: Int64
-    let work: (Transfer) async throws -> Void
-    var state: State = .waiting
-    var startedAt: Date?
-    var finishedAt: Date?
-    private let lock = NSLock()
-    private var _done: Int64 = 0
-    private var _cancelled = false
-
-    init(name: String, upload: Bool, total: Int64, relay: Bool = false, work: @escaping (Transfer) async throws -> Void) {
-        self.name = name; self.upload = upload; self.relay = relay; self.total = total; self.work = work
-    }
-
-    var done: Int64 { lock.lock(); defer { lock.unlock() }; return _done }
-    func add(_ n: Int) { lock.lock(); _done += Int64(n); lock.unlock() }
-    func cancel() { lock.lock(); _cancelled = true; lock.unlock() }
-    func isCancelled() -> Bool { lock.lock(); defer { lock.unlock() }; return _cancelled }
-    var fraction: Double { total > 0 ? min(1, Double(done) / Double(total)) : (state == .done ? 1 : 0) }
-}
+// Transfer 는 iVNC/Model/TransferCenter.swift (아이패드와 같이 쓴다)
 
 // MARK: - 보기 옵션 (두 칸 공용, 이 맥에 저장)
 
@@ -558,11 +544,7 @@ struct FileBrowserView: View {
                     FilePaneView(session: session, pane: session.remote, title: remoteTitle, compact: true)
                 }
             }
-            if !session.transfers.isEmpty {
-                Divider()
-                TransferBar(session: session)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
+            // 아래 진행 줄은 없앴다 (사용자): 진행은 제목 줄 ⇅ 배지 · 전송 내역(TransferCenter.swift)
         }
         .background(Color(nsColor: .windowBackgroundColor), ignoresSafeAreaEdges: [])
         .task { await session.appear() }
@@ -730,7 +712,7 @@ private struct FilePaneView: View {
 
     @ViewBuilder private func menu(_ ids: Set<String>) -> some View {
         let picked = items(ids)
-        Button(pane.isRemote ? "이 맥으로 받기" : "서버로 올리기") { transfer(picked) }.disabled(picked.isEmpty)
+        Button(pane.isRemote ? "다운로드" : "업로드") { transfer(picked) }.disabled(picked.isEmpty)
         if pane.isRemote {
             Button("이름 바꾸기…") { nameInput = picked.first?.name ?? ""; renaming = picked.first }.disabled(picked.count != 1)
         } else {
@@ -1029,54 +1011,3 @@ private enum RemoteDrag {
     }
 }
 
-/// 아래 진행 줄: 지금 옮기는 것들 · 전체 속도 · 모두 취소 / 끝난 것 지우기 (다 끝나면 잠시 뒤 걷힌다)
-private struct TransferBar: View {
-    @ObservedObject var session: FileSession
-
-    var body: some View {
-        let running = session.transfers.filter { $0.state == .running }
-        let waiting = session.transfers.filter { $0.state == .waiting }.count
-        let failed = session.transfers.filter { if case .failed = $0.state { return true } else { return false } }
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(running.prefix(Self.shown)) { t in
-                HStack(spacing: 8) {
-                    Image(systemName: t.relay ? "arrow.left.arrow.right.circle.fill" : t.upload ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
-                        .foregroundStyle(t.relay ? Color.purple : t.upload ? Color.orange : Color.accentColor)
-                    Text(t.name).lineLimit(1).truncationMode(.middle).frame(width: 220, alignment: .leading)
-                    ProgressView(value: t.fraction).controlSize(.small)
-                    Text("\(ByteCountFormatter.string(fromByteCount: t.done, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: t.total, countStyle: .file))")
-                        .foregroundStyle(.secondary).monospacedDigit().frame(width: 150, alignment: .trailing)
-                }
-            }
-            HStack(spacing: 12) {
-                Text(summary(running: running, waiting: waiting, failed: failed.count)).foregroundStyle(.secondary)
-                if let f = failed.last, case .failed(let msg) = f.state {
-                    Label("\(f.name): \(msg)", systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.red).lineLimit(1).help(msg)
-                }
-                Spacer()
-                if !running.isEmpty || waiting > 0 { Button("모두 취소") { session.cancelAll() }.controlSize(.small) }
-                if !failed.isEmpty { Button("닫기") { session.clearFinished() }.controlSize(.small) }
-            }
-        }
-        .font(.callout)
-        .padding(.horizontal, 12).padding(.vertical, 8)
-    }
-
-    static let shown = 3
-
-    private func summary(running: [Transfer], waiting: Int, failed: Int) -> String {
-        let speed = running.reduce(0.0) { s, t in
-            guard let start = t.startedAt else { return s }
-            return s + Double(t.done) / max(Date().timeIntervalSince(start), 0.1)
-        }
-        let done = session.transfers.filter { $0.state == .done }.count
-        var parts: [String] = []
-        if !running.isEmpty { parts.append("\(ByteCountFormatter.string(fromByteCount: Int64(speed), countStyle: .file))/s") }
-        if running.count > Self.shown { parts.append("그 밖에 \(running.count - Self.shown)개 진행 중") }
-        if waiting > 0 { parts.append("대기 \(waiting)") }
-        if done > 0 { parts.append("완료 \(done)") }
-        if failed > 0 { parts.append("실패 \(failed)") }
-        return parts.joined(separator: " · ")
-    }
-}

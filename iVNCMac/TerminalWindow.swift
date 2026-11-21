@@ -234,6 +234,9 @@ struct TerminalWindowView: View {
                 .sharedBackgroundVisibility(.hidden)
                 // 오른쪽 끝에 붙인다
                 ToolbarSpacer(.flexible)
+                // 받기·올리기 내역: 따로 떨어져 맨 앞 (아이패드와 같은 TransferHistoryButton·배지, 사용자)
+                ToolbarItem(placement: .primaryAction) { TransferHistoryButton() }
+                ToolbarSpacer(.fixed)
                 // [터미널 | 파인더] (iSQL 의 데이터/구조처럼)
                 ToolbarItem(placement: .primaryAction) {
                     Picker("보기", selection: Binding(get: { model.activeTab?.mode ?? .terminal },

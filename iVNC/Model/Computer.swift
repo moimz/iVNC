@@ -262,7 +262,10 @@ final class ComputerStore: ObservableObject {
         for key in cloud.dictionaryRepresentation.keys where key.hasPrefix(Self.cloudPrefix) {
             guard let data = cloud.data(forKey: key), let e = try? JSONDecoder().decode(CloudEntry.self, from: data) else { continue }
             let local = computers.first { $0.id == e.id }
-            if let local, (local.updatedAt ?? .distantPast) >= e.updatedAt { continue }
+            // 예전 앱(2.2 이하)은 iCloud 의 "ssh" 종류를 몰라 맥으로 저장해 두었다. 시각이 같아도 새 앱이 모르던 칸을
+            // 그대로 두면 SSH 서버가 화면 공유 카드로 남는다 (사용자 아이패드에서 SUN) → 종류가 비어 있으면 다시 받는다
+            let missedKind = local.map { $0.kind == nil && e.kind != nil } ?? false
+            if let local, !missedKind, (local.updatedAt ?? .distantPast) >= e.updatedAt { continue }
             if e.deleted {
                 guard local != nil else { continue }
                 computers.removeAll { $0.id == e.id }

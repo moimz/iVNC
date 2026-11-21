@@ -9,6 +9,8 @@ struct iVNCMacApp: App {
     init() {
         DebugLog.write("FreeRDP \(String(cString: ivnc_freerdp_version())) 링크됨")
         _ = Updater.shared // 자동 업데이트 시작 (하루 한 번 확인)
+        // SSH 설정을 아이폰·아이패드와 맞춘다 (글자 크기 제외)
+        TerminalSettingsSync.shared.start()
     }
 
     var body: some Scene {

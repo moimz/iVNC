@@ -17,6 +17,7 @@
 		B10000000000000000000427 /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = B10000000000000000000423 /* NIOCore */; };
 		B10000000000000000000428 /* NIOPosix in Frameworks */ = {isa = PBXBuildFile; productRef = B10000000000000000000424 /* NIOPosix */; };
 		B10000000000000000000432 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = B10000000000000000000431 /* SwiftTerm */; };
+		B10000000000000000000434 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = B10000000000000000000433 /* SwiftTerm */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -65,6 +66,7 @@
 				B10000000000000000000413 /* NIOSSH in Frameworks */,
 				B10000000000000000000425 /* NIOCore in Frameworks */,
 				B10000000000000000000426 /* NIOPosix in Frameworks */,
+				B10000000000000000000434 /* SwiftTerm in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -127,6 +129,7 @@
 				B10000000000000000000411 /* NIOSSH */,
 				B10000000000000000000421 /* NIOCore */,
 				B10000000000000000000422 /* NIOPosix */,
+				B10000000000000000000433 /* SwiftTerm */,
 			);
 			productName = iVNC;
 			productReference = B10000000000000000000001 /* iVNC.app */;
@@ -636,6 +639,11 @@
 			productName = NIOPosix;
 		};
 		B10000000000000000000431 /* SwiftTerm */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B10000000000000000000430 /* XCRemoteSwiftPackageReference "SwiftTerm" */;
+			productName = SwiftTerm;
+		};
+		B10000000000000000000433 /* SwiftTerm */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = B10000000000000000000430 /* XCRemoteSwiftPackageReference "SwiftTerm" */;
 			productName = SwiftTerm;

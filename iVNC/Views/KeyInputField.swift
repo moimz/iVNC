@@ -65,14 +65,14 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
     /// 메뉴는 기준 뷰를 덮으며 펼쳐진다: 메뉴 버튼 바로 위의 얇은 띠를 기준으로 띄워 버튼을 가리지 않게 한다
     private let menuAnchor = UIButton(type: .custom)
     /// 조합키 (맥 기호). 누르면 켜져 있다가 다음 키와 함께 보내고 꺼진다. ⌘ 는 Super_L 로 보낸다
-    private static let modifierKeys: [(title: String, keysym: UInt32, name: String)] = [
+    static let modifierKeys: [(title: String, keysym: UInt32, name: String)] = [
         ("⌘", 0xFFEB, "Command"), // 애플 서버는 Super_L 을 ⌘, Meta_L 을 ⌥ 로 받는다 (Meta_L 로 ⌘V 를 보내면 붙여넣기가 안 됐다)
         ("⌥", 0xFFE7, "Option"),
         ("⌃", 0xFFE3, "Control"),
         ("⇧", 0xFFE1, "Shift"),
     ]
     /// 아이폰 키보드로 못 치는 키 (키보드 위 줄 왼쪽, 좌우로 스크롤). keysym 은 X11 값, 이름은 맥 기호
-    private static let specialKeys: [(title: String, keysym: UInt32, name: String)] = [
+    static let specialKeys: [(title: String, keysym: UInt32, name: String)] = [
         ("⎋", 0xFF1B, "Escape"),
         ("⇥", 0xFF09, "Tab"),
         ("←", 0xFF51, "Left"),
@@ -80,10 +80,10 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
         ("↓", 0xFF54, "Down"),
         ("→", 0xFF53, "Right"),
         ("⌦", 0xFFFF, "Delete"),
-        ("↖", 0xFF50, "Home"),
-        ("↘", 0xFF57, "End"),
-        ("⇞", 0xFF55, "Page_Up"),
-        ("⇟", 0xFF56, "Page_Down"),
+        ("Home", 0xFF50, "Home"),
+        ("End", 0xFF57, "End"),
+        ("PgUp", 0xFF55, "Page_Up"),
+        ("PgDn", 0xFF56, "Page_Down"),
     ] + (1...12).map { ("F\($0)", 0xFFBE + UInt32($0 - 1), "F\($0)") }
     /// 켜 둔 조합키 (keysym) 와 그 버튼
     private var latched: [UInt32] = []
@@ -298,39 +298,36 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
         return false
     }
 
+    /// 그림으로 그릴 키 (제목 → SF 기호). 조합키가 아닌 키만 (조합키는 켜짐 표시를 바꿀 때 제목으로 다시 그린다)
+    private static let symbolKeys: [String: String] = ["⇥": "arrow.right.to.line"]
+
     static func keyConfig(title: String, on: Bool = false) -> UIButton.Configuration {
         var c = UIButton.Configuration.filled()
         c.cornerStyle = .capsule
         c.baseBackgroundColor = on ? .systemBlue : UIColor.white.withAlphaComponent(0.14)
         c.title = title
-        c.attributedTitle = AttributedString(title, attributes: AttributeContainer([
-            .font: UIFont.systemFont(ofSize: 16, weight: .semibold), .foregroundColor: UIColor.white]))
+        if let symbol = symbolKeys[title] {
+            // 글자 기호가 너무 작게 보이는 키는 SF 기호 그림으로 (사용자: Tab 아이콘을 키우자)
+            c.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold))?
+                .withTintColor(.white, renderingMode: .alwaysOriginal)
+            c.title = nil
+            c.attributedTitle = nil
+        } else {
+            c.attributedTitle = AttributedString(title, attributes: AttributeContainer([
+                .font: UIFont.systemFont(ofSize: 16, weight: .semibold), .foregroundColor: UIColor.white]))
+        }
         c.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 9, bottom: 0, trailing: 9)
+        // F10·F11·F12 가 두 줄로 꺾여 나왔다 (사용자) → 한 줄로, 버튼이 글자만큼 넓어진다
+        c.titleLineBreakMode = .byClipping
         return c
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    /// 키보드 바로 위 버튼 줄: 왼쪽은 꽉 찬 글래스 캡슐 안에서 좌우로 스크롤되는 특수키, 오른쪽은 메뉴·키보드 숨기기 묶음
+    /// 키보드 바로 위 버튼 줄: 왼쪽은 꽉 찬 글래스 캡슐 안에서 좌우로 스크롤되는 특수키, 오른쪽은 메뉴·키보드 숨기기 묶음.
+    /// 모양은 `KeyBar` 가 그린다 (SSH 터미널과 같이 쓴다)
     private func makeAccessoryBar() -> UIView {
-        let bar = UIView(frame: CGRect(x: 0, y: 0, width: 0, height: 56))
-        bar.backgroundColor = .clear
-
-        func capsule() -> UIVisualEffectView {
-            let v = UIVisualEffectView(effect: UIGlassEffect())
-            v.cornerConfiguration = .capsule()
-            v.clipsToBounds = true
-            return v
-        }
-        func icon(_ symbol: String) -> UIButton.Configuration {
-            var c = UIButton.Configuration.plain()
-            c.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold))?
-                .withTintColor(.white, renderingMode: .alwaysOriginal)
-            return c
-        }
-
-        // 오른쪽 묶음: [메뉴][숨기기]
-        let group = capsule()
+        let icon = KeyBar.icon
         menuButton.configuration = icon("ellipsis")
         menuButton.addAction(UIAction { [weak self] _ in self?.menuAnchor.performPrimaryAction() }, for: .primaryActionTriggered)
         menuButton.accessibilityLabel = "메뉴"
@@ -352,75 +349,19 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
         }, for: .primaryActionTriggered)
         hide.accessibilityLabel = "키보드 숨기기"
         keyboardIcon = icon
-        let pair = UIStackView(arrangedSubviews: [menuButton, hide])
-        pair.axis = .horizontal
-        pair.distribution = .fillEqually
-        group.contentView.addSubview(pair)
-
-        // 왼쪽: 특수키
-        let keysBox = capsule()
-        let keys = UIStackView()
-        keys.axis = .horizontal
-        keys.spacing = 6
-        for k in Self.modifierKeys {
-            let b = UIButton(configuration: Self.keyConfig(title: k.title), primaryAction: UIAction { [weak self] _ in
-                self?.toggleModifier(k.keysym)
-            })
-            b.accessibilityLabel = k.name
-            b.widthAnchor.constraint(greaterThanOrEqualToConstant: 38).isActive = true
-            modifierButtons[k.keysym] = b
-            keys.addArrangedSubview(b)
-        }
-        for k in Self.specialKeys {
-            let b = UIButton(configuration: Self.keyConfig(title: k.title), primaryAction: UIAction { [weak self] _ in
+        let (bar, mods) = KeyBar.make(
+            modifiers: Self.modifierKeys.map { KeyBar.Key(title: $0.title, id: $0.keysym, name: $0.name) },
+            specials: Self.specialKeys.map { KeyBar.Key(title: $0.title, id: $0.keysym, name: $0.name) },
+            menuButton: menuButton, keyboardButton: hide, menuAnchor: menuAnchor,
+            onModifier: { [weak self] k in self?.toggleModifier(k.id) },
+            onSpecial: { [weak self] k in
                 guard let self else { return }
-                if !self.latched.isEmpty { self.sendWithModifiers(k.keysym, name: k.name); return }
+                if !self.latched.isEmpty { self.sendWithModifiers(k.id, name: k.name); return }
                 // 조합 중인 글자를 먼저 보내고 키를 보낸다
                 self.flushPending()
-                self.onKey(k.keysym, k.name)
+                self.onKey(k.id, k.name)
             })
-            b.accessibilityLabel = k.name
-            b.widthAnchor.constraint(greaterThanOrEqualToConstant: 38).isActive = true
-            keys.addArrangedSubview(b)
-        }
-        let scroll = UIScrollView()
-        scroll.showsHorizontalScrollIndicator = false
-        scroll.alwaysBounceHorizontal = true
-        scroll.addSubview(keys)
-        keysBox.contentView.addSubview(scroll)
-
-        for v in [keysBox, group, menuAnchor, pair, scroll, keys] as [UIView] { v.translatesAutoresizingMaskIntoConstraints = false }
-        bar.addSubview(keysBox)
-        bar.addSubview(group)
-        bar.addSubview(menuAnchor)
-        let g = bar.safeAreaLayoutGuide
-        NSLayoutConstraint.activate([
-            group.trailingAnchor.constraint(equalTo: g.trailingAnchor, constant: -10),
-            group.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
-            group.heightAnchor.constraint(equalToConstant: 44),
-            group.widthAnchor.constraint(equalToConstant: 104),
-            pair.leadingAnchor.constraint(equalTo: group.contentView.leadingAnchor, constant: 2),
-            pair.trailingAnchor.constraint(equalTo: group.contentView.trailingAnchor, constant: -2),
-            pair.topAnchor.constraint(equalTo: group.contentView.topAnchor),
-            pair.bottomAnchor.constraint(equalTo: group.contentView.bottomAnchor),
-            menuAnchor.leadingAnchor.constraint(equalTo: group.leadingAnchor),
-            menuAnchor.trailingAnchor.constraint(equalTo: group.trailingAnchor),
-            menuAnchor.bottomAnchor.constraint(equalTo: group.topAnchor, constant: -6),
-            menuAnchor.heightAnchor.constraint(equalToConstant: 1),
-            keysBox.leadingAnchor.constraint(equalTo: g.leadingAnchor, constant: 10),
-            keysBox.trailingAnchor.constraint(equalTo: group.leadingAnchor, constant: -8),
-            keysBox.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
-            keysBox.heightAnchor.constraint(equalToConstant: 44),
-            scroll.leadingAnchor.constraint(equalTo: keysBox.contentView.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: keysBox.contentView.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: keysBox.contentView.topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: keysBox.contentView.bottomAnchor),
-            keys.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 5),
-            keys.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -5),
-            keys.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 5),
-            keys.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -5),
-            keys.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor, constant: -10),
-        ])
+        modifierButtons = mods
         return bar
     }
 
@@ -532,5 +473,101 @@ final class HangulInputField: UITextField, UITextFieldDelegate {
         case 0xAC00...0xD7A3, 0x1100...0x11FF, 0x3130...0x318F: return true
         default: return false
         }
+    }
+}
+
+/// 키보드 위 특수키 줄 (화면 공유 입력창과 SSH 터미널이 같이 쓴다, 2026-11-21 사용자: 화면 공유 때 만든 것 그대로).
+/// 왼쪽 = 꽉 찬 글래스 캡슐 안에서 좌우로 스크롤되는 조합키·특수키, 오른쪽 = [메뉴][키보드 숨기기] 묶음
+@MainActor
+enum KeyBar {
+    struct Key { let title: String; let id: UInt32; let name: String }
+
+    static func icon(_ symbol: String) -> UIButton.Configuration {
+        var c = UIButton.Configuration.plain()
+        c.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold))?
+            .withTintColor(.white, renderingMode: .alwaysOriginal)
+        return c
+    }
+
+    /// 줄을 만들고 조합키 버튼(id → 버튼)을 돌려준다 (켜짐 표시를 바꾸려고). 메뉴·키보드 버튼의 모양·동작은 부르는 쪽이 정한다
+    static func make(modifiers: [Key], specials: [Key], menuButton: UIButton, keyboardButton: UIButton, menuAnchor: UIButton,
+                     onModifier: @escaping (Key) -> Void, onSpecial: @escaping (Key) -> Void) -> (UIView, [UInt32: UIButton]) {
+        let bar = UIView(frame: CGRect(x: 0, y: 0, width: 0, height: 56))
+        bar.backgroundColor = .clear
+
+        func capsule() -> UIVisualEffectView {
+            let v = UIVisualEffectView(effect: UIGlassEffect())
+            v.cornerConfiguration = .capsule()
+            v.clipsToBounds = true
+            return v
+        }
+
+        // 오른쪽 묶음: [메뉴][숨기기]
+        let group = capsule()
+        let pair = UIStackView(arrangedSubviews: [menuButton, keyboardButton])
+        pair.axis = .horizontal
+        pair.distribution = .fillEqually
+        group.contentView.addSubview(pair)
+
+        // 왼쪽: 조합키 + 특수키
+        let keysBox = capsule()
+        let keys = UIStackView()
+        keys.axis = .horizontal
+        keys.spacing = 6
+        var modifierButtons: [UInt32: UIButton] = [:]
+        for k in modifiers {
+            let b = UIButton(configuration: HangulInputField.keyConfig(title: k.title), primaryAction: UIAction { _ in onModifier(k) })
+            b.accessibilityLabel = k.name
+            b.widthAnchor.constraint(greaterThanOrEqualToConstant: 38).isActive = true
+            b.setContentCompressionResistancePriority(.required, for: .horizontal)
+            modifierButtons[k.id] = b
+            keys.addArrangedSubview(b)
+        }
+        for k in specials {
+            let b = UIButton(configuration: HangulInputField.keyConfig(title: k.title), primaryAction: UIAction { _ in onSpecial(k) })
+            b.accessibilityLabel = k.name
+            b.widthAnchor.constraint(greaterThanOrEqualToConstant: 38).isActive = true
+            b.setContentCompressionResistancePriority(.required, for: .horizontal)
+            keys.addArrangedSubview(b)
+        }
+        let scroll = UIScrollView()
+        scroll.showsHorizontalScrollIndicator = false
+        scroll.alwaysBounceHorizontal = true
+        scroll.addSubview(keys)
+        keysBox.contentView.addSubview(scroll)
+
+        for v in [keysBox, group, menuAnchor, pair, scroll, keys] as [UIView] { v.translatesAutoresizingMaskIntoConstraints = false }
+        bar.addSubview(keysBox)
+        bar.addSubview(group)
+        bar.addSubview(menuAnchor)
+        let g = bar.safeAreaLayoutGuide
+        NSLayoutConstraint.activate([
+            group.trailingAnchor.constraint(equalTo: g.trailingAnchor, constant: -10),
+            group.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            group.heightAnchor.constraint(equalToConstant: 44),
+            group.widthAnchor.constraint(equalToConstant: 104),
+            pair.leadingAnchor.constraint(equalTo: group.contentView.leadingAnchor, constant: 2),
+            pair.trailingAnchor.constraint(equalTo: group.contentView.trailingAnchor, constant: -2),
+            pair.topAnchor.constraint(equalTo: group.contentView.topAnchor),
+            pair.bottomAnchor.constraint(equalTo: group.contentView.bottomAnchor),
+            menuAnchor.leadingAnchor.constraint(equalTo: group.leadingAnchor),
+            menuAnchor.trailingAnchor.constraint(equalTo: group.trailingAnchor),
+            menuAnchor.bottomAnchor.constraint(equalTo: group.topAnchor, constant: -6),
+            menuAnchor.heightAnchor.constraint(equalToConstant: 1),
+            keysBox.leadingAnchor.constraint(equalTo: g.leadingAnchor, constant: 10),
+            keysBox.trailingAnchor.constraint(equalTo: group.leadingAnchor, constant: -8),
+            keysBox.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            keysBox.heightAnchor.constraint(equalToConstant: 44),
+            scroll.leadingAnchor.constraint(equalTo: keysBox.contentView.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: keysBox.contentView.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: keysBox.contentView.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: keysBox.contentView.bottomAnchor),
+            keys.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 5),
+            keys.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -5),
+            keys.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 5),
+            keys.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -5),
+            keys.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor, constant: -10),
+        ])
+        return (bar, modifierButtons)
     }
 }

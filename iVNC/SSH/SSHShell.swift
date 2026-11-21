@@ -515,17 +515,27 @@ private final class HostKeyCheck: NIOSSHClientServerAuthenticationDelegate {
     }
 }
 
-/// 알려진 서버 지문 (iCloud 키-값 저장소로 기기끼리 같이 쓴다)
+/// 알려진 서버 지문. 기기마다 따로 확인한다 (사용자 2026-11-21: iCloud 로 넘기지 않음 — 다른 기기에서 믿은 서버라도
+/// 이 기기에서 처음 접속할 때 한 번 더 묻는다). 예전에 iCloud 에 올린 지문은 처음 한 번 지운다
 enum SSHKnownHosts {
     private static let prefix = "sshKnownHost."
     static func id(host: String, port: Int) -> String { "[\(host.lowercased())]:\(port)" }
     static func key(for id: String) -> String? {
-        NSUbiquitousKeyValueStore.default.string(forKey: prefix + id) ?? UserDefaults.standard.string(forKey: prefix + id)
+        removeCloudCopiesOnce()
+        return UserDefaults.standard.string(forKey: prefix + id)
     }
     static func set(_ line: String, for id: String) {
         UserDefaults.standard.set(line, forKey: prefix + id)
-        NSUbiquitousKeyValueStore.default.set(line, forKey: prefix + id)
-        NSUbiquitousKeyValueStore.default.synchronize()
+    }
+
+    private static let cleanedKey = "sshKnownHost.cloudCleaned"
+    private static func removeCloudCopiesOnce() {
+        let d = UserDefaults.standard
+        guard !d.bool(forKey: cleanedKey) else { return }
+        d.set(true, forKey: cleanedKey)
+        let cloud = NSUbiquitousKeyValueStore.default
+        for k in cloud.dictionaryRepresentation.keys where k.hasPrefix(prefix) { cloud.removeObject(forKey: k) }
+        cloud.synchronize()
     }
 }
 

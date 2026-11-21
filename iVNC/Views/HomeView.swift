@@ -8,7 +8,12 @@ struct HomeView: View {
     @State private var adding = false
     @State private var settings = false
     @State private var connecting: Computer?
-    @State private var sshNotReady = false
+    /// 연 SSH 터미널 (아이폰: 한 화면)
+    @State private var terminal: Computer?
+    /// 아이패드: 맥 터미널 창 같은 작업 공간 (사이드바 + 탭). 닫으면 모든 접속을 끊는다
+    @StateObject private var workspace = MobileTerminalWorkspace()
+    @State private var showWorkspace = false
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @AppStorage(ComputerGroupKeys.screens) private var screensExpanded = true
     @AppStorage(ComputerGroupKeys.ssh) private var sshExpanded = true
     private let columns = [GridItem(.adaptive(minimum: 170, maximum: 320), spacing: 16)]
@@ -48,7 +53,7 @@ struct HomeView: View {
                                 .padding(.top, screens.isEmpty ? 0 : 8)
                             if sshExpanded {
                                 SSHList(computers: servers) { c in
-                                    Button { sshNotReady = true } label: { SSHRow(computer: c) }
+                                    Button { openSSH(c) } label: { SSHRow(computer: c) }
                                         .buttonStyle(.plain)
                                         .contextMenu { menu(c) }
                                 }
@@ -71,11 +76,18 @@ struct HomeView: View {
             .sheet(isPresented: $settings) { SettingsView() }
             .sheet(item: $editing) { ComputerEditView(computer: $0) }
             .fullScreenCover(item: $connecting) { SessionView(computer: $0) }
-            .alert("SSH 터미널은 곧 추가됩니다", isPresented: $sshNotReady) {
-                Button("확인", role: .cancel) {}
-            } message: {
-                Text("지금은 서버를 등록해 둘 수 있습니다. 길게 눌러 편집할 수 있습니다.")
-            }
+            .fullScreenCover(item: $terminal) { c in MobileTerminalScreen(computer: c, jumps: store.jumpChain(for: c)) }
+            .fullScreenCover(isPresented: $showWorkspace) { MobileTerminalWorkspaceView(workspace: workspace).environmentObject(store) }
+        }
+    }
+
+    /// SSH 서버 누름: 아이패드(넓은 화면)는 작업 공간에서 그 서버 탭으로, 아이폰은 한 화면 터미널
+    private func openSSH(_ c: Computer) {
+        if sizeClass == .regular {
+            workspace.show(c, jumps: store.jumpChain(for: c))
+            showWorkspace = true
+        } else {
+            terminal = c
         }
     }
 

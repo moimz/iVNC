@@ -7,5 +7,10 @@
 	<array>
 		<string>location</string>
 	</array>
+	<!-- 아이패드 파인더 "이 iPad" 칸: 앱 문서 폴더를 파일 앱(나의 iPad › iVNC)에 보이게 (2026-11-21) -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 </dict>
 </plist>
