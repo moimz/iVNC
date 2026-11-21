@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 /// 컴퓨터 목록의 묶음 머리 (누르면 접었다 폈다). 아이폰·아이패드·맥 공용
 struct ComputerGroupHeader: View {
@@ -120,110 +119,54 @@ extension Computer {
     }
 }
 
-#if os(iOS)
-/// 끌어서 순서 바꾸기 (아이폰·아이패드: 길게 누른 뒤 끌기 — 움직이지 않으면 메뉴). 같은 묶음(화면 공유 / SSH) 안에서만.
-/// 끄는 동안 지나가는 자리마다 바로 옮겨서 놓을 곳이 보인다. 순서는 iCloud 로 다른 기기와 맞춘다 (ComputerStore.move)
-struct ComputerReorder: ViewModifier {
-    let computer: Computer
-    @Binding var dragging: UUID?
+/// 정렬 모드: 묶음(화면 공유 / SSH)마다 목록으로 보여 주고 끌어서 순서를 바꾼다 (맥: 줄을 끌기, 아이폰·아이패드: 오른쪽 손잡이).
+/// 카드 화면에서 바로 끌면 맥은 떨리고 아이폰·아이패드는 길게 눌러 편집 메뉴와 겹쳐서 따로 둔다 (사용자). 순서는 iCloud 로 맞춘다
+struct ComputerReorderList: View {
     @EnvironmentObject private var store: ComputerStore
 
-    func body(content: Content) -> some View {
-        content
-            .onDrag {
-                dragging = computer.id
-                return NSItemProvider(object: computer.id.uuidString as NSString)
+    private var screens: [Computer] { store.computers.filter { $0.type.showsScreen } }
+    private var servers: [Computer] { store.computers.filter { !$0.type.showsScreen } }
+
+    var body: some View {
+        List {
+            if !screens.isEmpty {
+                Section("화면 공유") {
+                    ForEach(screens) { row($0) }
+                        .onMove { store.move(fromOffsets: $0, toOffset: $1, screens: true) }
+                }
             }
-            .onDrop(of: [.text], delegate: Drop(target: computer, dragging: $dragging, store: store))
-    }
-
-    private struct Drop: DropDelegate {
-        let target: Computer
-        @Binding var dragging: UUID?
-        let store: ComputerStore
-
-        func dropEntered(info: DropInfo) {
-            guard let id = dragging, id != target.id,
-                  let moving = store.computers.first(where: { $0.id == id }),
-                  moving.type.showsScreen == target.type.showsScreen else { return }
-            withAnimation(.easeInOut(duration: 0.2)) { store.move(id, to: target.id) }
+            if !servers.isEmpty {
+                Section("SSH") {
+                    ForEach(servers) { row($0) }
+                        .onMove { store.move(fromOffsets: $0, toOffset: $1, screens: false) }
+                }
+            }
         }
+        #if os(iOS)
+        .environment(\.editMode, .constant(.active))
+        #endif
+    }
 
-        func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
-
-        func performDrop(info: DropInfo) -> Bool {
-            dragging = nil
-            return true
+    private func row(_ c: Computer) -> some View {
+        HStack(spacing: 12) {
+            if c.type == .ssh {
+                ServerIcon(color: c.sshColor ?? .none, size: 28)
+            } else {
+                Image(systemName: c.type == .mac ? "desktopcomputer" : "pc")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(.white)
+                    .frame(width: 28, height: 28)
+                    .background(c.type == .mac ? Color.blue : Color.cyan, in: RoundedRectangle(cornerRadius: 7))
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(c.name).lineLimit(1)
+                Text(c.host).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            #if os(macOS)
+            Image(systemName: "line.3.horizontal").foregroundStyle(.tertiary)
+            #endif
         }
+        .padding(.vertical, 2)
     }
 }
-
-extension View {
-    func reorderable(_ c: Computer, dragging: Binding<UUID?>) -> some View {
-        modifier(ComputerReorder(computer: c, dragging: dragging))
-    }
-}
-#else
-/// 맥: 끌어서 순서 바꾸기. 시스템 끌기는 놓으면 끌던 그림이 그 자리에서 바로 사라져 어색해서(사용자) 카드를 직접 움직인다:
-/// 끄는 동안 카드가 마우스를 따라오고(살짝 크게·그림자) 지나가는 자리마다 다른 카드가 비켜 주며, 놓으면 새 자리로 스르륵 들어간다.
-/// 같은 묶음(화면 공유 / SSH) 안에서만. 순서는 iCloud 로 다른 기기와 맞춘다 (ComputerStore.move)
-@MainActor
-final class ComputerReorderState: ObservableObject {
-    static let space = "computer-reorder"
-    @Published var dragging: UUID?
-    /// 마우스 자리 (space 좌표)
-    @Published var pointer: CGPoint = .zero
-    /// 잡은 점이 카드 왼쪽 위에서 떨어진 만큼
-    var grab: CGSize = .zero
-    /// 카드·줄의 배치 자리 (끄는 중 움직임은 빼고)
-    var frames: [UUID: CGRect] = [:]
-}
-
-struct ComputerReorder: ViewModifier {
-    let computer: Computer
-    @ObservedObject var state: ComputerReorderState
-    @EnvironmentObject private var store: ComputerStore
-
-    private var isDragging: Bool { state.dragging == computer.id }
-
-    private var offset: CGSize {
-        guard isDragging, let f = state.frames[computer.id] else { return .zero }
-        return CGSize(width: state.pointer.x - state.grab.width - f.minX, height: state.pointer.y - state.grab.height - f.minY)
-    }
-
-    func body(content: Content) -> some View {
-        content
-            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(ComputerReorderState.space)) } action: { state.frames[computer.id] = $0 }
-            .onDisappear { state.frames[computer.id] = nil }
-            .scaleEffect(isDragging ? 1.03 : 1)
-            .shadow(color: .black.opacity(isDragging ? 0.3 : 0), radius: isDragging ? 12 : 0, y: isDragging ? 6 : 0)
-            .offset(offset)
-            .zIndex(isDragging ? 1 : 0)
-            .gesture(
-                DragGesture(minimumDistance: 5, coordinateSpace: .named(ComputerReorderState.space))
-                    .onChanged { v in
-                        if state.dragging != computer.id {
-                            let f = state.frames[computer.id] ?? .zero
-                            state.grab = CGSize(width: v.startLocation.x - f.minX, height: v.startLocation.y - f.minY)
-                            state.dragging = computer.id
-                        }
-                        state.pointer = v.location
-                        // 마우스가 같은 묶음의 다른 카드 위에 오면 그 자리로
-                        guard let target = state.frames.first(where: { $0.key != computer.id && $0.value.contains(v.location) })?.key,
-                              let t = store.computers.first(where: { $0.id == target }),
-                              t.type.showsScreen == computer.type.showsScreen else { return }
-                        withAnimation(.easeInOut(duration: 0.2)) { store.move(computer.id, to: target) }
-                    }
-                    .onEnded { _ in
-                        withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) { state.dragging = nil }
-                    }
-            )
-    }
-}
-
-extension View {
-    func reorderable(_ c: Computer, state: ComputerReorderState) -> some View {
-        modifier(ComputerReorder(computer: c, state: state))
-    }
-}
-#endif

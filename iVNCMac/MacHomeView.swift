@@ -10,8 +10,8 @@ struct MacHomeView: View {
     @State private var adding = false
     /// 한 번 눌러 고른 컴퓨터 (두 번 누르거나 엔터로 접속)
     @State private var selected: UUID?
-    /// 끌어서 순서 바꾸기 (끄는 카드·마우스 자리·카드 자리)
-    @StateObject private var reorder = ComputerReorderState()
+    /// 정렬 모드 (☰): 목록으로 끌어서 순서 바꾸기
+    @State private var reordering = false
     @AppStorage(ComputerGroupKeys.screens) private var screensExpanded = true
     @AppStorage(ComputerGroupKeys.ssh) private var sshExpanded = true
     private let columns = [GridItem(.adaptive(minimum: 180, maximum: 280), spacing: 18)]
@@ -22,6 +22,38 @@ struct MacHomeView: View {
     private var servers: [Computer] { store.computers.filter { !$0.type.showsScreen && $0.matches(query) } }
 
     var body: some View {
+        Group {
+            if reordering {
+                ComputerReorderList()
+            } else {
+                cards
+            }
+        }
+        .navigationTitle("iVNC")
+        .searchable(text: $query, placement: .toolbar, prompt: "이름·주소 검색")
+        // Dock 을 눌렀을 때 이 창을 다시 열 수 있게 맡겨 둔다
+        .onAppear { HomeWindow.open = { [openWindow] in openWindow(id: "home") } }
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                if reordering {
+                    Button("완료", systemImage: "checkmark") { reordering = false }
+                        .buttonStyle(.borderedProminent)
+                        .help("순서 바꾸기 끝내기")
+                } else {
+                    Button("순서 바꾸기", systemImage: "line.3.horizontal") { reordering = true }
+                        .help("순서 바꾸기")
+                        .disabled(store.computers.count < 2)
+                    Button("추가", systemImage: "plus") { adding = true }
+                    // 설정은 ⌘, 와 같은 설정 창 ([일반 | 화면 공유 | SSH])
+                    Button("설정", systemImage: "gearshape") { openSettings() }
+                }
+            }
+        }
+        .sheet(isPresented: $adding) { ComputerEditView(computer: nil).frame(minWidth: 460, minHeight: 520) }
+        .sheet(item: $editing) { ComputerEditView(computer: $0).frame(minWidth: 460, minHeight: 520) }
+    }
+
+    private var cards: some View {
         ScrollView {
             if store.computers.isEmpty {
                 ContentUnavailableView {
@@ -47,7 +79,6 @@ struct MacHomeView: View {
                                         .onTapGesture(count: 2) { open(c) }
                                         .simultaneousGesture(TapGesture().onEnded { selected = c.id })
                                         .contextMenu { menu(c) }
-                                        .reorderable(c, state: reorder)
                                 }
                             }
                         }
@@ -61,13 +92,11 @@ struct MacHomeView: View {
                                     .onTapGesture(count: 2) { open(c) }
                                     .simultaneousGesture(TapGesture().onEnded { selected = c.id })
                                     .contextMenu { menu(c) }
-                                    .reorderable(c, state: reorder)
                             }
                         }
                     }
                 }
                 .padding(20)
-                .coordinateSpace(.named(ComputerReorderState.space))
             }
         }
         // 빈 곳을 누르면 고르기 풀기, 엔터로 고른 컴퓨터 접속
@@ -80,19 +109,6 @@ struct MacHomeView: View {
             open(c)
             return .handled
         }
-        .navigationTitle("iVNC")
-        .searchable(text: $query, placement: .toolbar, prompt: "이름·주소 검색")
-        // Dock 을 눌렀을 때 이 창을 다시 열 수 있게 맡겨 둔다
-        .onAppear { HomeWindow.open = { [openWindow] in openWindow(id: "home") } }
-        .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                Button("추가", systemImage: "plus") { adding = true }
-                // 설정은 ⌘, 와 같은 설정 창 ([일반 | 화면 공유 | SSH])
-                Button("설정", systemImage: "gearshape") { openSettings() }
-            }
-        }
-        .sheet(isPresented: $adding) { ComputerEditView(computer: nil).frame(minWidth: 460, minHeight: 520) }
-        .sheet(item: $editing) { ComputerEditView(computer: $0).frame(minWidth: 460, minHeight: 520) }
     }
 
     /// 접속: 화면 공유는 접속 창, SSH 는 늘 새 터미널 창

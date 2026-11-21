@@ -176,13 +176,12 @@ final class ComputerStore: ObservableObject {
         return chain
     }
 
-    /// 끌어 놓기로 순서 바꾸기: id 를 target 자리로 (아래로 끌면 target 뒤, 위로 끌면 앞). 같은 묶음 안에서만 부른다
-    func move(_ id: UUID, to target: UUID) {
-        guard id != target, let from = computers.firstIndex(where: { $0.id == id }),
-              let to = computers.firstIndex(where: { $0.id == target }) else { return }
-        let c = computers.remove(at: from)
-        guard let t = computers.firstIndex(where: { $0.id == target }) else { computers.insert(c, at: from); return }
-        computers.insert(c, at: from < to ? t + 1 : t)
+    /// 정렬 모드에서 순서 바꾸기: 한 묶음(화면 공유 / SSH) 안에서 offsets 를 to 로. 다른 묶음 컴퓨터 자리는 그대로
+    func move(fromOffsets offsets: IndexSet, toOffset to: Int, screens: Bool) {
+        let slots = computers.indices.filter { computers[$0].type.showsScreen == screens }
+        var group = slots.map { computers[$0] }
+        group.move(fromOffsets: offsets, toOffset: to)
+        for (slot, c) in zip(slots, group) { computers[slot] = c }
         orderChanged()
     }
 
