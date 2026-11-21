@@ -78,6 +78,21 @@ struct ComputerEditView: View {
 
     /// 맥: 위에 [맥 | 윈도우] 탭이 붙은 상자 (TabView), 아이폰·아이패드: 맨 위 분할 단추
     @ViewBuilder private var content: some View {
+        if computer != nil {
+            // 편집: 종류는 바꿀 일이 없어(SSH 를 맥으로 등) 종류 탭 없이 그 종류 칸만 (사용자)
+            Form { fields }
+                .formStyle(.grouped)
+                #if os(macOS)
+                .scrollContentBackground(.hidden)
+                #endif
+                // 맥: 여백은 grouped Form 자체 여백만 (탭 상자용 .padding() 을 또 주면 두 겹으로 넓어졌다, 사용자)
+        } else {
+            addContent
+        }
+    }
+
+    /// 추가: 종류를 고르는 탭과 칸
+    @ViewBuilder private var addContent: some View {
         #if os(macOS)
         TabView(selection: $kind) {
             ForEach(Computer.Kind.allCases, id: \.self) { k in

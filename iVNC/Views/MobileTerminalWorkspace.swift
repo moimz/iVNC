@@ -69,6 +69,10 @@ struct WorkspaceTerminalHost: UIViewRepresentable {
         }
     }
 
+    /// 키보드를 올릴지 (async 로 미룬 요청이 메뉴를 다시 연 뒤에 실행돼 키보드가 올라오던 것 막기)
+    final class Coordinator { var focus = true }
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
     func makeUIView(context: Context) -> Box { Box() }
 
     func updateUIView(_ box: Box, context: Context) {
@@ -80,7 +84,9 @@ struct WorkspaceTerminalHost: UIViewRepresentable {
         }
         if let t = tabs.first(where: { $0.id == active }) {
             box.backgroundColor = t.view.nativeBackgroundColor
-            if focus { DispatchQueue.main.async { if !t.view.isFirstResponder { _ = t.view.becomeFirstResponder() } } }
+            context.coordinator.focus = focus
+            let c = context.coordinator
+            if focus { DispatchQueue.main.async { if c.focus, !t.view.isHidden, !t.view.isFirstResponder { _ = t.view.becomeFirstResponder() } } }
             else { for t in tabs where t.view.isFirstResponder { _ = t.view.resignFirstResponder() } }
         }
     }
