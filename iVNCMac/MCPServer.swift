@@ -821,6 +821,23 @@ final class TerminalRegistry {
 
     var openTabs: [TerminalTab] { models.compactMap(\.model).flatMap(\.allTabs) }
 
+    /// 떼어 낸 탭이 놓일 창·칸에 강조 표시 (nil = 모두 끔)
+    func highlightDrop(atScreen p: NSPoint?) {
+        let hit = p.flatMap { target(atScreen: $0) }
+        for m in models.compactMap(\.model) {
+            let want = (hit?.0 === m) ? hit?.1 : nil
+            if m.dropHighlight != want { m.dropHighlight = want }
+        }
+    }
+
+    /// 화면 좌표 점 밑에 있는 터미널 창과 그 칸 (맨 앞 창부터)
+    func target(atScreen p: NSPoint) -> (TerminalWindowModel, Int)? {
+        let number = NSWindow.windowNumber(at: p, belowWindowWithWindowNumber: 0)
+        let live = models.compactMap(\.model)
+        guard let m = live.first(where: { $0.window?.windowNumber == number }), let i = m.pane(atScreen: p) else { return nil }
+        return (m, i)
+    }
+
     /// 앞에 있는 터미널 창의 활성 탭 (없으면 마지막으로 쓴 창)
     var activeTab: TerminalTab? {
         let live = models.compactMap(\.model)

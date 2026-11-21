@@ -23,6 +23,47 @@ final class TerminalWindowModel: ObservableObject {
     private(set) var lastUsed = Date()
 
     init() { TerminalRegistry.shared.add(self) }
+    /// 이 모델의 창 (탭을 다른 창으로 옮길 때 마우스 밑 창 찾기)
+    weak var window: NSWindow?
+    /// 칸마다 창 안 자리 (SwiftUI .global = 창 안, 위가 0). 떼어 낸 탭을 놓을 칸 찾기
+    var paneFrames: [UUID: CGRect] = [:]
+    /// 떼어 낸 탭이 지금 놓일 칸 (강조 테두리)
+    @Published var dropHighlight: Int?
+
+    /// 탭을 이 창에서 빼낸다 (접속은 끊지 않는다). 칸이 비면 분할을 풀고, 창이 비면 닫는다
+    func detach(_ tab: TerminalTab) {
+        guard let i = paneIndex(of: tab), let j = panes[i].tabs.firstIndex(where: { $0.id == tab.id }) else { return }
+        tabWatchers[tab.id] = nil
+        panes[i].tabs.remove(at: j)
+        if panes[i].active == tab.id {
+            panes[i].active = panes[i].tabs.indices.contains(j) ? panes[i].tabs[j].id : panes[i].tabs.last?.id
+        }
+        if panes[i].tabs.isEmpty && panes.count > 1 { panes.remove(at: i); focused = 0 }
+        if allTabs.isEmpty { onEmpty?() } else if let t = activeTab { focus(t) }
+    }
+
+    /// 다른 창에서 온 탭을 받는다 (접속·화면은 그대로)
+    func adopt(_ tab: TerminalTab, pane: Int? = nil) {
+        let i = min(pane ?? focused, panes.count - 1)
+        tab.jumps = jumpChain?(tab.computer) ?? tab.jumps
+        tab.onRequestClose = { [weak self] t in self?.close(t) }
+        tabWatchers[tab.id] = tab.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        panes[i].tabs.append(tab)
+        panes[i].active = tab.id
+        focused = i
+        lastUsed = Date()
+        focus(tab)
+    }
+
+    /// 화면 좌표 점이 이 창의 몇 번째 칸 위인지 (창 밖이면 nil)
+    func pane(atScreen p: NSPoint) -> Int? {
+        guard let w = window, w.frame.contains(p), let content = w.contentView else { return nil }
+        let inWindow = content.convert(w.convertPoint(fromScreen: p), from: nil)
+        let y = content.isFlipped ? inWindow.y : content.bounds.height - inWindow.y
+        let pt = CGPoint(x: inWindow.x, y: y)
+        if let hit = panes.firstIndex(where: { paneFrames[$0.id]?.contains(pt) ?? false }) { return hit }
+        return focused
+    }
     /// 탭이 바뀌면(서버 지문 질문·상태·제목) 창도 다시 그린다. 안 그러면 지문 알림이 안 떠 "접속 중…" 에 멈춘다
     private var tabWatchers: [UUID: AnyCancellable] = [:]
 
@@ -143,12 +184,6 @@ final class TerminalWindowModel: ObservableObject {
     func paneIndex(of tab: TerminalTab) -> Int? { panes.firstIndex { $0.tabs.contains { $0.id == tab.id } } }
 
     /// 같은 서버 탭이 여럿이면 탭 이름 뒤에 (2), (3)
-    func number(of tab: TerminalTab) -> Int? {
-        let same = allTabs.filter { $0.computer.id == tab.computer.id }
-        guard same.count > 1, let i = same.firstIndex(where: { $0.id == tab.id }) else { return nil }
-        return i + 1
-    }
-
     private func focus(_ tab: TerminalTab) {
         DispatchQueue.main.async { tab.view.window?.makeFirstResponder(tab.view) }
     }
@@ -212,6 +247,7 @@ struct TerminalWindowView: View {
                 }
             }
         }
+        .background(WindowGrabber { [weak model] w in model?.window = w })
         .navigationTitle(model.activeTab?.displayTitle ?? "SSH")
         .toolbar(removing: .title)
         // ⌘W = 지금 탭 닫기 (마지막 탭이면 창도 닫힌다). 도구 막대에 숨겨 두면 빈 칸이 생겨 버튼이 오른쪽 끝에 안 붙었다
@@ -241,7 +277,9 @@ struct TerminalWindowView: View {
         .onAppear {
             model.onEmpty = { dismissWindow() }
             model.jumpChain = { [store] c in store.jumpChain(for: c) }
-            if model.allTabs.isEmpty, let c = store.computers.first(where: { $0.id == request.computer }) { model.open(c) }
+            if model.allTabs.isEmpty, let id = request.adopt, let tab = TabTransfer.pending.removeValue(forKey: id) {
+                model.adopt(tab)
+            } else if model.allTabs.isEmpty, let c = store.computers.first(where: { $0.id == request.computer }) { model.open(c) }
         }
         .onDisappear { model.closeAll() }
         .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
@@ -281,6 +319,18 @@ private struct TerminalPaneView: View {
             }
             .contentShape(Rectangle())
             .simultaneousGesture(TapGesture().onEnded { model.focused = index })
+        }
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { [weak model] r in
+            model?.paneFrames[pane.id] = r
+        }
+        // 떼어 낸 탭이 여기 들어갈 것이라는 표시 (사용자)
+        .overlay {
+            if model.dropHighlight == index {
+                RoundedRectangle(cornerRadius: 6).strokeBorder(Color.accentColor, lineWidth: 3)
+                    .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+                    .padding(2)
+                    .allowsHitTesting(false)
+            }
         }
     }
 }
@@ -356,43 +406,66 @@ private struct TabStripView: View {
     @ObservedObject var model: TerminalWindowModel
     let pane: TerminalWindowModel.Pane
     let index: Int
+    @State private var reorder = TabReorder<UUID>()
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 0) {
                 ForEach(pane.tabs) { t in
-                    TabItemView(tab: t, number: model.number(of: t), active: t.id == pane.active,
+                    TabItemView(tab: t, active: t.id == pane.active,
                                 focused: model.focused == index, model: model)
-                        .onDrag { NSItemProvider(object: t.id.uuidString as NSString) }
-                        .onDrop(of: [.text], isTargeted: nil) { items in drop(items, before: t.id) }
+                        .reorderable(t.id, order: pane.tabs.map(\.id), state: $reorder) { id, before in
+                            model.move(id, toPane: index, before: before)
+                        } tearOff: { id in
+                            tearOff(id)
+                        } hover: { id in
+                            TerminalRegistry.shared.highlightDrop(atScreen: id == nil ? nil : NSEvent.mouseLocation)
+                        }
                 }
-                // 빈 곳에 놓으면 끝으로
-                Color.clear.frame(width: 40, height: 36)
-                    .contentShape(Rectangle())
-                    .onDrop(of: [.text], isTargeted: nil) { items in drop(items, before: nil) }
             }
+            .coordinateSpace(.named(TabReorderSpace.name))
+            // 탭을 옮기면 탭 줄 안에서만 짧게 미끄러지게 (iSQL)
+            .animation(.easeOut(duration: 0.18), value: pane.tabs.map(\.id))
         }
+        // 끄는 탭이 탭 줄 밖으로 나가 그려질 수 있게
+        .scrollClipDisabled()
         .frame(height: 36)
         // 제목바와 다른 색 (iSQL TabBar 와 같은 값). 안전 영역까지 번지지 않게
         .background(Color(nsColor: .underPageBackgroundColor).opacity(0.5), ignoresSafeAreaEdges: [])
+        .zIndex(1)
     }
 
-    private func drop(_ items: [NSItemProvider], before: UUID?) -> Bool {
-        guard let p = items.first else { return false }
-        _ = p.loadObject(ofClass: NSString.self) { s, _ in
-            guard let s = s as? String, let id = UUID(uuidString: s) else { return }
-            DispatchQueue.main.async {
-                guard let i = model.paneIndex(id: pane.id) else { return }
-                model.move(id, toPane: i, before: before)
+    /// 탭 줄 밖에 놓았을 때: 마우스 밑이 다른 터미널 창이면 그 창으로, 같은 창 다른 칸이면 그 칸으로, 창이 없는 곳이면 새 창으로
+    private func tearOff(_ id: UUID) {
+        guard let tab = pane.tabs.first(where: { $0.id == id }) else { return }
+        let p = NSEvent.mouseLocation
+        if let (target, paneIndex) = TerminalRegistry.shared.target(atScreen: p) {
+            if target === model {
+                if paneIndex != index { model.move(id, toPane: paneIndex, before: nil) }
+            } else {
+                model.detach(tab)
+                target.adopt(tab, pane: paneIndex)
+                target.window?.makeKeyAndOrderFront(nil)
             }
+            return
         }
-        return true
+        // 창이 없는 곳: 하나뿐인 탭이면 창을 그대로 두고, 아니면 새 창으로 떼어 낸다
+        guard model.allTabs.count > 1 else { return }
+        TabTransfer.pending[id] = tab
+        model.detach(tab)
+        openWindow(id: "terminal", value: TerminalWindowRequest(computer: tab.computer.id, adopt: id))
     }
+}
+
+/// 새 창으로 떼어 낸 탭을 그 창이 뜰 때까지 맡아 둔다
+@MainActor
+enum TabTransfer {
+    static var pending: [UUID: TerminalTab] = [:]
 }
 
 private struct TabItemView: View {
     @ObservedObject var tab: TerminalTab
-    let number: Int?
     let active: Bool
     let focused: Bool
     @ObservedObject var model: TerminalWindowModel
@@ -402,7 +475,8 @@ private struct TabItemView: View {
         HStack(spacing: 6) {
             // 탭에는 아이콘 대신 서버 색 점만 (사용자)
             Circle().fill(tab.computer.sshColor?.color ?? Color.secondary.opacity(0.4)).frame(width: 8, height: 8)
-            Text(tab.computer.name + (number.map { " (\($0))" } ?? ""))
+            // 같은 서버 탭 번호는 달지 않는다: 지금 폴더·프로그램 이름으로 구분된다 (사용자)
+            Text(tab.computer.name)
                 .lineLimit(1)
                 .fontWeight(active && focused ? .semibold : .regular)
                 .foregroundStyle(tab.state == .connected ? .primary : .secondary)

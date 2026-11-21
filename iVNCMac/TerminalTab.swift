@@ -6,6 +6,8 @@ import SwiftTerm
 struct TerminalWindowRequest: Codable, Hashable {
     var id = UUID()
     var computer: UUID
+    /// 다른 창에서 떼어 낸 탭 (있으면 새로 접속하지 않고 그 탭을 받는다)
+    var adopt: UUID? = nil
 }
 
 /// 터미널 탭 하나 = SSH 접속 하나 + SwiftTerm 화면 하나 (탭을 옮기거나 숨겨도 화면은 살려 둔다)
