@@ -103,6 +103,7 @@ final class SSHShell {
             guard let self else { return conn.eventLoop.makeFailedFuture(ChannelError.ioOnClosedChannel) }
             self.connection = conn
             conn.closeFuture.whenComplete { [weak self] _ in self?.finish(error: nil) }
+            if keepAlive { self.startAliveCheck(conn) }
             // 셸이 필요 없으면 여기서 접속 완료로 (인증은 첫 채널을 열 때 끝까지 기다린다: NIOSSH 가 채널 열기를 인증 뒤로 미룬다)
             if !self.interactive {
                 return conn.pipeline.handler(type: NIOSSHHandler.self).flatMap { _ in
@@ -143,6 +144,34 @@ final class SSHShell {
             case .failure(let e):
                 DebugLog.write("SSH 실패: \(e)")
                 self?.finish(error: Self.describe(e))
+            }
+        }
+    }
+
+    /// OpenSSH ServerAliveInterval 60 · ServerAliveCountMax 3 과 같게 (사용자 맥 ~/.ssh/config 값, 사내망에서 자주 끊겨 넣었던 것)
+    static let aliveInterval: Int64 = 60
+    static let aliveCountMax = 3
+
+    /// 서버가 살아 있는지 주기적으로 묻는다 (ServerAlive). 서버가 조용히 사라지면(전원·망 끊김·와이파이 바꿈)
+    /// TCP 는 2시간 가까이 모르므로, SSH 전역 요청을 보내 답(성공이든 거절이든)이 오는지 본다.
+    /// 3번 연속 답이 없으면 끊고 "다시 접속" 을 띄운다. 오가는 글 덕분에 한동안 조용하면 끊는 서버·사내망도 붙잡아 둔다.
+    /// swift-nio-ssh 는 임의 전역 요청을 밖에 안 열어서, 없는 포워딩 취소(cancel-tcpip-forward)를 보낸다 (서버는 거절로 답한다)
+    private func startAliveCheck(_ conn: Channel) {
+        var waiting = 0
+        conn.eventLoop.scheduleRepeatedTask(initialDelay: .seconds(Self.aliveInterval), delay: .seconds(Self.aliveInterval)) { [weak self] task in
+            guard let self, conn.isActive else { task.cancel(); return }
+            if waiting >= Self.aliveCountMax {
+                task.cancel()
+                DebugLog.write("SSH 서버 응답 없음 \(Self.aliveCountMax)번 → 끊음")
+                self.finish(error: "서버가 \(Self.aliveInterval * Int64(Self.aliveCountMax))초 동안 응답하지 않아 접속을 끊었습니다.")
+                conn.close(promise: nil)
+                return
+            }
+            waiting += 1
+            _ = conn.pipeline.handler(type: NIOSSHHandler.self).map { ssh in
+                let reply = conn.eventLoop.makePromise(of: GlobalRequest.TCPForwardingResponse?.self)
+                reply.futureResult.whenComplete { _ in waiting = 0 }
+                ssh.sendTCPForwardingRequest(.cancel(host: "127.0.0.1", port: 9), promise: reply)
             }
         }
     }

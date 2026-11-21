@@ -192,7 +192,7 @@ final class FileSession: ObservableObject {
         do {
             if client == nil {
                 remote.loading = true
-                let c = try await shell.openSFTP(command: bridge)
+                let c = try await Self.openSFTP(shell, bridge: bridge)
                 client = c
                 remote.loader = { p in try await c.list(p).map(Self.item) }
                 if bridge != nil {
@@ -220,6 +220,27 @@ final class FileSession: ObservableObject {
             remote.loading = false
             remote.error = (error as? LocalizedError)?.errorDescription ?? "파일 목록을 열 수 없습니다: \(error)"
         }
+    }
+
+    /// SFTP 열기. 서버가 sftp 서브시스템을 꺼 두었으면(sshd_config 에 Subsystem 없음) sftp-server 를 직접 실행해 다시 해 본다.
+    /// 둘 다 안 되면 알기 쉬운 말로 (사용자: 서버에서 막아 둘 수도 있지 않나)
+    private static func openSFTP(_ shell: SSHShell, bridge: String?) async throws -> SFTPClient {
+        if let bridge { return try await shell.openSFTP(command: bridge) }
+        do {
+            return try await shell.openSFTP()
+        } catch {
+            DebugLog.write("SFTP 서브시스템 안 됨, sftp-server 직접 실행 시도: \(error)")
+            let direct = "for s in /usr/lib/openssh/sftp-server /usr/libexec/openssh/sftp-server /usr/lib/ssh/sftp-server /usr/libexec/sftp-server; do [ -x $s ] && exec $s; done; exit 127"
+            do {
+                return try await shell.openSFTP(command: direct)
+            } catch {
+                throw SFTPUnavailable()
+            }
+        }
+    }
+
+    struct SFTPUnavailable: LocalizedError {
+        var errorDescription: String? { "이 서버는 파일 전송(SFTP)을 쓸 수 없게 되어 있습니다.\n서버 관리자가 sshd 설정에서 SFTP 를 꺼 두었거나 sftp-server 가 없습니다." }
     }
 
     nonisolated static func item(_ e: SFTPClient.Entry) -> FileItem {
