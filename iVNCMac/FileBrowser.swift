@@ -504,6 +504,8 @@ private let remoteDragType = UTType(exportedAs: "com.moimz.ivnc.remote-files")
 struct FileBrowserView: View {
     @ObservedObject var session: FileSession
     let serverName: String
+    /// ⏏: 파인더를 닫고 터미널로
+    var onEject: (() -> Void)?
 
     /// 이보다 좁으면(분할 칸 등) 한 칸만 보이고 [이 맥 | 서버] 로 바꾼다
     static let twoPaneWidth: CGFloat = 700
@@ -514,12 +516,12 @@ struct FileBrowserView: View {
                 if geo.size.width >= Self.twoPaneWidth {
                     HSplitView {
                         FilePaneView(session: session, pane: session.local, title: "이 맥").frame(minWidth: 260)
-                        FilePaneView(session: session, pane: session.remote, title: serverName).frame(minWidth: 260)
+                        FilePaneView(session: session, pane: session.remote, title: serverName, onEject: onEject).frame(minWidth: 260)
                     }
                 } else if session.compactShowsLocal {
                     FilePaneView(session: session, pane: session.local, title: "이 맥", compact: true)
                 } else {
-                    FilePaneView(session: session, pane: session.remote, title: serverName, compact: true)
+                    FilePaneView(session: session, pane: session.remote, title: serverName, compact: true, onEject: onEject)
                 }
             }
             if !session.transfers.isEmpty {
@@ -540,6 +542,8 @@ private struct FilePaneView: View {
     let title: String
     /// 좁은 한 칸 모양: 머리에 [이 맥 | 서버] 전환
     var compact = false
+    /// 경로 줄 왼쪽 ⏏ (서버 칸): 파인더를 닫고 터미널로
+    var onEject: (() -> Void)?
 
     @AppStorage(FileViewOptions.showHidden) private var showHidden = false
     @AppStorage(FileViewOptions.foldersFirst) private var foldersFirst = true
@@ -598,7 +602,7 @@ private struct FilePaneView: View {
         .onChange(of: [showSize, showDate, showKind, showPermissions]) { applyColumns() }
     }
 
-    // 위 줄: [장치 아이콘 | 폴더 이름 ⌄] ··· [새로 고침] [보기 옵션]
+    // 위 줄: [⏏ | 서버 › var › www › html ⌄] ··· [새로 고침] [보기 옵션] (Transmit 경로 줄)
     private var header: some View {
         HStack(spacing: 8) {
             if compact {
@@ -609,13 +613,9 @@ private struct FilePaneView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .fixedSize()
-            } else {
-                Image(systemName: pane.isRemote ? "server.rack" : "internaldrive")
-                    .foregroundStyle(.secondary)
-                    .help(title)
+                Divider().frame(height: 14)
             }
-            Divider().frame(height: 14)
-            PathMenu(session: session, pane: pane, title: title)
+            PathBar(session: session, pane: pane, title: title, onEject: pane.isRemote ? onEject : nil)
             Spacer(minLength: 4)
             if pane.loading { ProgressView().controlSize(.small) }
             Button { Task { await pane.refresh() } } label: { Image(systemName: "arrow.clockwise") }
@@ -771,17 +771,30 @@ private struct FilePaneView: View {
     }
 }
 
-/// SwiftUI 표 밑의 NSTableView 에서 줄 사이 선을 끈다 (SwiftUI 에는 이 옵션이 없다)
+
+/// 파일 표의 줄 사이 선을 끈다 (사용자: 선 없이).
+/// 맥 26 의 SwiftUI 표는 AppKit 격자선(gridStyleMask)이 아니라 행마다 붙는 `_NSTableRowSeparatorDrawingView` 가 선을 그린다.
+/// gridStyleMask·listRowSeparator·행 뷰 drawSeparator 바꾸기·선 뷰 숨기기는 모두 안 먹었다 →
+/// 그 선 뷰 종류의 draw(_:) 를 바꿔서, 표시(identifier)한 표 안이면 아무것도 안 그린다.
+/// 시험 앱에서 스크롤·행 고르기 뒤에도 선이 안 생기는 것을 화면으로 확인 (2026-11-21)
 private struct TableLinesRemover: NSViewRepresentable {
+    static let tableID = NSUserInterfaceItemIdentifier("ivnc.files.table")
+
     final class Probe: NSView {
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             DispatchQueue.main.async { self.apply() }
         }
+
         func apply() {
+            SeparatorPatch.install()
             guard let root = window?.contentView else { return }
+            // 이 창의 파일 표 모두 (사이드바 목록 sourceList 는 빼고)
             func walk(_ v: NSView) {
-                if let t = v as? NSTableView, t.gridStyleMask != [] { t.gridStyleMask = [] }
+                if let t = v as? NSTableView, t.style != .sourceList {
+                    if t.identifier != TableLinesRemover.tableID { t.identifier = TableLinesRemover.tableID; t.needsDisplay = true }
+                    if t.gridStyleMask != [] { t.gridStyleMask = [] }
+                }
                 v.subviews.forEach(walk)
             }
             walk(root)
@@ -791,38 +804,113 @@ private struct TableLinesRemover: NSViewRepresentable {
     func updateNSView(_ v: Probe, context: Context) { DispatchQueue.main.async { v.apply() } }
 }
 
-/// 폴더 이름 ⌄ → 위 폴더들 (Finder 제목 경로 메뉴처럼) + 자주 가는 곳
-private struct PathMenu: View {
+@MainActor
+private enum SeparatorPatch {
+    private static var installed = false
+
+    static func install() {
+        guard !installed, let cls = NSClassFromString("_NSTableRowSeparatorDrawingView") else { return }
+        installed = true
+        let sel = #selector(NSView.draw(_:))
+        guard let m = class_getInstanceMethod(cls, sel) else { return }
+        typealias Draw = @convention(c) (NSView, Selector, NSRect) -> Void
+        let previous = unsafeBitCast(method_getImplementation(m), to: Draw.self)
+        let block: @convention(block) (NSView, NSRect) -> Void = { v, rect in
+            var p: NSView? = v.superview
+            while let x = p, !(x is NSTableView) { p = x.superview }
+            if (p as? NSTableView)?.identifier == TableLinesRemover.tableID { return }
+            previous(v, sel, rect)
+        }
+        let imp = imp_implementationWithBlock(block)
+        // 그 종류에 자기 구현이 없으면 덧붙이고(부모 NSView 것은 그대로), 있으면 바꾼다
+        if !class_addMethod(cls, sel, imp, method_getTypeEncoding(m)) { method_setImplementation(m, imp) }
+    }
+}
+
+/// 경로 줄 (Transmit 처럼): [⏏ |] 맨 위 › 폴더 › … › 지금 폴더 ⌄
+/// 앞 폴더는 눌러서 바로 가고, 지금 폴더(강조색)는 위 폴더 목록·자주 가는 곳 메뉴. 좁으면 가운데를 … 로 줄인다
+private struct PathBar: View {
     @ObservedObject var session: FileSession
     @ObservedObject var pane: FilePane
     let title: String
+    var onEject: (() -> Void)?
+    @State private var anchor = MenuAnchorBox()
 
     var body: some View {
-        Menu {
-            ForEach(ancestors, id: \.self) { p in
-                Button { Task { await pane.open(p) } } label: {
-                    Label { Text(display(p)) } icon: { Image(nsImage: folderIcon(p)) }
-                }
+        HStack(spacing: 6) {
+            if let onEject {
+                Button(action: onEject) { Image(systemName: "eject.fill").font(.system(size: 11)) }
+                    .buttonStyle(.borderless)
+                    .help("파인더 닫기 (터미널로)")
+                Divider().frame(height: 14)
             }
-            Divider()
-            if pane.isRemote {
-                if let home = session.remoteHome { Button("홈 (\(home))") { Task { await pane.open(home) } } }
-                Button("루트 (/)") { Task { await pane.open("/") } }
-            } else {
-                ForEach(places, id: \.0) { name, url in
-                    Button(name) { Task { await pane.open(url.path) } }
-                }
-                Divider()
-                Button("다른 폴더…") { pickLocal() }
-            }
-        } label: {
-            HStack(spacing: 3) {
-                Text(pane.path.isEmpty ? title : display(pane.path)).fontWeight(.semibold).foregroundStyle(.primary)
+            // 넓으면 다 보이고, 좁으면 맨 위와 지금 폴더는 남기고 가운데부터 … 로
+            let chain = Array(ancestors.reversed())
+            ViewThatFits(in: .horizontal) {
+                ForEach(0..<max(1, chain.count - 1), id: \.self) { hide in crumbs(chain, hiding: hide) }
+                current(chain.last ?? pane.path)
             }
         }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
         .help(pane.path)
+    }
+
+    private func crumbs(_ chain: [String], hiding: Int) -> some View {
+        HStack(spacing: 5) {
+            ForEach(Array(chain.enumerated()), id: \.offset) { i, p in
+                if i == chain.count - 1 {
+                    current(p)
+                } else if i == 0 || i > hiding {
+                    Button { Task { await pane.open(p) } } label: { Text(display(p)).lineLimit(1) }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.primary.opacity(0.85))
+                    chevron
+                } else if i == 1 {
+                    Text("…").foregroundStyle(.secondary)
+                    chevron
+                }
+            }
+        }
+        .fixedSize()
+    }
+
+    private var chevron: some View {
+        Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
+    }
+
+    /// 지금 폴더: 강조색 이름 ⌄ → 위 폴더 목록 (Transmit 처럼 아이콘 + 이름만).
+    /// SwiftUI Menu 는 그림을 단색으로 바꾸고 모양을 못 맞춰서 AppKit 메뉴로 (iSQL ServerSwitcher 방식)
+    private func current(_ p: String) -> some View {
+        Button { showMenu() } label: {
+            HStack(spacing: 4) {
+                Text(p.isEmpty ? title : display(p)).fontWeight(.semibold).lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold))
+            }
+            .foregroundStyle(Color.accentColor)
+            .background(MenuAnchor(box: anchor))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+    }
+
+    private func showMenu() {
+        let menu = NSMenu()
+        // Transmit 처럼 위 폴더들: 아이콘 + 이름 (맥 26 메뉴는 항목 그림을 안 그려서 SwiftUI 줄로)
+        for a in ancestors.dropFirst() {
+            let row = HStack(spacing: 8) {
+                Image(nsImage: folderIcon(a)).resizable().frame(width: 18, height: 18)
+                Text(display(a)).font(.system(size: 13)).lineLimit(1)
+                Spacer(minLength: 12)
+            }
+            .padding(.leading, 14).padding(.trailing, 14).padding(.vertical, 3)
+            menu.addItem(MenuAction.item(display(a), view: row, minWidth: 180) { [pane] in Task { await pane.open(a) } })
+        }
+        if !pane.isRemote {
+            menu.addItem(.separator())
+            menu.addItem(MenuAction.item("다른 폴더…") { pickLocal() })
+        }
+        guard !menu.items.isEmpty else { return }
+        menu.popUp(below: anchor)
     }
 
     private var ancestors: [String] {
@@ -838,22 +926,17 @@ private struct PathMenu: View {
     }
 
     private func display(_ p: String) -> String {
-        if p == "/" { return pane.isRemote ? "/" : "Macintosh HD" }
+        if p == "/" { return pane.isRemote ? title : "Macintosh HD" }
         return (p as NSString).lastPathComponent
     }
 
     private func folderIcon(_ p: String) -> NSImage {
-        let i = pane.isRemote ? NSWorkspace.shared.icon(for: .folder) : NSWorkspace.shared.icon(forFile: p)
-        i.size = NSSize(width: 16, height: 16)
-        return i
-    }
-
-    private var places: [(String, URL)] {
-        let fm = FileManager.default
-        return [("홈", fm.homeDirectoryForCurrentUser),
-                ("데스크탑", fm.urls(for: .desktopDirectory, in: .userDomainMask).first!),
-                ("문서", fm.urls(for: .documentDirectory, in: .userDomainMask).first!),
-                ("다운로드", fm.urls(for: .downloadsDirectory, in: .userDomainMask).first!)]
+        if pane.isRemote {
+            // 맨 위(서버)는 네트워크 서버 그림
+            if p == "/" { return NSImage(named: NSImage.networkName) ?? NSWorkspace.shared.icon(for: .folder) }
+            return NSWorkspace.shared.icon(for: .folder)
+        }
+        return NSWorkspace.shared.icon(forFile: p)
     }
 
     private func pickLocal() {

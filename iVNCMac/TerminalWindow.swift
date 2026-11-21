@@ -162,6 +162,9 @@ struct TerminalWindowView: View {
     @StateObject private var model = TerminalWindowModel()
     /// 사이드바를 펼쳤는지 (창마다 기억, 새 창은 펼침)
     @SceneStorage("terminal.sidebar") private var sidebarShown = true
+    /// 창을 막 열었을 때 맥 26 NavigationSplitView 는 본문을 사이드바 밑(왼쪽)에 한 번 깔았다가 사이드바 폭만큼 옮긴다.
+    /// 그게 "탭 줄·터미널이 왼쪽에 숨었다가 오른쪽으로 밀려 나오는" 것으로 보였다 (사용자) → 자리가 잡힐 때까지 본문을 숨긴다
+    @State private var settled = false
 
     var body: some View {
         NavigationSplitView(columnVisibility: Binding(get: { sidebarShown ? .all : .detailOnly },
@@ -177,8 +180,15 @@ struct TerminalWindowView: View {
                 }
             }
             .frame(minWidth: 480, minHeight: 260)
+            .opacity(settled ? 1 : 0)
             // 오른쪽 버튼은 본문에 붙인다 (창 전체에 붙이면 사이드바가 있을 때 왼쪽으로 몰린다, iSQL 툴바 규칙)
             .toolbar {
+                // 제목이자 서버 바꾸기 (iSQL ServerSwitcher 모양, 둥근 유리 배경 없이).
+                // 창 전체 .toolbar 에 두면 창을 처음 열 때 사이드바 토글 밑에 깔렸다가 다시 그려질 때 옆으로 밀려 나왔다 (사용자 화면 기록) → 본문 쪽에
+                ToolbarItem(placement: .navigation) {
+                    ServerMenu(model: model)
+                }
+                .sharedBackgroundVisibility(.hidden)
                 // 오른쪽 끝에 붙인다
                 ToolbarSpacer(.flexible)
                 // [터미널 | 파인더] (iSQL 의 데이터/구조처럼)
@@ -204,13 +214,6 @@ struct TerminalWindowView: View {
         }
         .navigationTitle(model.activeTab?.displayTitle ?? "SSH")
         .toolbar(removing: .title)
-        .toolbar {
-            // 제목이자 서버 바꾸기 (iSQL ServerSwitcher 와 같은 모양, 둥근 유리 배경 없이)
-            ToolbarItem(placement: .navigation) {
-                ServerMenu(model: model)
-            }
-            .sharedBackgroundVisibility(.hidden)
-        }
         // ⌘W = 지금 탭 닫기 (마지막 탭이면 창도 닫힌다). 도구 막대에 숨겨 두면 빈 칸이 생겨 버튼이 오른쪽 끝에 안 붙었다
         .background {
             Group {
@@ -231,6 +234,10 @@ struct TerminalWindowView: View {
             }
         }
         .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                var t = Transaction(); t.disablesAnimations = true
+                withTransaction(t) { settled = true }
+            }
             model.onEmpty = { dismissWindow() }
             model.jumpChain = { [store] c in store.jumpChain(for: c) }
             if model.allTabs.isEmpty, let c = store.computers.first(where: { $0.id == request.computer }) { model.open(c) }
@@ -263,7 +270,7 @@ private struct TerminalPaneView: View {
                 PaneHost(tabs: pane.tabs, active: pane.active)
                 if let t = pane.tabs.first(where: { $0.id == pane.active }) {
                     if t.mode == .files {
-                        FileBrowserView(session: t.files, serverName: t.computer.name).id(t.id)
+                        FileBrowserView(session: t.files, serverName: t.computer.name, onEject: { t.setMode(.terminal) }).id(t.id)
                     } else {
                         StatusOverlay(tab: t)
                     }
@@ -442,6 +449,7 @@ private struct TabItemView: View {
 private struct ServerMenu: View {
     @ObservedObject var model: TerminalWindowModel
     @State private var hover = false
+    @State private var anchor = MenuAnchorBox()
 
     var body: some View {
         Button(action: showMenu) {
@@ -462,6 +470,7 @@ private struct ServerMenu: View {
             .padding(.horizontal, 12)
             .frame(height: 30)
             .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hover ? 0.08 : 0)))
+            .background(MenuAnchor(box: anchor))
             .padding(.leading, 2)
             .contentShape(Rectangle())
         }
@@ -479,20 +488,15 @@ private struct ServerMenu: View {
 
     private func showMenu() {
         let menu = NSMenu()
-        // 이 창에 열린 서버 (탭 순서, 같은 서버는 한 번)
+        // 이 창에 열린 서버 (탭 순서, 같은 서버는 한 번). 줄은 iSQL 접속한 서버 메뉴처럼: 서버 아이콘 · 이름 · 계정@주소, 보고 있는 서버에 초록 점
         var seen = Set<UUID>()
         let open = model.allTabs.filter { seen.insert($0.computer.id).inserted }
         if !open.isEmpty {
             menu.addItem(.sectionHeader(title: "열린 서버"))
             for t in open {
                 let c = t.computer
-                let item = MenuAction.item(c.name) { [model] in if let tab = model.tab(for: c) { model.select(tab) } }
-                item.subtitle = Self.address(c)
-                item.state = model.activeTab?.computer.id == c.id ? .on : .off
-                let color = c.sshColor?.color.map { NSColor($0) } ?? NSColor.tertiaryLabelColor
-                item.image = NSImage(systemSymbolName: "circle.fill", accessibilityDescription: nil)?
-                    .withSymbolConfiguration(.init(pointSize: 9, weight: .regular).applying(.init(paletteColors: [color])))
-                menu.addItem(item)
+                let row = ServerMenuRow(computer: c, current: model.activeTab?.computer.id == c.id, connected: t.state == .connected)
+                menu.addItem(MenuAction.item(c.name, view: row, minWidth: 300) { [model] in if let tab = model.tab(for: c) { model.select(tab) } })
             }
         }
         if let t = model.activeTab {
@@ -506,30 +510,36 @@ private struct ServerMenu: View {
             none.isEnabled = false
             menu.addItem(none)
         }
-        // 버튼 바로 아래에
-        if let event = NSApp.currentEvent, let window = event.window, let view = window.contentView {
-            let p = view.convert(event.locationInWindow, from: nil)
-            menu.popUp(positioning: nil, at: NSPoint(x: p.x - 20, y: p.y - 18), in: view)
-        } else {
-            menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+        menu.popUp(below: anchor)
+    }
+}
+
+/// 제목바 서버 메뉴의 한 줄 (iSQL ServerMenuRow)
+private struct ServerMenuRow: View {
+    let computer: Computer
+    let current: Bool
+    let connected: Bool
+
+    var body: some View {
+        HStack(spacing: 9) {
+            ServerIcon(color: computer.sshColor ?? .none, size: 26)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(computer.name).font(.system(size: 13))
+                Text(ServerMenu.address(computer)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 16)
+            if current && connected {
+                Circle().fill(Color.green).frame(width: 8, height: 8).padding(.trailing, 4)
+            } else if !connected {
+                Text("끊김").font(.caption2).padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Capsule().fill(Color.secondary.opacity(0.2))).foregroundStyle(.secondary)
+            }
         }
+        // 왼쪽 끝을 "열린 서버" 머리글·아래 글자 항목과 맞춘다
+        .padding(.leading, 16).padding(.trailing, 14).padding(.vertical, 4)
     }
 }
 
-/// 닫는 블록을 가진 메뉴 항목 (iSQL MenuAction)
-final class MenuAction: NSObject {
-    let run: () -> Void
-    init(_ run: @escaping () -> Void) { self.run = run }
-    @objc func fire() { run() }
-
-    static func item(_ title: String, _ run: @escaping () -> Void) -> NSMenuItem {
-        let action = MenuAction(run)
-        let item = NSMenuItem(title: title, action: #selector(fire), keyEquivalent: "")
-        item.target = action
-        item.representedObject = action   // target 은 약한 참조라 항목이 붙잡아 둔다
-        return item
-    }
-}
 /// 터미널 창 왼쪽 SSH 서버 목록 (iSQL 사이드바처럼). 한 번 = 이 창의 그 서버 탭으로, 두 번·엔터 = 새 탭
 private struct TerminalSidebar: View {
     @ObservedObject var model: TerminalWindowModel
