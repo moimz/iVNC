@@ -115,6 +115,7 @@ final class TerminalWindowModel: ObservableObject {
         guard let i = paneIndex(of: tab), let j = panes[i].tabs.firstIndex(where: { $0.id == tab.id }) else { return }
         ClosedTabs.shared.remember(tab, in: self)
         tab.disconnect()
+        tab.stopEdits()
         tabWatchers[tab.id] = nil
         panes[i].tabs.remove(at: j)
         if panes[i].active == tab.id {
@@ -130,7 +131,7 @@ final class TerminalWindowModel: ObservableObject {
 
     func closeAll() {
         // 창을 닫을 때도 그 탭들을 기억한다 (⌘⇧T 로 하나씩 다시 열기)
-        for t in allTabs { ClosedTabs.shared.remember(t, in: self); t.disconnect() }
+        for t in allTabs { ClosedTabs.shared.remember(t, in: self); t.disconnect(); t.stopEdits() }
     }
 
     /// 탭 옮기기: 같은 칸 안 순서 바꾸기, 또는 다른 칸으로 (before 앞에, 없으면 끝에)

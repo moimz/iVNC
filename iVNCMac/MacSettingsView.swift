@@ -26,12 +26,12 @@ struct MacSettingsView: View {
     }
 }
 
-/// 설정 > SSH: 맥 터미널 프로필처럼 상자 탭 [텍스트 | 윈도우 | 셸 | 키보드 | 고급]
+/// 설정 > SSH: 맥 터미널 프로필처럼 상자 탭 [텍스트 | 윈도우 | 셸 | 키보드 | 파일 | 고급]
 private struct MacTerminalSettings: View {
     @AppStorage("settingsTerminalTab") private var page = 0
 
     var body: some View {
-        BoxTabView(titles: TerminalSettingsPage.allCases.map(\.title), selection: $page) { i in
+        BoxTabView(titles: TerminalSettingsPage.visible.map(\.title), selection: $page) { i in
             AnyView(TerminalSettingsPage(rawValue: i)?.form.scrollContentBackground(.hidden))
         }
         .padding(20)

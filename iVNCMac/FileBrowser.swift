@@ -138,6 +138,9 @@ final class FileSession: ObservableObject {
     /// 다른 사용자 셸이 띄운 sftp-server 에 잇는 명령 (nil = 로그인 계정 sftp)
     private var bridge: String?
     var isOpen: Bool { client != nil }
+    /// 맥 앱으로 열어 둔 서버 파일 (서버 경로 → 임시 파일, RemoteEdit.swift)
+    var edits: [String: RemoteEdit] = [:]
+    var editTimer: Timer?
 
     /// 볼 사용자를 정한다. 바뀌면 SFTP 를 닫고 다음 appear 에서 그 사용자로 다시 연다
     func useIdentity(user: String, bridge: String?) {
@@ -294,7 +297,7 @@ final class FileSession: ObservableObject {
     }
 
     /// 전송 내역에 보일 서버 이름
-    private var serverName: String { tab?.computer.name ?? "" }
+    var serverName: String { tab?.computer.name ?? "" }
 
     private func uploadFolder(_ u: URL, to remotePath: String, client: SFTPClient, group g: TransferGroup) async {
         try? await client.mkdir(remotePath) // 이미 있으면 실패해도 그대로 쓴다
@@ -379,7 +382,7 @@ final class FileSession: ObservableObject {
         }, group: g)
     }
 
-    private func enqueue(_ t: Transfer, group g: TransferGroup) {
+    func enqueue(_ t: Transfer, group g: TransferGroup) {
         g.add(t)
         guard t.state == .waiting else { return } // 묶음을 이미 취소했으면 넣지 않는다
         transfers.append(t)
@@ -441,6 +444,7 @@ final class FileSession: ObservableObject {
         }
     }
 
+    /// 접속을 닫는다 (다시 접속할 때도). 열어 둔 파일 감시는 남겨서 다시 접속하면 이어서 올린다 — 탭을 닫을 때만 stopEdits
     func close() {
         cancelAll()
         client?.close()
@@ -702,7 +706,62 @@ private struct FilePaneView: View {
     private func open(_ ids: Set<String>) {
         let picked = items(ids)
         if picked.count == 1, let f = picked.first, f.isDirectory { Task { await pane.open(f.id) }; return }
-        transfer(picked)
+        // 설정 > SSH > 파일: 맥 앱으로 열기(기본, 서버 파일은 받아서 열고 저장하면 다시 올림) 또는 업로드·다운로드 (사용자 2026-11-23)
+        if UserDefaults.standard.string(forKey: TerminalSettings.filesDoubleClick) == "transfer" {
+            confirmLarge(picked, opening: false) { transfer(picked) }
+        } else {
+            openFiles(picked.filter { !$0.isDirectory }, with: nil)
+        }
+    }
+
+    private func openFiles(_ files: [FileItem], with app: URL?) {
+        let files = Array(files.prefix(20))
+        guard pane.isRemote else { files.forEach { FileSession.launch($0.url, with: app) }; return }
+        confirmLarge(files, opening: true) { files.forEach { session.openRemote($0, with: app) } }
+    }
+
+    /// 큰 파일이면 옮기기 전에 묻는다 (설정 > SSH > 파일). 폴더는 크기를 몰라 빼고 센다
+    private func confirmLarge(_ items: [FileItem], opening: Bool, then go: () -> Void) {
+        let d = UserDefaults.standard
+        let on = d.object(forKey: TerminalSettings.filesConfirmLarge) as? Bool ?? true
+        let mb = d.object(forKey: TerminalSettings.filesLargeMB) as? Int ?? 50
+        let total = items.filter { !$0.isDirectory }.reduce(Int64(0)) { $0 + ($1.size ?? 0) }
+        guard on, total > Int64(mb) * 1_000_000 else { go(); return }
+        let size = ByteCountFormatter.string(fromByteCount: total, countStyle: .file)
+        let what = items.count == 1 ? items[0].name : "\(items[0].name) 외 \(items.count - 1)개"
+        let a = NSAlert()
+        a.messageText = "큰 파일입니다 (\(size))"
+        a.informativeText = opening ? "\(what) 을(를) 받아서 엽니다. 받는 데 시간이 걸릴 수 있습니다."
+            : (pane.isRemote ? "\(what) 을(를) 이 맥으로 받습니다." : "\(what) 을(를) 서버로 올립니다.")
+        a.addButton(withTitle: opening ? "받아서 열기" : (pane.isRemote ? "다운로드" : "업로드"))
+        a.addButton(withTitle: "취소")
+        if a.runModal() == .alertFirstButtonReturn { go() }
+    }
+
+    /// "다른 앱으로 열기" 하위 메뉴
+    @ViewBuilder private func openWithMenu(_ files: [FileItem]) -> some View {
+        let first = files.first
+        let apps = first.map { FileSession.apps(for: $0.name, localURL: pane.isRemote ? nil : $0.url) } ?? []
+        Menu("다른 앱으로 열기") {
+            ForEach(apps.prefix(20), id: \.self) { app in
+                Button {
+                    openFiles(files, with: app)
+                } label: {
+                    Label { Text(FileManager.default.displayName(atPath: app.path).replacingOccurrences(of: ".app", with: "")) }
+                        icon: { Image(nsImage: Self.appIcon(app)) }
+                        .labelStyle(.titleAndIcon)
+                }
+            }
+            if !apps.isEmpty { Divider() }
+            Button("기타…") { if let app = FileSession.chooseApp() { openFiles(files, with: app) } }
+        }
+        .disabled(files.isEmpty)
+    }
+
+    private static func appIcon(_ app: URL) -> NSImage {
+        let i = NSWorkspace.shared.icon(forFile: app.path)
+        i.size = NSSize(width: 16, height: 16)
+        return i
     }
 
     private func transfer(_ picked: [FileItem]) {
@@ -712,6 +771,10 @@ private struct FilePaneView: View {
 
     @ViewBuilder private func menu(_ ids: Set<String>) -> some View {
         let picked = items(ids)
+        let files = picked.filter { !$0.isDirectory }
+        Button("열기") { openFiles(files, with: nil) }.disabled(files.isEmpty)
+        openWithMenu(files)
+        Divider()
         Button(pane.isRemote ? "다운로드" : "업로드") { transfer(picked) }.disabled(picked.isEmpty)
         if pane.isRemote {
             Button("이름 바꾸기…") { nameInput = picked.first?.name ?? ""; renaming = picked.first }.disabled(picked.count != 1)
@@ -791,15 +854,29 @@ private struct TableLinesRemover: NSViewRepresentable {
             // 이 창의 파일 표 모두 (사이드바 목록 sourceList 는 빼고)
             func walk(_ v: NSView) {
                 if let t = v as? NSTableView, t.style != .sourceList {
-                    if t.identifier != TableLinesRemover.tableID { t.identifier = TableLinesRemover.tableID; t.needsDisplay = true }
+                    if t.identifier != TableLinesRemover.tableID {
+                        t.identifier = TableLinesRemover.tableID
+                        // 표시하기 전에 이미 그려 둔 선 뷰는 표만 다시 그려서는 안 지워진다 (선 뷰는 따로 그려 둔 그림을 쓴다) →
+                        // 선 뷰마다 다시 그리게 (처음 열 때 선이 보였다가 표를 누르면 사라지던 것, 사용자 2026-11-23)
+                        redrawSeparators(t)
+                    }
                     if t.gridStyleMask != [] { t.gridStyleMask = [] }
                 }
                 v.subviews.forEach(walk)
             }
             walk(root)
         }
+
+        private func redrawSeparators(_ v: NSView) {
+            if NSStringFromClass(type(of: v)).contains("Separator") { v.needsDisplay = true }
+            v.subviews.forEach(redrawSeparators)
+        }
     }
-    func makeNSView(context: Context) -> Probe { Probe() }
+    func makeNSView(context: Context) -> Probe {
+        // 표가 처음 그려지기 전에 바꿔 둔다
+        SeparatorPatch.install()
+        return Probe()
+    }
     func updateNSView(_ v: Probe, context: Context) { DispatchQueue.main.async { v.apply() } }
 }
 

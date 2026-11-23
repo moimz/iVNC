@@ -373,6 +373,9 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, TerminalViewD
         hostKeyAnswer = nil
     }
 
+    /// 탭을 닫을 때: 맥 앱으로 열어 둔 서버 파일 감시를 멈추고 임시 파일을 지운다
+    func stopEdits() { if filesStarted { files.stopEdits() } }
+
     func disconnect() {
         accessCheck += 1
         directoryPoll?.cancel()

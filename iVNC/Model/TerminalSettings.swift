@@ -121,6 +121,14 @@ enum TerminalSettings {
     static let confirmMultilinePaste = p + "confirmMultilinePaste"
     static let keepAlive = p + "keepAlive"
 
+    // 파일 (맥 파인더)
+    /// 더블클릭: "open" = 맥 앱으로 열기, "transfer" = 업로드·다운로드
+    static let filesDoubleClick = p + "files.doubleClick"
+    /// 더블클릭·열기로 큰 파일을 옮기기 전에 묻기 (기준 MB)
+    static let filesConfirmLarge = p + "files.confirmLarge"
+    static let filesLargeMB = p + "files.largeMB"
+    static let filesLargeChoices = [10, 50, 100, 500]
+
     enum CursorShape: String, CaseIterable, Identifiable {
         case block, underline, bar
         var id: String { rawValue }

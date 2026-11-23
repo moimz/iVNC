@@ -5,10 +5,10 @@ import AppKit
 import UIKit
 #endif
 
-/// 설정 > SSH: 맥 터미널 프로필처럼 [텍스트 | 윈도우 | 셸 | 키보드 | 고급].
+/// 설정 > SSH: 맥 터미널 프로필처럼 [텍스트 | 윈도우 | 셸 | 키보드 | 파일(맥) | 고급].
 /// 맥은 상자 탭(BoxTabView), 아이폰·아이패드는 목록에서 하나씩 들어간다.
 enum TerminalSettingsPage: Int, CaseIterable, Identifiable {
-    case text, window, shell, keyboard, advanced
+    case text, window, shell, keyboard, files, advanced
     var id: Int { rawValue }
     var title: String {
         switch self {
@@ -16,6 +16,7 @@ enum TerminalSettingsPage: Int, CaseIterable, Identifiable {
         case .window: return "윈도우"
         case .shell: return "셸"
         case .keyboard: return "키보드"
+        case .files: return "파일"
         case .advanced: return "고급"
         }
     }
@@ -25,8 +26,18 @@ enum TerminalSettingsPage: Int, CaseIterable, Identifiable {
         case .window: return "macwindow"
         case .shell: return "apple.terminal"
         case .keyboard: return "keyboard"
+        case .files: return "folder"
         case .advanced: return "gearshape.2"
         }
+    }
+
+    /// 이 기기에서 보이는 탭 (파일 탭은 맥 파인더 설정이라 맥만)
+    static var visible: [TerminalSettingsPage] {
+        #if os(macOS)
+        allCases
+        #else
+        allCases.filter { $0 != .files }
+        #endif
     }
 
     @ViewBuilder var form: some View {
@@ -35,6 +46,7 @@ enum TerminalSettingsPage: Int, CaseIterable, Identifiable {
         case .window: TerminalWindowForm()
         case .shell: TerminalShellForm()
         case .keyboard: TerminalKeyboardForm()
+        case .files: TerminalFilesForm()
         case .advanced: TerminalAdvancedForm()
         }
     }
@@ -46,7 +58,7 @@ struct TerminalSettingsList: View {
     var body: some View {
         List {
             Section {
-                ForEach(TerminalSettingsPage.allCases) { page in
+                ForEach(TerminalSettingsPage.visible) { page in
                     NavigationLink {
                         page.form.navigationTitle(page.title).inlineTitle()
                     } label: {
@@ -284,6 +296,45 @@ struct TerminalKeyboardForm: View {
                 Text("화면 키보드 위에 ⎋ ⇥ ⌃ 방향키 같은 터미널 키를 둡니다.")
             }
             #endif
+        }
+        #if os(macOS)
+        .formStyle(.grouped)
+        #endif
+    }
+}
+
+/// 파일 (맥 파인더): 더블클릭하면 무엇을 할지, 큰 파일 확인
+struct TerminalFilesForm: View {
+    typealias K = TerminalSettings
+    @AppStorage(K.filesDoubleClick) private var doubleClick = "open"
+    @AppStorage(K.filesConfirmLarge) private var confirmLarge = true
+    @AppStorage(K.filesLargeMB) private var largeMB = 50
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("파일을 더블클릭하면", selection: $doubleClick) {
+                    Text("맥 앱으로 열기").tag("open")
+                    Text("업로드 · 다운로드").tag("transfer")
+                }
+                .labelsHidden()
+                .pickerStyle(.inline)
+            } header: {
+                Text("파일을 더블클릭하면")
+            } footer: {
+                Text(doubleClick == "open"
+                     ? "서버 파일은 받아서 열고, 그 앱에서 저장하면 서버에 다시 올립니다. 옮기기는 오른쪽 클릭 메뉴나 끌어 놓기로 합니다. 폴더는 더블클릭하면 들어갑니다."
+                     : "서버 파일은 이 맥 칸의 폴더로 받고, 이 맥 파일은 서버 칸의 폴더로 올립니다. 열기는 오른쪽 클릭 메뉴로 합니다. 폴더는 더블클릭하면 들어갑니다.")
+            }
+            Section {
+                Toggle("큰 파일은 옮기기 전에 확인", isOn: $confirmLarge)
+                Picker("기준", selection: $largeMB) {
+                    ForEach(K.filesLargeChoices, id: \.self) { Text("\($0)MB 넘으면").tag($0) }
+                }
+                .disabled(!confirmLarge)
+            } footer: {
+                Text("더블클릭이나 \"열기\"로 큰 파일을 받거나 올리기 전에 묻습니다. 메뉴의 업로드 · 다운로드와 끌어 놓기는 묻지 않습니다.")
+            }
         }
         #if os(macOS)
         .formStyle(.grouped)
