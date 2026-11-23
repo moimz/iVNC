@@ -280,6 +280,15 @@ struct TerminalWindowView: View {
                      : "\(q.host) 에 처음 접속합니다. 서버 지문이 맞는지 확인하세요.\n\n\(q.keyType)\n\(q.fingerprint)")
             }
         }
+        // 접속 허용 IP 가 아닌 탭: 제목바 시트로 VPN 목록 (연결되면 그 탭을 다시 접속)
+        .sheet(isPresented: Binding(get: { accessTab != nil }, set: { if !$0 { accessTab?.accessBlocked = nil } })) {
+            if let t = accessTab, let r = t.accessBlocked {
+                AccessSheet(server: t.computer.name, report: r,
+                            retry: { t.accessBlocked = nil; t.connect() },
+                            force: { t.accessBlocked = nil; t.skipAccessCheckOnce = true; t.connect() },
+                            close: { t.accessBlocked = nil })
+            }
+        }
         .onAppear {
             model.onEmpty = { dismissWindow() }
             model.jumpChain = { [store] c in store.jumpChain(for: c) }
@@ -326,6 +335,7 @@ struct TerminalWindowView: View {
     private var blockedTab: TerminalTab? { model.allTabs.first { $0.filesBlocked != nil } }
 
     private var questionTab: TerminalTab? { model.allTabs.first { $0.hostKeyQuestion != nil } }
+    private var accessTab: TerminalTab? { model.allTabs.first { $0.accessBlocked != nil } }
     private var hostKeyTitle: String { questionTab?.hostKeyQuestion?.changed == true ? "서버 지문이 바뀌었습니다" : "처음 접속하는 서버입니다" }
 }
 

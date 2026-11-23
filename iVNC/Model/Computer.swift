@@ -57,6 +57,8 @@ struct Computer: Identifiable, Codable, Hashable {
     var sshColor: ServerColor?
     /// 경유 서버 (배스천): 다른 SSH 컴퓨터의 id. 그 서버를 거쳐 이 서버에 접속한다
     var sshJump: UUID?
+    /// 접속 허용 IP (203.0.113.10, 10.0.0.0/8 …). 적어 두면 접속 전에 이 기기의 IP 를 확인하고, 아니면 VPN 을 켜라고 안내한다 (NetworkAccess)
+    var allowedIPs: [String]?
 
     var prefersHighPerformance: Bool {
         preferHighPerformance ?? !UserDefaults.standard.bool(forKey: "debug.hpOff")
@@ -220,6 +222,8 @@ final class ComputerStore: ObservableObject {
         var sshEncoding: String?
         var sshColor: String?
         var sshJump: String?
+        /// 접속 허용 IP (2.4 이하 앱은 모르는 칸: 그 앱에서 고쳐 저장하면 빠진다)
+        var allowedIPs: [String]?
     }
 
     private let cloud = NSUbiquitousKeyValueStore.default
@@ -255,7 +259,7 @@ final class ComputerStore: ObservableObject {
         let e = CloudEntry(id: c.id, updatedAt: c.updatedAt ?? Date(), name: c.name, host: c.host, port: c.port, username: c.username,
                            preferHighPerformance: c.preferHighPerformance, keepAliveInBackground: c.keepAliveInBackground,
                            kind: c.kind?.rawValue, sshAuth: c.sshAuth?.rawValue, sshKeyName: c.sshKeyName, sshEncoding: c.sshEncoding, sshColor: c.sshColor?.rawValue,
-                           sshJump: c.sshJump?.uuidString)
+                           sshJump: c.sshJump?.uuidString, allowedIPs: c.allowedIPs)
         if let data = try? JSONEncoder().encode(e) { cloud.set(data, forKey: Self.cloudPrefix + c.id.uuidString) }
         cloud.synchronize()
     }
@@ -340,6 +344,7 @@ final class ComputerStore: ObservableObject {
                 c.sshEncoding = e.sshEncoding
                 c.sshColor = e.sshColor.flatMap(ServerColor.init(rawValue:))
                 c.sshJump = e.sshJump.flatMap(UUID.init(uuidString:))
+                c.allowedIPs = e.allowedIPs
                 c.updatedAt = e.updatedAt
                 if local == nil { computers.append(c) } else { replace(c) }
             }

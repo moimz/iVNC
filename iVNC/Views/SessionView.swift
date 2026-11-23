@@ -158,6 +158,17 @@ struct SessionView: View {
                         .allowsHitTesting(false)
                 }
             }
+        case .blocked(let r):
+            // 접속 허용 IP 가 아님: iOS 는 다른 앱의 VPN 을 켤 수 없어 안내만 (맥은 VPN 목록 시트)
+            ContentUnavailableView {
+                Label("접속할 수 없는 IP 입니다", systemImage: "network.badge.shield.half.filled")
+            } description: {
+                Text("VPN 을 켠 뒤 다시 확인을 누르세요.\n\n" + NetworkAccess.explain(r, server: model.computer.name))
+            } actions: {
+                Button("다시 확인") { model.connect(store: store) }.buttonStyle(.borderedProminent)
+                Button("그래도 접속") { model.skipAccessCheckOnce = true; model.connect(store: store) }
+                Button("닫기") { end() }
+            }
         case .failed(let msg):
             ContentUnavailableView {
                 Label("접속하지 못했습니다", systemImage: "exclamationmark.triangle")

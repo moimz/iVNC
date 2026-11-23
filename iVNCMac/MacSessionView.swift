@@ -15,6 +15,8 @@ struct MacSessionView: View {
     /// 시스템 단축키를 원격으로 보낼지 (켜려면 손쉬운 사용 권한)
     @AppStorage(SystemKeyCapture.defaultsKey) private var systemKeysToRemote = false
     @State private var needsAccessibility = false
+    /// 접속 허용 IP 가 아닐 때 VPN 시트
+    @State private var accessSheet = false
 
     init(computer: Computer) {
         _model = StateObject(wrappedValue: SessionModel(computer: computer))
@@ -185,6 +187,26 @@ struct MacSessionView: View {
             ZStack {
                 MacScreenView(model: model, keyMode: keyMode)
                 if !model.hasImage { ProgressView().controlSize(.large) }
+            }
+        case .blocked(let r):
+            // 접속 허용 IP 가 아님: 짧은 안내 + 제목바 시트(VPN 목록, iSQL 과 같은 모양)
+            VStack(spacing: 16) {
+                Image(systemName: "network.badge.shield.half.filled").font(.system(size: 40)).foregroundStyle(.orange)
+                Text("\(model.computer.name) 에 접속할 수 없는 IP 입니다").font(.title2).foregroundStyle(.white)
+                Text("VPN 을 켜면 다시 확인해 이어서 접속합니다.").foregroundStyle(.white.opacity(0.7))
+                HStack {
+                    Button("VPN 고르기…") { accessSheet = true }.buttonStyle(.borderedProminent)
+                    Button("닫기") { dismissWindow() }
+                }
+                .controlSize(.large)
+            }
+            .padding(40)
+            .onAppear { accessSheet = true }
+            .sheet(isPresented: $accessSheet) {
+                AccessSheet(server: model.computer.name, report: r,
+                            retry: { accessSheet = false; model.connect(store: store) },
+                            force: { accessSheet = false; model.skipAccessCheckOnce = true; model.connect(store: store) },
+                            close: { accessSheet = false })
             }
         case .failed(let msg):
             VStack(spacing: 16) {

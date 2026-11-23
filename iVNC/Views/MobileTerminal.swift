@@ -185,8 +185,29 @@ final class MobileTerminalSession: NSObject, ObservableObject, TerminalViewDeleg
         return .success(.password(pw))
     }
 
+    private var accessCheck = 0
+
     func connect() {
         state = .connecting
+        accessCheck += 1
+        // 접속 허용 IP (경유 서버가 있으면 맨 바깥 경유 서버의 목록): 아니면 접속하지 않고 VPN 을 켜라고 안내.
+        // iOS 는 다른 앱의 VPN 을 켤 수 없어 안내만 하고, VPN 을 켠 뒤 [다시 접속] 하면 다시 확인한다
+        if let list = NetworkAccess.gate(for: computer, jumps: jumps).allowedIPs, !list.isEmpty {
+            let token = accessCheck
+            view.feed(text: "\r\n\u{1b}[2m이 기기의 IP 확인 중…\u{1b}[0m")
+            Task { [weak self] in
+                guard let self, let r = await NetworkAccess.check(self.computer, jumps: self.jumps) else { return }
+                guard token == self.accessCheck, self.state == .connecting else { return }
+                self.view.feed(text: "\r\u{1b}[2K")
+                if r.allowed { self.startShell() }
+                else { self.fail(NetworkAccess.explain(r, server: self.computer.name).replacingOccurrences(of: "\n", with: "\r\n") + "\r\nVPN 을 켜고 다시 접속하세요.") }
+            }
+            return
+        }
+        startShell()
+    }
+
+    private func startShell() {
         var hops: [SSHShell.Hop] = []
         for j in jumps {
             switch Self.auth(for: j) {
@@ -227,6 +248,7 @@ final class MobileTerminalSession: NSObject, ObservableObject, TerminalViewDeleg
     }
 
     func disconnect() {
+        accessCheck += 1
         files.close()
         shell?.onClose = nil
         shell?.close()

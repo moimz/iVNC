@@ -1387,6 +1387,11 @@ final class MCPServer: ObservableObject {
         case .success(let a): auth = a
         case .failure(let m): throw Failure(m.text)
         }
+        // 접속 허용 IP 가 있고 이 맥이 그 IP 가 아니면 접속하지 않고 VPN 을 켜라고 알려 준다 (앱 화면과 같은 검사)
+        if let r = await NetworkAccess.check(t.computer, jumps: store?.jumpChain(for: t.computer) ?? []), !r.allowed {
+            throw Failure(NetworkAccess.explain(r, server: t.name) + "\n" + (await NetworkAccess.vpnSummary())
+                          + "\n사용자에게 VPN 을 켜 달라고 안내한 뒤 다시 시도한다. iVNC 에서 이 서버를 열면 VPN 을 고르는 화면이 뜬다.")
+        }
         let c = t.computer
         let s = SSHShell(host: c.host, port: c.port, username: c.username, auth: auth, term: "xterm-256color", jumps: hops)
         s.interactive = false
@@ -1447,6 +1452,7 @@ final class MCPServer: ObservableObject {
                                     "connected": reg.openTabs.contains { $0.computer.id == c.id && $0.sshShell != nil } || (background[c.id]?.isOpen ?? false),
                                     "active": c.id == active]
             if let via = store?.jumpChain(for: c), !via.isEmpty { d["via"] = via.map(\.name) }
+            if let a = NetworkAccess.gate(for: c, jumps: store?.jumpChain(for: c) ?? []).allowedIPs, !a.isEmpty { d["allowed_ips"] = a }
             d.merge(await rootInfo(c)) { a, _ in a }
             servers.append(d)
         }

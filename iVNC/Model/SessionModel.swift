@@ -23,6 +23,8 @@ final class SessionModel: ObservableObject {
         case picking
         case viewing
         case failed(String)
+        /// 이 기기의 IP 가 접속 허용 IP 가 아니라 접속하지 않음 (VPN 안내)
+        case blocked(NetworkAccess.Report)
     }
 
     @Published private(set) var phase: Phase = .connecting("접속하는 중…")
@@ -111,7 +113,36 @@ final class SessionModel: ObservableObject {
     private var retries = 0
     private static let maxRetries = 3
 
+    /// "그래도 접속": 다음 한 번은 허용 IP 검사를 건너뛴다
+    var skipAccessCheckOnce = false
+    private var accessCheck = 0
+
     func connect(store: ComputerStore, keepStatus: Bool = false) {
+        guard !closed else { return }
+        // 접속 허용 IP: 이 기기가 그 IP 가 아니면 접속하지 않고 VPN 을 켜라고 안내 (자동 다시 시도 때는 이미 통과)
+        if !keepStatus, !skipAccessCheckOnce, let list = computer.allowedIPs, !list.isEmpty {
+            self.store = store
+            client?.stop()
+            phase = .connecting("이 기기의 IP 확인 중…")
+            accessCheck += 1
+            let token = accessCheck
+            Task { [weak self] in
+                guard let self, var r = await NetworkAccess.check(self.computer) else { return }
+                guard !self.closed, token == self.accessCheck else { return }
+                if r.allowed {
+                    self.startClient(store: store, keepStatus: false)
+                } else {
+                    r.owner = self.computer.name
+                    self.phase = .blocked(r)
+                }
+            }
+            return
+        }
+        skipAccessCheckOnce = false
+        startClient(store: store, keepStatus: keepStatus)
+    }
+
+    private func startClient(store: ComputerStore, keepStatus: Bool) {
         guard !closed else { return }
         self.store = store
         client?.stop()
@@ -186,7 +217,7 @@ final class SessionModel: ObservableObject {
             // 원격이 가상 디스플레이를 내리고 실제 모니터를 다시 켤 시간을 준다
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
                 guard let self, let store = self.store, !self.closed else { return }
-                self.connect(store: store)
+                self.startClient(store: store, keepStatus: false)
             }
         case .frame:
             presentFrame()

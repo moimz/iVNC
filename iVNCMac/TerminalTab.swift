@@ -134,8 +134,39 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, TerminalViewD
         return .success(.password(pw))
     }
 
+    /// 접속 허용 IP 가 아니어서 접속하지 않았을 때 (창이 VPN 시트를 띄운다)
+    @Published var accessBlocked: NetworkAccess.Report?
+    /// "그래도 접속": 다음 한 번은 허용 IP 검사를 건너뛴다
+    var skipAccessCheckOnce = false
+    private var accessCheck = 0
+
     func connect() {
         state = .connecting
+        accessBlocked = nil
+        accessCheck += 1
+        // 접속 허용 IP (경유 서버가 있으면 맨 바깥 경유 서버의 목록): 아니면 접속하지 않고 VPN 을 켜라고 안내
+        let gate = NetworkAccess.gate(for: computer, jumps: jumps)
+        if !skipAccessCheckOnce, let list = gate.allowedIPs, !list.isEmpty {
+            let token = accessCheck
+            view.feed(text: "\r\n\u{1b}[2m이 맥의 IP 확인 중…\u{1b}[0m")
+            Task { [weak self] in
+                guard let self, let r = await NetworkAccess.check(self.computer, jumps: self.jumps) else { return }
+                guard token == self.accessCheck, self.state == .connecting else { return }
+                self.view.feed(text: "\r\u{1b}[2K")
+                if r.allowed {
+                    self.startShell()
+                } else {
+                    self.accessBlocked = r
+                    self.fail("이 맥의 IP 가 \(r.owner) 의 접속 허용 IP(\(r.allowedList.joined(separator: ", "))) 가 아닙니다. VPN 을 켜고 다시 접속하세요.")
+                }
+            }
+            return
+        }
+        skipAccessCheckOnce = false
+        startShell()
+    }
+
+    private func startShell() {
         var hops: [SSHShell.Hop] = []
         for j in jumps {
             switch Self.auth(for: j) {
@@ -343,6 +374,7 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, TerminalViewD
     }
 
     func disconnect() {
+        accessCheck += 1
         directoryPoll?.cancel()
         if mode == .files || filesStarted { files.close() }
         shell?.onClose = nil

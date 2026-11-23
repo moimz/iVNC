@@ -29,6 +29,10 @@ struct ComputerEditView: View {
     @State private var encoding = SSHEncoding.defaultID
     @State private var color = ServerColor.none
     @State private var jump: UUID?
+    /// 접속 허용 IP 칸에 친 글 그대로 (저장할 때 나눈다)
+    @State private var allowedText = ""
+    /// 접속 시험에서 허용 IP 가 아니었으면 그 결과 (맥: VPN 시트)
+    @State private var testBlocked: NetworkAccess.Report?
     /// SSH 접속 시험 (맥: 아래 막대 왼쪽)
     @State private var test: TestState = .idle
     @State private var testShell: SSHShell?
@@ -72,6 +76,7 @@ struct ComputerEditView: View {
                     encoding = c.sshEncoding ?? SSHEncoding.defaultID
                     color = c.sshColor ?? .none
                     jump = c.sshJump
+                    allowedText = (c.allowedIPs ?? []).joined(separator: ", ")
                 }
                 #if os(iOS)
                 .fileImporter(isPresented: $pickingKey, allowedContentTypes: [.data, .item]) { result in
@@ -95,6 +100,15 @@ struct ComputerEditView: View {
                 } message: {
                     Text(testDetail ?? "")
                 }
+                #if os(macOS)
+                .sheet(isPresented: Binding(get: { testBlocked != nil }, set: { if !$0 { testBlocked = nil } })) {
+                    if let r = testBlocked {
+                        AccessSheet(server: name.isEmpty ? host : name, report: r,
+                                    retry: { testBlocked = nil; runTest() },
+                                    close: { testBlocked = nil })
+                    }
+                }
+                #endif
                 .onChange(of: host) { test = .idle }
                 .onChange(of: port) { test = .idle }
                 .onChange(of: username) { test = .idle }
@@ -242,6 +256,13 @@ struct ComputerEditView: View {
                 Text("서버가 보내는 글자의 인코딩입니다. 요즘 서버는 거의 UTF-8 이고, 오래된 한국어 서버는 EUC-KR 일 수 있습니다.")
             }
         }
+        Section {
+            row("허용 IP", "선택 (예: 203.0.113.10, 10.0.0.0/8)", $allowedText) { $0.asciiField() }
+        } footer: {
+            Text(kind == .ssh && jump != nil
+                 ? "경유 서버를 거치면 이 서버는 이 기기의 IP 를 보지 못하므로, 경유 서버에 적은 허용 IP 로 확인합니다."
+                 : "이 컴퓨터에 들어갈 수 있는 이 기기의 IP. 적어 두면 접속 전에 확인하고, 아니면 VPN 을 켜라고 알려 줍니다. 비우면 확인하지 않습니다.")
+        }
         if kind == .mac {
             Section {
                 Toggle("고성능 모드 우선 사용", isOn: $preferHP)
@@ -387,6 +408,29 @@ struct ComputerEditView: View {
             }
         }
         test = .testing
+        testBlocked = nil
+        // 접속 허용 IP: 앱 접속과 같은 검사 (경유 서버가 있으면 그 서버의 목록, 없으면 입력 중인 목록)
+        let jumpsForGate = jump.flatMap { id in store.computers.first { $0.id == id } }.map { store.jumpChain(for: $0) + [$0] } ?? []
+        let gateList = jumpsForGate.first?.allowedIPs ?? (jumpsForGate.isEmpty ? NetworkAccess.parseList(allowedText) : [])
+        let gateName = jumpsForGate.first?.name ?? (name.isEmpty ? h : name)
+        Task { @MainActor in
+            if !gateList.isEmpty {
+                var r = await NetworkAccess.check(gateList)
+                r.owner = gateName
+                guard test == .testing else { return }
+                if !r.allowed {
+                    fail(NetworkAccess.explain(r, server: name.isEmpty ? h : name) + "\nVPN 을 켜면 다시 시험합니다.")
+                    testDetail = nil
+                    testBlocked = r
+                    return
+                }
+            }
+            startTest(h: h, user: user, auth: auth, hops: hops)
+        }
+    }
+
+    private func startTest(h: String, user: String, auth: SSHShell.Auth, hops: [SSHShell.Hop]) {
+        func fail(_ m: String) { lastTestError = m; test = .failed; testDetail = m }
         let s = SSHShell(host: h, port: Int(port) ?? 22, username: user, auth: auth, term: "xterm-256color", jumps: hops)
         s.interactive = false
         s.onHostKeyQuestion = { q, answer in testHostKey = (q, answer) }
@@ -439,6 +483,8 @@ struct ComputerEditView: View {
         c.username = username.trimmingCharacters(in: .whitespaces)
         c.preferHighPerformance = preferHP
         c.keepAliveInBackground = keepAlive
+        let ips = NetworkAccess.parseList(allowedText)
+        c.allowedIPs = ips.isEmpty ? nil : ips
         if kind == .ssh {
             c.sshEncoding = encoding == SSHEncoding.defaultID ? nil : encoding
             c.sshColor = color == .none ? nil : color
