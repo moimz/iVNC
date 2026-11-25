@@ -1368,8 +1368,20 @@ final class MCPServer: ObservableObject {
 
     // MARK: 접속 (열린 탭의 접속을 빌리거나, 범위가 '모든 서버'면 MCP 가 따로 접속)
 
-    private var background: [UUID: SSHShell] = [:]
+    /// MCP 가 열린 탭 없이 따로 연 접속 (목록 화면 SSH 줄에 "MCP 연결됨" 으로 보인다, 사용자 2026-11-26)
+    @Published private var background: [UUID: SSHShell] = [:]
     private var sftpClients: [ObjectIdentifier: SFTPClient] = [:]
+
+    /// MCP 가 따로 붙잡고 있는 서버들
+    var backgroundConnected: Set<UUID> { Set(background.keys) }
+
+    /// 목록 화면 [MCP 연결 끊기]
+    func disconnectBackground(_ id: UUID) {
+        guard let s = background.removeValue(forKey: id) else { return }
+        sftpClients[ObjectIdentifier(s)] = nil
+        s.onClose = nil
+        s.close()
+    }
 
     private func connection(_ t: Target) async throws -> SSHShell {
         if let s = t.tab?.sshShell, s.isOpen { return s }
@@ -1409,7 +1421,11 @@ final class MCPServer: ObservableObject {
             }
             s.connect(cols: 80, rows: 24, keepAlive: true)
         }
-        s.onClose = { [weak self] _, _ in self?.background[c.id] = nil }
+        s.onClose = { [weak self, weak s] _, _ in
+            guard let self, let s else { return }
+            if self.background[c.id] === s { self.background[c.id] = nil }
+            self.sftpClients[ObjectIdentifier(s)] = nil
+        }
         background[c.id] = s
         return s
     }

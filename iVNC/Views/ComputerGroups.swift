@@ -32,6 +32,8 @@ struct SSHRow: View {
     let computer: Computer
     /// 맥: 한 번 눌러 고른 줄
     var selected = false
+    /// 맥: MCP 가 따로 접속해 둔 서버 ("MCP 연결됨")
+    var mcpConnected = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -42,6 +44,14 @@ struct SSHRow: View {
                 Text(address).font(.caption).foregroundStyle(selected ? Color.white.opacity(0.8) : Color.secondary).lineLimit(1)
             }
             Spacer(minLength: 0)
+            if mcpConnected {
+                HStack(spacing: 5) {
+                    Circle().fill(Color.green).frame(width: 7, height: 7)
+                    Text("MCP 연결됨").font(.caption)
+                }
+                .foregroundStyle(selected ? Color.white.opacity(0.9) : Color.secondary)
+                .help("AI(MCP)가 이 서버에 접속해 있습니다. 오른쪽 클릭 > MCP 연결 끊기")
+            }
         }
         .foregroundStyle(selected ? Color.white : Color.primary)
         .padding(.horizontal, 14)

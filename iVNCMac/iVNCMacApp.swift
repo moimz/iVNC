@@ -32,7 +32,17 @@ struct iVNCMacApp: App {
         .windowResizability(.contentMinSize)
         .commands {
             SessionCommands()
-            CommandGroup(after: .appInfo) { UpdateMenuButton() }
+            // iVNC에 관하여: 기본 정보 창 그대로, 버전 줄만 Ai.md 모양 "2.6 (빌드 178 · 3fa9740)" (사용자 2026-11-26)
+            CommandGroup(replacing: .appInfo) {
+                Button("iVNC에 관하여") {
+                    NSApp.orderFrontStandardAboutPanel(options: [
+                        .applicationVersion: SettingsForm.versionValue,
+                        .version: "",
+                    ])
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+                UpdateMenuButton()
+            }
         }
 
         // SSH 터미널 창: 열 때마다 새 창 (창마다 탭·분할)

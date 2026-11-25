@@ -8,14 +8,14 @@ struct SettingsView: View {
         NavigationStack {
             List {
                 #if !os(macOS)
+                NavigationLink { GeneralSettingsForm().navigationTitle("일반").inlineTitle() } label: {
+                    Label("일반", systemImage: "gearshape")
+                }
                 NavigationLink { ScreenSettingsForm().navigationTitle("화면 공유").inlineTitle() } label: {
                     Label("화면 공유", systemImage: "display.2")
                 }
                 NavigationLink { TerminalSettingsList().navigationTitle("SSH").inlineTitle() } label: {
                     Label("SSH", systemImage: "terminal")
-                }
-                NavigationLink { GeneralSettingsForm().navigationTitle("일반").inlineTitle() } label: {
-                    Label("일반", systemImage: "gearshape")
                 }
                 #endif
             }
@@ -58,14 +58,22 @@ struct ScreenSettingsForm: View {
     }
 }
 
-/// 설정 > 일반: 업데이트(맥), 오픈 소스 라이선스, 버전
+/// 설정 > 일반: 백그라운드 연결 유지(아이폰·아이패드), 업데이트(맥), 오픈 소스 라이선스, 버전
 struct GeneralSettingsForm: View {
     @State private var showLicenses = false
+    @AppStorage(AppSettings.keepAliveKey) private var keepAlive = true
 
     var body: some View {
         Form {
             #if os(macOS)
             UpdateSection() // 자동 업데이트 (맥 앱만, iVNCMac/Updater.swift)
+            #else
+            Section {
+                Toggle("백그라운드에서 연결 유지", isOn: $keepAlive)
+            } footer: {
+                Text("백그라운드 진입 시 GPS 신호를 활용하여 원격 서버와 연결을 계속 유지합니다.")
+            }
+            .onChange(of: keepAlive) { BackgroundKeeper.shared.refresh() }
             #endif
             Section {
                 Button("오픈 소스 라이선스") { showLicenses = true }
@@ -82,14 +90,17 @@ struct GeneralSettingsForm: View {
 
 /// 버전 글자 (예전 이름 그대로 둔다)
 enum SettingsForm {
-    /// "버전 0.1 (235, fa0e978)" — 빌드 번호는 git 커밋 수, 뒤는 커밋 해시 ("+" 는 커밋 전 변경 포함). Scripts/stamp-build-number.sh
-    static var versionText: String {
+    /// "버전 2.6 (빌드 178 · 3fa9740)" — 빌드 번호는 git 커밋 수, 뒤는 커밋 해시 ("+" 는 커밋 전 변경 포함). Scripts/stamp-build-number.sh, Ai.md "앱 안의 버전 표시"
+    static var versionText: String { "버전 " + versionValue }
+
+    /// "버전" 이름표가 이미 있는 곳(맥 정보 창)에 쓰는 값만: "2.6 (빌드 178 · 3fa9740)"
+    static var versionValue: String {
         let info = Bundle.main.infoDictionary ?? [:]
         // b 로 끝나는 브랜치(시험판) 빌드는 "2.0b"
         let version = (info["CFBundleShortVersionString"] as? String ?? "-") + (info["iVNCBeta"] as? Bool == true ? "b" : "")
         let build = info["CFBundleVersion"] as? String ?? "-"
         let commit = info["iVNCCommit"] as? String
-        return "버전 \(version) (\(build)\(commit.map { ", \($0)" } ?? ""))"
+        return "\(version) (빌드 \(build)\(commit.map { " · \($0)" } ?? ""))"
     }
 }
 

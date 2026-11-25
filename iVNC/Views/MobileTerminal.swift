@@ -233,6 +233,7 @@ final class MobileTerminalSession: NSObject, ObservableObject, TerminalViewDeleg
         s.onConnected = { [weak self] in
             guard let self else { return }
             self.state = .connected
+            BackgroundKeeper.shared.start(for: self)
             let cmd = (d.string(forKey: TerminalSettings.startupCommand) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             if !cmd.isEmpty { self.shell?.send(Array((cmd + "\r").utf8)[...]) }
         }
@@ -253,6 +254,7 @@ final class MobileTerminalSession: NSObject, ObservableObject, TerminalViewDeleg
         shell?.onClose = nil
         shell?.close()
         shell = nil
+        BackgroundKeeper.shared.stop(for: self)
     }
 
     private func fail(_ message: String) {
@@ -262,6 +264,7 @@ final class MobileTerminalSession: NSObject, ObservableObject, TerminalViewDeleg
 
     private func closed(error: String?, status: Int?) {
         shell = nil
+        BackgroundKeeper.shared.stop(for: self)
         if let error { fail(error); return }
         state = .closed(nil)
         view.feed(text: "\r\n\u{1b}[2m[접속이 끝났습니다\(status.map { " · 종료 코드 \($0)" } ?? "")]\u{1b}[0m\r\n")

@@ -43,10 +43,6 @@ struct Computer: Identifiable, Codable, Hashable {
     /// 가능하면 고성능 모드(가상 디스플레이)를 먼저 쓴다. 이 값이 없던 예전 기록은 예전의 전체 "고성능 끔" 설정을 따른다
     var preferHighPerformance: Bool?
 
-    /// 앱을 나가도 연결을 유지한다 (위치를 낮은 정확도로 켜 둔다). 예전 기록은 켬
-    var keepAliveInBackground: Bool?
-    var keepsAliveInBackground: Bool { keepAliveInBackground ?? true }
-
     /// SSH 인증 방식. 없으면 비밀번호
     var sshAuth: SSHAuth?
     /// 가져온 SSH 키 파일 이름 (보여 주기용. 키 내용은 키체인에)
@@ -215,7 +211,6 @@ final class ComputerStore: ObservableObject {
         var port = 5900
         var username = ""
         var preferHighPerformance: Bool?
-        var keepAliveInBackground: Bool?
         var kind: String?
         var sshAuth: String?
         var sshKeyName: String?
@@ -257,7 +252,7 @@ final class ComputerStore: ObservableObject {
 
     private func upload(_ c: Computer) {
         let e = CloudEntry(id: c.id, updatedAt: c.updatedAt ?? Date(), name: c.name, host: c.host, port: c.port, username: c.username,
-                           preferHighPerformance: c.preferHighPerformance, keepAliveInBackground: c.keepAliveInBackground,
+                           preferHighPerformance: c.preferHighPerformance,
                            kind: c.kind?.rawValue, sshAuth: c.sshAuth?.rawValue, sshKeyName: c.sshKeyName, sshEncoding: c.sshEncoding, sshColor: c.sshColor?.rawValue,
                            sshJump: c.sshJump?.uuidString, allowedIPs: c.allowedIPs)
         if let data = try? JSONEncoder().encode(e) { cloud.set(data, forKey: Self.cloudPrefix + c.id.uuidString) }
@@ -337,7 +332,6 @@ final class ComputerStore: ObservableObject {
                 var c = local ?? Computer(id: e.id, name: e.name, host: e.host, username: e.username)
                 c.name = e.name; c.host = e.host; c.port = e.port; c.username = e.username
                 c.preferHighPerformance = e.preferHighPerformance
-                c.keepAliveInBackground = e.keepAliveInBackground
                 c.kind = e.kind.flatMap(Computer.Kind.init(rawValue:))
                 c.sshAuth = e.sshAuth.flatMap(SSHAuth.init(rawValue:))
                 c.sshKeyName = e.sshKeyName

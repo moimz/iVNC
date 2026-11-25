@@ -16,7 +16,6 @@ struct ComputerEditView: View {
     @State private var username = ""
     @State private var password = ""
     @State private var preferHP = true
-    @State private var keepAlive = true
     @State private var kind: Computer.Kind = .mac
     // SSH 인증 (iSQL 과 같은 모양: [키 파일 | 비밀번호], 키 고르기, 키 암호)
     @State private var sshAuth: SSHAuth = .key
@@ -69,7 +68,6 @@ struct ComputerEditView: View {
                     guard let c = computer else { return }
                     name = c.name == c.host ? "" : c.name; host = c.host; port = String(c.port); username = c.username
                     preferHP = c.prefersHighPerformance
-                    keepAlive = c.keepsAliveInBackground
                     kind = c.type
                     sshAuth = c.sshAuth ?? .password
                     keyName = c.sshKeyName
@@ -270,13 +268,6 @@ struct ComputerEditView: View {
                 Text("맥이 지원하면 가상 디스플레이로 영상처럼 받습니다. 안 되면 기본 방식으로 접속합니다.")
             }
         }
-        #if os(iOS)
-        Section {
-            Toggle("백그라운드에서 연결 유지", isOn: $keepAlive)
-        } footer: {
-            Text("앱을 잠깐 나가도 연결이 끊기지 않고 컴퓨터도 잠들지 않습니다. 그동안 위치를 아주 낮은 정확도로 켜 두어 배터리를 조금 더 씁니다.")
-        }
-        #endif
     }
 
     private var hostPrompt: String {
@@ -482,7 +473,6 @@ struct ComputerEditView: View {
         c.port = Int(port) ?? kind.defaultPort
         c.username = username.trimmingCharacters(in: .whitespaces)
         c.preferHighPerformance = preferHP
-        c.keepAliveInBackground = keepAlive
         let ips = NetworkAccess.parseList(allowedText)
         c.allowedIPs = ips.isEmpty ? nil : ips
         if kind == .ssh {

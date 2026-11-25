@@ -4,6 +4,7 @@ import SwiftUI
 /// 카드·줄을 두 번 누르면 접속 창이 열린다
 struct MacHomeView: View {
     @EnvironmentObject private var store: ComputerStore
+    @ObservedObject private var mcp = MCPServer.shared
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
     @State private var editing: Computer?
@@ -88,7 +89,7 @@ struct MacHomeView: View {
                             .padding(.top, screens.isEmpty ? 0 : 8)
                         if sshExpanded || searching {
                             SSHList(computers: servers) { c in
-                                SSHRow(computer: c, selected: selected == c.id)
+                                SSHRow(computer: c, selected: selected == c.id, mcpConnected: mcp.backgroundConnected.contains(c.id))
                                     .onTapGesture(count: 2) { open(c) }
                                     .simultaneousGesture(TapGesture().onEnded { selected = c.id })
                                     .contextMenu { menu(c) }
@@ -121,6 +122,9 @@ struct MacHomeView: View {
             .keyboardShortcut(.return, modifiers: [])
         Button("편집…", systemImage: "pencil") { editing = c }
             .keyboardShortcut("e")
+        if mcp.backgroundConnected.contains(c.id) {
+            Button("MCP 연결 끊기", systemImage: "bolt.horizontal.circle") { mcp.disconnectBackground(c.id) }
+        }
         Divider()
         Button("삭제", systemImage: "trash", role: .destructive) { store.delete(c) }
             .keyboardShortcut(.delete)

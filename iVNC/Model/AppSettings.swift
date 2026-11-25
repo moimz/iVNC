@@ -22,6 +22,10 @@ enum AppSettings {
 
     static let resolutionKey = "settings.resolution"
 
+    /// 설정 > 일반 "백그라운드에서 연결 유지" (아이폰·아이패드, 기본 켬): 위치를 켜 두어 앱을 나가도 연결을 붙잡는다 (BackgroundKeeper)
+    static let keepAliveKey = "settings.keepAliveInBackground"
+    static var keepAliveInBackground: Bool { UserDefaults.standard.object(forKey: keepAliveKey) as? Bool ?? true }
+
     /// 고른 해상도. nil 이면 "기기에 맞춤"
     static var resolution: Resolution? {
         get {
