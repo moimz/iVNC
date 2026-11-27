@@ -49,6 +49,11 @@ final class SSHShell {
     }
     private let jumps: [Hop]
     private var shell: Channel?
+    /// 터미널이 원하는 최신 열×행. 셸 채널이 열리기 전에 온 크기 변경(새 탭이 자리 잡을 때)도 잃지 않게 기억했다가
+    /// pty 요청과 셸이 열린 직후에 반영한다 (메인 · 이벤트 루프 양쪽에서 읽고 써서 잠근다)
+    private let sizeLock = NSLock()
+    private var wantedSize = (cols: 80, rows: 24)
+    private var currentWantedSize: (cols: Int, rows: Int) { sizeLock.withLock { wantedSize } }
     private var exitStatus: Int?
     private var closed = false
     /// 이 셸을 서버에서 찾는 표식 (LC_ 환경 변수로 붙인다. 우분투 기본 sshd 가 LC_* 를 받아 준다) → 지금 폴더 알아내기
@@ -78,6 +83,7 @@ final class SSHShell {
     }
 
     func connect(cols: Int, rows: Int, keepAlive: Bool) {
+        sizeLock.withLock { wantedSize = (cols, rows) }
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         self.group = group
         // 경유 서버들 → 목적지. 바깥 서버에만 TCP 로 붙고, 그 안에서 다음 서버로 통로(direct-tcpip)를 열어 다시 SSH 를 맺는다.
@@ -125,14 +131,19 @@ final class SSHShell {
             self.shell = child
             // 표식은 서버가 안 받아 줘도 그만 (답을 안 기다린다)
             child.triggerUserOutboundEvent(SSHChannelRequestEvent.EnvironmentRequest(wantReply: false, name: "LC_IVNC_SESSION", value: self.marker), promise: nil)
+            let size = self.currentWantedSize
             let pty = SSHChannelRequestEvent.PseudoTerminalRequest(
-                wantReply: true, term: self.term, terminalCharacterWidth: cols, terminalRowHeight: rows,
+                wantReply: true, term: self.term, terminalCharacterWidth: size.cols, terminalRowHeight: size.rows,
                 terminalPixelWidth: 0, terminalPixelHeight: 0, terminalModes: .init([:]))
             return child.triggerUserOutboundEvent(pty).flatMap {
                 if let cmd = self.startCommand {
                     return child.triggerUserOutboundEvent(SSHChannelRequestEvent.ExecRequest(command: cmd, wantReply: true))
                 }
                 return child.triggerUserOutboundEvent(SSHChannelRequestEvent.ShellRequest(wantReply: true))
+            }.map {
+                // pty 를 요청하는 사이 크기가 또 바뀌었으면 (⌘T 새 탭이 창에 맞춰 커질 때) 지금 크기로 맞춘다
+                let now = self.currentWantedSize
+                if now != size { self.sendWindowChange(child, now) }
             }
         }.whenComplete { [weak self] result in
             switch result {
@@ -424,8 +435,13 @@ final class SSHShell {
     }
 
     func resize(cols: Int, rows: Int) {
-        shell?.triggerUserOutboundEvent(SSHChannelRequestEvent.WindowChangeRequest(
-            terminalCharacterWidth: cols, terminalRowHeight: rows, terminalPixelWidth: 0, terminalPixelHeight: 0), promise: nil)
+        sizeLock.withLock { wantedSize = (cols, rows) }
+        if let shell { sendWindowChange(shell, (cols, rows)) }
+    }
+
+    private func sendWindowChange(_ channel: Channel, _ size: (cols: Int, rows: Int)) {
+        channel.triggerUserOutboundEvent(SSHChannelRequestEvent.WindowChangeRequest(
+            terminalCharacterWidth: size.cols, terminalRowHeight: size.rows, terminalPixelWidth: 0, terminalPixelHeight: 0), promise: nil)
     }
 
     func close() {
