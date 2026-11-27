@@ -22,7 +22,7 @@
 			<string>iVNC 서버 파일</string>
 			<key>UTTypeConformsTo</key>
 			<array>
-				<string>public.data</string>
+				<string>public.item</string>
 			</array>
 		</dict>
 	</array>

@@ -314,8 +314,9 @@ final class FileSession: ObservableObject {
     }
 
     /// 서버 파일·폴더를 이 맥 폴더로
-    func download(_ items: [FileItem], to dir: URL) {
-        guard let client else { return }
+    @discardableResult
+    func download(_ items: [FileItem], to dir: URL) -> TransferGroup? {
+        guard let client else { return nil }
         let g = TransferCenter.shared.begin(.download, names: items.map(\.name), server: serverName)
         Task {
             for e in items {
@@ -327,6 +328,26 @@ final class FileSession: ObservableObject {
             }
             g.preparing = false
         }
+        return g
+    }
+
+    /// Finder·데스크탑에 끌어 놓은 서버 항목을 임시 폴더로 받는다. 메뉴의 다운로드와 같은 흐름이라 전송 내역(⇅)에 한 묶음으로 보인다.
+    /// 다 받을 때까지 기다리고, 하나라도 못 받거나 취소되면 실패로 던진다 (Finder 가 그 항목을 만들지 않는다)
+    func downloadForDrag(_ e: FileItem, to dir: URL, progress: Progress) async throws -> URL {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        guard let g = download([e], to: dir) else { throw CocoaError(.fileReadUnknown) }
+        while g.isActive {
+            if progress.isCancelled || RemoteDrag.terminating { g.cancel() }
+            // Finder 의 복사 진행 막대도 같이 움직이게
+            progress.totalUnitCount = max(g.total, 1)
+            progress.completedUnitCount = g.done
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+        if let t = g.items.first(where: \.isFailed), case .failed(let message) = t.state {
+            throw NSError(domain: "iVNC", code: 1, userInfo: [NSLocalizedDescriptionKey: "\(t.name): \(message)"])
+        }
+        if g.cancelledCount > 0 { throw CocoaError(.userCancelled) }
+        return dir.appendingPathComponent(e.name)
     }
 
     private func downloadFolder(_ path: String, to local: URL, client: SFTPClient, group g: TransferGroup) async {
@@ -674,6 +695,8 @@ private struct FilePaneView: View {
         .tableStyle(.inset(alternatesRowBackgrounds: false))
         .background(TableLinesRemover())
         .contextMenu(forSelectionType: String.self) { ids in menu(ids) } primaryAction: { ids in open(ids) }
+        // ⌘R: 포커스가 있는 칸(이 맥 / 서버)만 새로 고친다 (메뉴 보기 > 새로 고침, TerminalMenus.swift)
+        .focusedValue(\.filePaneRefresh) { Task { await pane.refresh() } }
         .onDrop(of: pane.isRemote ? [remoteDragType, .fileURL] : [remoteDragType], isTargeted: $dropTarget) { items in drop(items) }
     }
 
@@ -788,9 +811,23 @@ private struct FilePaneView: View {
         Divider()
         if pane.isRemote { Button("새 폴더…") { nameInput = ""; newFolder = true } }
         Button("새로 고침") { Task { await pane.refresh() } }
+        Divider()
         if pane.isRemote {
-            Divider()
             Button("삭제…", role: .destructive) { deleting = picked }.disabled(picked.isEmpty)
+        } else {
+            // Finder 처럼 묻지 않고 휴지통으로 (되돌릴 수 있다)
+            Button("휴지통으로 이동") { moveToTrash(picked) }.disabled(picked.isEmpty)
+        }
+    }
+
+    /// 이 맥 항목을 휴지통으로 옮기고 목록을 다시 읽는다
+    private func moveToTrash(_ picked: [FileItem]) {
+        NSWorkspace.shared.recycle(picked.map(\.url)) { _, error in
+            Task { @MainActor in
+                selection.subtract(picked.map(\.id))
+                await pane.refresh()
+                if let error { NSAlert(error: error).runModal() }
+            }
         }
     }
 
@@ -803,17 +840,15 @@ private struct FilePaneView: View {
 
     private func drop(_ items: [NSItemProvider]) -> Bool {
         // 서버 항목 (이 탭 또는 다른 탭): 서버 칸이면 서버 ↔ 서버, 이 맥 칸이면 받기
-        let remoteItems = items.filter { $0.hasItemConformingToTypeIdentifier(remoteDragType.identifier) }
-        if !remoteItems.isEmpty {
-            RemoteDrag.load(remoteItems) { refs in
-                for (tabID, paths) in Dictionary(grouping: refs, by: \.0) {
-                    guard let source = FileSession.session(for: tabID) else { continue }
-                    let picked = paths.compactMap { source.remote.item($0.1) }
-                    if pane.isRemote {
-                        if source !== session { session.relay(picked, from: source, to: session.remote.path) }
-                    } else {
-                        source.download(picked, to: URL(fileURLWithPath: session.local.path))
-                    }
+        let refs = RemoteDrag.refs()
+        if !refs.isEmpty {
+            for (tabID, paths) in Dictionary(grouping: refs, by: \.0) {
+                guard let source = FileSession.session(for: tabID) else { continue }
+                let picked = paths.compactMap { source.remote.item($0.1) }
+                if pane.isRemote {
+                    if source !== session { session.relay(picked, from: source, to: session.remote.path) }
+                } else {
+                    source.download(picked, to: URL(fileURLWithPath: session.local.path))
                 }
             }
             return true
@@ -1035,56 +1070,78 @@ private struct FileViewOptionsView: View {
     }
 }
 
+/// 끌기 파일 요청에 한 번만 답한다 (받기 Task 와 꺼짐 감시 중 먼저 온 쪽)
+private final class DragAnswer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done: ((URL?, Bool, Error?) -> Void)?
+    init(_ done: @escaping (URL?, Bool, Error?) -> Void) { self.done = done }
+    var sent: Bool { lock.withLock { done == nil } }
+    func send(_ url: URL?, _ error: Error?) {
+        let d = lock.withLock { () -> ((URL?, Bool, Error?) -> Void)? in defer { done = nil }; return done }
+        d?(url, false, error)
+    }
+}
+
 /// 서버 항목 끌기: 우리 앱 안에서는 경로를, Finder 에 놓으면 그때 받아서 파일로 넘긴다
 @MainActor
-private enum RemoteDrag {
+enum RemoteDrag {
+    /// 앱이 꺼지는 중. 꺼질 때 AppKit 이 끌기 판에 약속해 둔 데이터를 모두 채우려고 기다리므로(CFPasteboardResolveAllPromisedData),
+    /// 그때 서버에서 받기 시작하면 끝날 때까지(예전엔 영영) 앱이 멈춘다 → 바로 취소로 답하고, 받는 중인 것도 멈춘다
+    nonisolated(unsafe) static var terminating = false
+    /// 지금 놓는 끌기판에서 우리 서버 항목들 (보낸 탭 id, 서버 경로). 놓기 처리 중에만 부른다
+    static func refs() -> [(UUID, String)] {
+        let marker = NSPasteboard.PasteboardType(remoteDragType.identifier)
+        return (NSPasteboard(name: .drag).pasteboardItems ?? []).compactMap { item in
+            guard item.types.contains(marker), let d = item.data(forType: marker), let s = String(data: d, encoding: .utf8) else { return nil }
+            let parts = s.split(separator: "\n", maxSplits: 1).map(String.init)
+            guard parts.count == 2, let id = UUID(uuidString: parts[0]) else { return nil }
+            return (id, parts[1])
+        }
+    }
+
     static func provider(for e: FileItem, session: FileSession) -> NSItemProvider {
         let p = NSItemProvider()
         p.suggestedName = e.name
         let path = e.id
-        // 우리 앱 안: "탭 id \n 경로" (다른 탭의 서버로 옮길 때 보낸 쪽을 찾는다)
-        let ref = session.tabID.uuidString + "\n" + path
-        p.registerDataRepresentation(forTypeIdentifier: remoteDragType.identifier, visibility: .ownProcess) { done in
-            done(ref.data(using: .utf8), nil)
-            return nil
-        }
-        // Finder·데스크탑에 놓으면 임시 폴더로 받아 넘긴다 (파일만)
-        if !e.isDirectory, let client = session.client {
-            p.registerFileRepresentation(forTypeIdentifier: (UTType(filenameExtension: (e.name as NSString).pathExtension) ?? .data).identifier,
-                                         fileOptions: [], visibility: .all) { done in
+        // 끌기 시험 앱(Ai/iVNC/dragtest)에서 앱→Finder · Finder→앱 · 앱 안(서버↔서버, 서버→이 맥) · 여러 개를 마우스로 끌어 확인한 방식 (2026-11-27):
+        // - Finder 는 맨 앞 표현만 가져간다 → 맨 앞은 Finder 용 받기. 폴더는 public.folder(public.data 면 zip 으로 묶여 넘어감),
+        //   파일은 형식과 상관없이 public.data(글자 형식이면 Finder 가 경로 글을 가져갔고, 확장자 형식이면 a.sql.sql 처럼 덧붙였다)
+        // - 앱 안 놓기는 SwiftUI 가 넘기는 형식 목록이 비어 오므로 끌기판에서 경로 글을 직접 읽는다 (FilePaneView.drop 의 RemoteDrag.refs)
+        if session.client != nil {
+            let type = e.isDirectory ? UTType.folder : UTType.data
+            p.registerFileRepresentation(forTypeIdentifier: type.identifier, fileOptions: [], visibility: .all) { done in
+                // 꺼지는 중이면 받지 않는다 (RemoteDrag.terminating)
+                if RemoteDrag.terminating { done(nil, false, CocoaError(.userCancelled)); return nil }
                 let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-                try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                let local = dir.appendingPathComponent(e.name)
-                let progress = Progress(totalUnitCount: e.size ?? 0)
-                Task {
+                let progress = Progress(totalUnitCount: e.isDirectory ? -1 : max(e.size ?? 0, 1))
+                let answer = DragAnswer(done)
+                Task { @MainActor in
                     do {
-                        try await client.download(path, to: local, progress: { progress.completedUnitCount += Int64($0) }, isCancelled: { progress.isCancelled })
-                        done(local, false, nil)
+                        answer.send(try await session.downloadForDrag(e, to: dir, progress: progress), nil)
                     } catch {
-                        done(nil, false, error)
+                        answer.send(nil, error)
+                    }
+                }
+                // 받는 중에 꺼지면 메인 스레드는 끌기 약속을 채우려고 전용 런루프 모드에서 기다려 메인 액터 일이 돌지 않는다
+                // → 위 Task 가 답할 수 없으니, 메인 밖에서 지켜보다 바로 취소로 답한다
+                Task.detached {
+                    while !answer.sent {
+                        if RemoteDrag.terminating { answer.send(nil, CocoaError(.userCancelled)); return }
+                        try? await Task.sleep(for: .milliseconds(200))
                     }
                 }
                 return progress
             }
         }
+        // 우리 앱 안: "탭 id \n 경로" (다른 탭의 서버로 옮길 때 보낸 쪽을 찾는다). 맨 뒤라 Finder 는 안 가져간다.
+        // 형식은 public.item (데이터가 아님, iVNCMac-Info.plist) 이라 Finder 가 파일로 만들 수 없다
+        let ref = session.tabID.uuidString + "\n" + path
+        p.registerDataRepresentation(forTypeIdentifier: remoteDragType.identifier, visibility: .ownProcess) { done in
+            done(ref.data(using: .utf8), nil)
+            return nil
+        }
         return p
     }
 
-    /// (보낸 탭 id, 서버 경로) 들
-    static func load(_ items: [NSItemProvider], done: @escaping ([(UUID, String)]) -> Void) {
-        var refs: [(UUID, String)] = []
-        let group = DispatchGroup()
-        for p in items {
-            group.enter()
-            p.loadDataRepresentation(forTypeIdentifier: remoteDragType.identifier) { d, _ in
-                if let d, let s = String(data: d, encoding: .utf8) {
-                    let parts = s.split(separator: "\n", maxSplits: 1).map(String.init)
-                    if parts.count == 2, let id = UUID(uuidString: parts[0]) { DispatchQueue.main.async { refs.append((id, parts[1])) } }
-                }
-                group.leave()
-            }
-        }
-        group.notify(queue: .main) { done(refs) }
-    }
 }
 

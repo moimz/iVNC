@@ -89,6 +89,12 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         if !HomeWindow.isVisible { HomeWindow.open?() }
         return true
     }
+
+    /// 꺼지기 직전(종료 알림보다 먼저): 끌기 약속을 채우려고 서버에서 받지 않게 한다 (RemoteDrag.terminating)
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        RemoteDrag.terminating = true
+        return .terminateNow
+    }
 }
 
 /// 보기 메뉴: 실제 크기·창에 맞춤 (지금 앞에 있는 접속 창에 알림으로 전한다)

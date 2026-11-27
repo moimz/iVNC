@@ -17,6 +17,8 @@ struct TerminalCommands {
 
 extension FocusedValues {
     @Entry var terminalCommands: TerminalCommands?
+    /// 파인더 모드에서 포커스가 있는 칸(이 맥 / 서버)의 목록 새로 고침. 칸에 포커스가 없으면 nil → 흐려진다
+    @Entry var filePaneRefresh: (() -> Void)?
 }
 
 struct TerminalMenus: Commands {
@@ -62,6 +64,7 @@ private struct FileCloseItems: View {
 
 private struct TerminalViewItems: View {
     @FocusedValue(\.terminalCommands) private var c
+    @FocusedValue(\.filePaneRefresh) private var refresh
     var body: some View {
         Button("터미널") { c?.showTerminal() }
             .keyboardShortcut("1")
@@ -72,6 +75,9 @@ private struct TerminalViewItems: View {
         Button("다시 접속") { c?.reconnect() }
             .keyboardShortcut("r", modifiers: [.command, .shift])
             .disabled(c?.hasTab != true)
+        Button("새로 고침") { refresh?() }
+            .keyboardShortcut("r")
+            .disabled(refresh == nil)
         Divider()
     }
 }
