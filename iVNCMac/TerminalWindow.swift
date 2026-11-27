@@ -201,6 +201,65 @@ final class TerminalWindowModel: ObservableObject {
 }
 
 /// 터미널 창
+/// 터미널 창 크기·자리 기억 (사용자 2026-11-27: 처음 창은 예전 크기인데 목록에서 다른 서버를 열면 아주 작은 창).
+/// SwiftUI 는 창 번호마다(terminal-AppWindow-1, -2 …) 따로 기억해서, 창이 하나 열려 있을 때 여는 새 창은 기억이 없어
+/// defaultSize(760×480)로 열렸고, 그 작은 크기가 첫 창 기억까지 덮어썼다(defaults 로 확인).
+/// → 사용자가 마지막으로 크기·자리를 바꾼 터미널 창을 직접 기억하고, 새 창은 그 크기로 연다.
+/// 다른 터미널 창이 있으면 맨 앞 창에서 계단식으로 비켜서, 없으면 기억한 자리에
+@MainActor enum TerminalWindowFrame {
+    private static let key = "terminal.windowFrame"
+    private static var observers: [ObjectIdentifier: [NSObjectProtocol]] = [:]
+
+    static func isTerminal(_ w: NSWindow) -> Bool { w.identifier?.rawValue.hasPrefix("terminal") ?? false }
+
+    /// 창이 처음 잡혔을 때 한 번: 자리 잡기 + 크기·자리 바뀔 때 기억
+    static func attach(_ w: NSWindow) {
+        let id = ObjectIdentifier(w)
+        guard isTerminal(w), observers[id] == nil else { return }
+        place(w)
+        let nc = NotificationCenter.default
+        let save: @Sendable (Notification) -> Void = { n in
+            MainActor.assumeIsolated { if let w = n.object as? NSWindow { remember(w) } }
+        }
+        observers[id] = [
+            nc.addObserver(forName: NSWindow.didEndLiveResizeNotification, object: w, queue: .main, using: save),
+            nc.addObserver(forName: NSWindow.didMoveNotification, object: w, queue: .main, using: save),
+            nc.addObserver(forName: NSWindow.willCloseNotification, object: w, queue: .main) { _ in
+                MainActor.assumeIsolated {
+                    observers[id]?.forEach { nc.removeObserver($0) }
+                    observers[id] = nil
+                }
+            },
+        ]
+    }
+
+    private static func remember(_ w: NSWindow) {
+        guard !w.styleMask.contains(.fullScreen), w.frame.width > 0 else { return }
+        UserDefaults.standard.set(NSStringFromRect(w.frame), forKey: key)
+    }
+
+    private static func place(_ w: NSWindow) {
+        let saved = UserDefaults.standard.string(forKey: key).map(NSRectFromString).flatMap { $0.width > 0 ? $0 : nil }
+        let top = NSApp.orderedWindows.first { $0 !== w && $0.isVisible && isTerminal($0) && !$0.styleMask.contains(.fullScreen) }
+        var f: NSRect
+        if let top {
+            let size = saved?.size ?? top.frame.size
+            f = NSRect(x: top.frame.minX + 28, y: top.frame.maxY - 28 - size.height, width: size.width, height: size.height)
+        } else if let saved {
+            f = saved
+        } else {
+            return // 기억이 없으면 SwiftUI 가 연 그대로
+        }
+        if let vis = (w.screen ?? NSScreen.main)?.visibleFrame {
+            f.size.width = min(f.width, vis.width); f.size.height = min(f.height, vis.height)
+            if f.maxX > vis.maxX { f.origin.x = vis.minX }
+            if f.minY < vis.minY { f.origin.y = vis.maxY - f.height }
+            f.origin.x = max(f.minX, vis.minX); f.origin.y = min(f.minY, vis.maxY - f.height)
+        }
+        w.setFrame(f, display: true)
+    }
+}
+
 struct TerminalWindowView: View {
     let request: TerminalWindowRequest
     @EnvironmentObject private var store: ComputerStore
@@ -261,7 +320,10 @@ struct TerminalWindowView: View {
                 }
             }
         }
-        .background(WindowGrabber { [weak model] w in model?.window = w })
+        .background(WindowGrabber { [weak model] w in
+            model?.window = w
+            if let w { TerminalWindowFrame.attach(w) }
+        })
         .navigationTitle(model.activeTab?.displayTitle ?? "SSH")
         .toolbar(removing: .title)
         // 단축키는 메뉴 막대에 (TerminalMenus.swift): 이 창이 앞에 있을 때 할 일을 넘긴다
