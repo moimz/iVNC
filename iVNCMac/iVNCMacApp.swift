@@ -13,6 +13,14 @@ struct iVNCMacApp: App {
         TerminalSettingsSync.shared.start()
     }
 
+    /// 새 이슈 화면, 본문에 앱 · macOS 버전만 미리 채운다 (개인 정보는 넣지 않는다)
+    private static var issueURL: URL {
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        var c = URLComponents(string: "https://github.com/moimz/iVNC/issues/new")!
+        c.queryItems = [URLQueryItem(name: "body", value: "\n\n---\niVNC \(SettingsForm.versionValue) · macOS \(os.majorVersion).\(os.minorVersion).\(os.patchVersion)")]
+        return c.url!
+    }
+
     var body: some Scene {
         Window("iVNC", id: "home") {
             MacHomeView()
@@ -42,6 +50,11 @@ struct iVNCMacApp: App {
                     NSApp.activate(ignoringOtherApps: true)
                 }
                 UpdateMenuButton()
+            }
+            // 도움말: 저장소 · 문제 신고 (Ai.md "도움말 메뉴", 도움말 책이 없어 기본 "iVNC 도움말" 은 뺀다)
+            CommandGroup(replacing: .help) {
+                Button("iVNC GitHub 페이지") { NSWorkspace.shared.open(URL(string: "https://github.com/moimz/iVNC")!) }
+                Button("문제 신고…") { NSWorkspace.shared.open(Self.issueURL) }
             }
         }
 

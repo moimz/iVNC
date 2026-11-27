@@ -55,7 +55,9 @@ struct UpdateSection: View {
         Section {
             LabeledContent("버전") {
                 HStack(spacing: 8) {
-                    Text(Self.version).foregroundStyle(.secondary).monospacedDigit()
+                    // 한 줄로 못 박지 않으면 줄바꿈될 수 있는 글로 재서 폭을 덜 받아 "a09d…" 로 잘리고 버튼 오른쪽이 빈다 (Ai.md 12번)
+                    Text(SettingsForm.versionValue).foregroundStyle(.secondary).monospacedDigit().textSelection(.enabled)
+                        .lineLimit(1).fixedSize()
                     Button("업데이트 확인…") { updater.checkForUpdates() }.disabled(!updater.canCheck)
                 }
             }
@@ -65,11 +67,5 @@ struct UpdateSection: View {
         } footer: {
             Text("하루에 한 번 새 버전이 있는지 확인하고, 있으면 설치할지 묻습니다.")
         }
-    }
-
-    /// "2.1 (155)"
-    private static var version: String {
-        let info = Bundle.main.infoDictionary ?? [:]
-        return "\(info["CFBundleShortVersionString"] as? String ?? "-") (\(info["CFBundleVersion"] as? String ?? "-"))"
     }
 }

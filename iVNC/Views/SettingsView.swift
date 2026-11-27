@@ -58,7 +58,7 @@ struct ScreenSettingsForm: View {
     }
 }
 
-/// 설정 > 일반: 백그라운드 연결 유지(아이폰·아이패드), 업데이트(맥), 오픈 소스 라이선스, 버전
+/// 설정 > 일반: 백그라운드 연결 유지(아이폰·아이패드), 오픈 소스 라이선스, 업데이트·버전(맥) / 버전(아이폰·아이패드)
 struct GeneralSettingsForm: View {
     @State private var showLicenses = false
     @AppStorage(AppSettings.keepAliveKey) private var keepAlive = true
@@ -66,6 +66,10 @@ struct GeneralSettingsForm: View {
     var body: some View {
         Form {
             #if os(macOS)
+            Section {
+                Button("오픈 소스 라이선스") { showLicenses = true }
+            }
+            // 업데이트 칸은 맨 마지막, 버전은 그 칸의 "버전" 줄 한 곳에만 (Ai.md 설정 창 공통)
             UpdateSection() // 자동 업데이트 (맥 앱만, iVNCMac/Updater.swift)
             #else
             Section {
@@ -74,12 +78,12 @@ struct GeneralSettingsForm: View {
                 Text("백그라운드 진입 시 GPS 신호를 활용하여 원격 서버와 연결을 계속 유지합니다.")
             }
             .onChange(of: keepAlive) { BackgroundKeeper.shared.refresh() }
-            #endif
             Section {
                 Button("오픈 소스 라이선스") { showLicenses = true }
             } footer: {
                 Text(SettingsForm.versionText).frame(maxWidth: .infinity, alignment: .center)
             }
+            #endif
         }
         .sheet(isPresented: $showLicenses) { LicensesView() }
         #if os(macOS)
@@ -93,7 +97,7 @@ enum SettingsForm {
     /// "버전 2.6 (빌드 178 · 3fa9740)" — 빌드 번호는 git 커밋 수, 뒤는 커밋 해시 ("+" 는 커밋 전 변경 포함). Scripts/stamp-build-number.sh, Ai.md "앱 안의 버전 표시"
     static var versionText: String { "버전 " + versionValue }
 
-    /// "버전" 이름표가 이미 있는 곳(맥 정보 창)에 쓰는 값만: "2.6 (빌드 178 · 3fa9740)"
+    /// "버전" 이름표가 이미 있는 곳(맥 정보 창·설정 업데이트 칸·문제 신고)에 쓰는 값만: "2.6 (빌드 178 · 3fa9740)"
     static var versionValue: String {
         let info = Bundle.main.infoDictionary ?? [:]
         // b 로 끝나는 브랜치(시험판) 빌드는 "2.0b"
