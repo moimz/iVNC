@@ -215,11 +215,12 @@ final class RFBClient {
     /// 모니터 목록(DisplayInfo2)을 한 번이라도 받았는지
     private var gotDisplayInfo = false
     /// 이 접속에서 가상 디스플레이를 요청했는지 (끊을 때 내리기 신호를 보낼지)
-    private var hpRequested = false
     private var hpSecrets: HP.Secrets?
     private var hpReceiver: HPUDPReceiver?
     private var hpServerPorts: (audio: UInt16, video: UInt16)?
     private var hpTimer: DispatchSourceTimer?
+    /// 고성능 협상 답을 기다리는 시간 (가상 디스플레이를 치우는 중인 서버도 기다릴 만큼)
+    static let hpAnswerTimeout: Double = 10
     private var hpDecoder: HPVideoDecoder?
     /// 막혔을 때: 먼저 키 그림을 요청하고, 1초 안에 화면이 안 나오면 다시 제안한다.
     /// 다시 제안 간격은 1초부터 두 배씩 8초까지 (예전엔 30초에 3번 넘으면 30초 동안 포기해 화면이 멈춰 있었다)
@@ -450,13 +451,9 @@ final class RFBClient {
     }
 
     func stop() {
-        stateLock.lock(); let already = stopped; stopped = true; let s = socket; stateLock.unlock()
-        // 고성능(가상 디스플레이)을 요청한 접속이면 끊기 전에 가상 디스플레이 0개를 보내 원격이 정리하게 한다
-        if !already, hpRequested, let s {
-            s.send(HP.removeVirtualDisplaysMessage())
-            DebugLog.write("끊기 전 가상 디스플레이 내리기(0x1d 0개) 보냄")
-            Thread.sleep(forTimeInterval: 0.15)
-        }
+        stateLock.lock(); stopped = true; let s = socket; stateLock.unlock()
+        // 끊기 전에 가상 디스플레이 0개(0x1d)를 보내던 것은 뺐다: 맥은 "Invalid message size. Min is 192" 로 보고 끊기만 했고,
+        // 가상 디스플레이는 그냥 끊을 때(detach)와 똑같이 정리됐다 (2026-11-28 맥북 screensharingd 로그)
         watchdog?.cancel()
         hpTimer?.cancel()
         hpReceiver?.stop()
@@ -667,12 +664,14 @@ final class RFBClient {
             if hpState == .trying {
                 // 배율 1 (레티나 아님): 원격 화면을 레티나로 볼 이유가 없고, 픽셀이 1/4 이라 영상이 훨씬 가볍다
                 setup += HP.virtualDisplayMessage(width: virtualDisplay.width, height: virtualDisplay.height, scale: 1)
-                hpRequested = true
                 DebugLog.write("HP 가상 디스플레이 요청 \(virtualDisplay.width)x\(virtualDisplay.height) @1")
                 emit(.status("고성능 연결 시도 중…"))
-                hpSchedule(after: 5) { [weak self] in
+                // 앞 고성능 세션이 끝난 직후면 서버가 첫 답까지 8초쯤 걸릴 때가 있어 10초 기다린다.
+                // 영상이 시작되기 전에 끊으면 서버가 가상 디스플레이를 안 치워 남는다(다음 고성능 요청이 그걸 다시 씀).
+                // 답이 아예 안 오는 경우는 맥의 screensharingd 가 디스플레이 잠에서 못 깨어난 것이라 오래 기다려도 소용없다 (2026-11-28 맥북 로그)
+                hpSchedule(after: Self.hpAnswerTimeout) { [weak self] in
                     guard let self, !self.hpAnswered else { return }
-                    self.hpFail("5초 동안 고성능 협상 답이 안 옴")
+                    self.hpFail("\(Int(Self.hpAnswerTimeout))초 동안 고성능 협상 답이 안 옴")
                 }
             }
             setup += Self.setDisplay(nil)
