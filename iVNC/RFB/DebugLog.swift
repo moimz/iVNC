@@ -19,11 +19,7 @@ enum DebugLog {
             start = Date()
             let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
             if size > 2_000_000 { try? Data().write(to: url) }
-            if let h = try? FileHandle(forWritingTo: url) {
-                h.seekToEndOfFile(); h.write(Data("===== 새 접속 =====\n".utf8)); try? h.close()
-            } else {
-                try? Data("===== 새 접속 =====\n".utf8).write(to: url)
-            }
+            append(Data("===== 새 접속 =====\n".utf8))
         }
         recentLock.lock(); recentLines = []; recentLock.unlock()
     }
@@ -46,11 +42,17 @@ enum DebugLog {
             recentLock.unlock()
         }
         let line = String(format: "%7.2f ", Date().timeIntervalSince(start)) + text + "\n"
-        queue.async {
-            guard let h = try? FileHandle(forWritingTo: url) else { try? Data(line.utf8).write(to: url); return }
-            h.seekToEndOfFile()
-            h.write(Data(line.utf8))
-            try? h.close()
-        }
+        queue.async { append(Data(line.utf8)) }
+    }
+
+    /// 파일 끝에 붙인다. 옛 seekToEndOfFile()/write(_:) 는 실패하면 ObjC 예외를 던져 앱이 죽으므로 (2.6.4 아이폰 연결 종료 때 크래시),
+    /// 던지는 API 로 쓰고 실패하면 그 줄은 버린다. queue 안에서만 부른다.
+    private static func append(_ data: Data) {
+        guard let h = try? FileHandle(forWritingTo: url) else { try? data.write(to: url); return }
+        defer { try? h.close() }
+        do {
+            try h.seekToEnd()
+            try h.write(contentsOf: data)
+        } catch {}
     }
 }
